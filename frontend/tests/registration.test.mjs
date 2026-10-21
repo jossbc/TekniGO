@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createRequire } from 'node:module'
+import { build } from 'esbuild'
+
+const require = createRequire(import.meta.url)
+const { createElement } = require('react')
+const { renderToStaticMarkup } = require('react-dom/server')
+const { MemoryRouter } = require('react-router-dom')
+
+test('cellular numbers accept formatting and reject invalid lengths, prefixes and countries', async () => {
+  const result = await build({entryPoints: ['src/lib/validation.ts'], bundle: true, write: false, platform: 'node', format: 'cjs'})
+  const module = {exports: {}}
+  new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, module, module.exports)
+  const { normalizeHonduranPhone } = module.exports
+  for (const value of ['98765432', '9876-5432', '+504 9876-5432', ' +504 (9876) 5432 ']) {
+    assert.equal(normalizeHonduranPhone(value), '+50498765432')
+  }
+  for (const value of ['87654321', '34567890']) assert.equal(normalizeHonduranPhone(value), '+504' + value)
+  const invalid = ['+504 00000', '00000000', '9876543', '987654321', '+50398765432', '+504987654321', '9876A432', '++50498765432']
+  for (const prefix of [0, 1, 2, 4, 5, 6, 7]) invalid.push(`${prefix}1234567`)
+  for (const value of invalid) assert.throws(() => normalizeHonduranPhone(value))
+})
+
+test('HU-01 requests all five fields with or without an existing session', async () => {
+  const result = await build({
+    entryPoints: ['src/App.tsx'], bundle: true, write: false,
+    platform: 'node', format: 'cjs', packages: 'external',
+    define: { 'import.meta.env': '{}' },
+  })
+  const module = { exports: {} }
+  new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, module, module.exports)
+  const { AccessPage, accountPath } = module.exports
+  assert.equal(accountPath(['CLIENTE']), '/cliente')
+  assert.equal(accountPath(['TECNICO']), '/tecnico')
+  assert.equal(accountPath(['CLIENTE', 'TECNICO']), '/mi-cuenta')
+  for (const user of [null, { uid: 'existing-test-user', email: 'cliente@example.com' }]) {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, {},
+      createElement(AccessPage, { mode: 'register', user })))
+    for (const name of ['name', 'email', 'phone', 'dni', 'password']) {
+      const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0]
+      assert.ok(input, `Missing field ${name} with session=${!!user}`)
+      assert.match(input, /required=""/, `${name} must be required`)
+    }
+    assert.match(html.match(/<input[^>]*name="email"[^>]*>/)[0], /type="email"/)
+    if (user) {
+      assert.match(html, /value="cliente@example.com"/)
+      assert.match(html, /readOnly=""/)
+      assert.match(html, /autoComplete="current-password"/)
+    } else {
+      assert.match(html, /autoComplete="new-password"/)
+    }
+  }
+})

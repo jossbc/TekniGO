@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.firebase import initialize_firebase
-from fastapi import Depends
-from app.security import get_current_user
+from app.cors import configure_cors
+from app.users import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -17,15 +17,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+configure_cors(app)
+app.include_router(router)
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-@app.get("/users/me")
-def get_my_profile(user: dict = Depends(get_current_user)):
-    return {
-        "uid": user["uid"],
-        "email": user.get("email"),
-    }
