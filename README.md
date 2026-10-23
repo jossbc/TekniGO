@@ -2,12 +2,6 @@
 
 Monorepositorio: React + TypeScript + Vite en `frontend/` y FastAPI + SQLAlchemy en `backend/`. Frontend preparado para Vercel; API para Render; PostgreSQL en Supabase; autenticación en Firebase.
 
-## Estado actual
-
-Implementación inicial de HU-01 a HU-04: registro de cliente/técnico, acceso y cierre de sesión. Una cuenta puede tener ambos roles, sin duplicar identidad. La usuaria confirmó la conexión a Supabase y la migración 001_identity. El despliegue público y la validación completa en navegador siguen pendientes.
-
-La verificación de identidad sigue pendiente tras registrarse. Catálogo, edición de perfil, documentos y contratación corresponden a las siguientes historias. El espacio de cuenta lo indica sin simular esas funciones.
-
 ## Backend
 
 Desde `backend/`, PowerShell:
