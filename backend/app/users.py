@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -48,6 +48,9 @@ class Registration(BaseModel):
 
 
 class ProfileUpdate(BaseModel):
+   
+    model_config = ConfigDict(extra="forbid")
+
     telefono: str | None = None
     correo: str | None = None
 
@@ -57,6 +60,8 @@ class ProfileUpdate(BaseModel):
         if value is None:
             return value
         value = re.sub(r"[\s()-]", "", value)
+        if not value:
+            raise ValueError("Ingresa tu teléfono")
         if not re.fullmatch(r"(?:\+504)?[389][0-9]{7}", value):
             raise ValueError("Ingresa un celular hondureño de 8 dígitos que comience con 9, 8 o 3.")
         return value if value.startswith("+504") else "+504" + value
@@ -67,6 +72,8 @@ class ProfileUpdate(BaseModel):
         if value is None:
             return value
         value = value.strip().lower()
+        if not value:
+            raise ValueError("Ingresa tu correo")
         if len(value) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
             raise ValueError("Ingresa un correo válido")
         return value
@@ -124,9 +131,13 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     if data.telefono is None and data.correo is None:
         raise HTTPException(400, "No enviaste ningún dato para actualizar")
 
-    email_changed = data.correo is not None and data.correo != user.correo
+    phone_changed = data.telefono is not None and data.telefono != user.telefono
+    email_changed = data.correo is not None and data.correo != user.correo.lower()
+    if not phone_changed and not email_changed:
+        return profile(user)  
+
     try:
-        if data.telefono is not None:
+        if phone_changed:
             user.telefono = data.telefono
         if email_changed:
             user.correo = data.correo
