@@ -2,7 +2,7 @@ import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from firebase_admin import auth
+from firebase_admin import auth, exceptions
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -48,7 +48,7 @@ class Registration(BaseModel):
 
 
 class ProfileUpdate(BaseModel):
-   
+
     model_config = ConfigDict(extra="forbid")
 
     telefono: str | None = None
@@ -134,7 +134,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     phone_changed = data.telefono is not None and data.telefono != user.telefono
     email_changed = data.correo is not None and data.correo != user.correo.lower()
     if not phone_changed and not email_changed:
-        return profile(user)  
+        return profile(user)
 
     try:
         if phone_changed:
@@ -152,6 +152,9 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     except auth.EmailAlreadyExistsError:
         db.rollback()
         raise HTTPException(409, "Ese correo ya está en uso") from None
+    except exceptions.FirebaseError:
+        db.rollback()
+        raise HTTPException(502, "No pudimos actualizar tu correo en este momento. Intenta de nuevo.") from None
     return profile(user)
 
 
