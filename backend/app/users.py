@@ -46,8 +46,7 @@ class Registration(BaseModel):
         return value if value.startswith("+504") else "+504" + value
 
 
-# HU-06 ST-02: datos que el usuario puede editar en su perfil.
-# El nombre NO está aquí a propósito: es solo lectura.
+
 class ProfileUpdate(BaseModel):
     telefono: str | None = None
     correo: str | None = None
@@ -75,7 +74,7 @@ class ProfileUpdate(BaseModel):
 
 def profile(user):
     return {"id": str(user.id), "nombre_completo": user.nombre_completo,
-            "email": user.correo, "telefono": user.telefono,
+            "email": user.correo, "dni": user.dni, "telefono": user.telefono,
             "roles": sorted(r.rol for r in user.roles),
             "estado_identidad": user.estado_identidad}
 
@@ -138,7 +137,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Ese teléfono o correo ya está registrado") from None
+        raise HTTPException(409, "Este teléfono ya está registrado") from None
     except auth.EmailAlreadyExistsError:
         db.rollback()
         raise HTTPException(409, "Ese correo ya está en uso") from None
