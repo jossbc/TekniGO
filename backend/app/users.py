@@ -3,8 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth
-from firebase_admin.exceptions import FirebaseError
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -14,13 +13,6 @@ from app.models import TechnicianProfile, User, UserRole
 from app.security import get_current_user
 
 router = APIRouter()
-
-
-def normalize_phone(value: str) -> str:
-    value = re.sub(r"[\s()-]", "", value)
-    if not re.fullmatch(r"(?:\+504)?[389][0-9]{7}", value):
-        raise ValueError("Ingresa un celular hondureño de 8 dígitos que comience con 9, 8 o 3. Puedes usar guion y el prefijo +504.")
-    return value if value.startswith("+504") else "+504" + value
 
 
 class Registration(BaseModel):
@@ -48,33 +40,42 @@ class Registration(BaseModel):
     @field_validator("telefono")
     @classmethod
     def phone(cls, value):
-        return normalize_phone(value)
+        value = re.sub(r"[\s()-]", "", value)
+        if not re.fullmatch(r"(?:\+504)?[389][0-9]{7}", value):
+            raise ValueError("Ingresa un celular hondureño de 8 dígitos que comience con 9, 8 o 3. Puedes usar guion y el prefijo +504.")
+        return value if value.startswith("+504") else "+504" + value
 
 
+# HU-06 ST-02: datos que el usuario puede editar en su perfil.
+# El nombre NO está aquí a propósito: es solo lectura.
 class ProfileUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     telefono: str | None = None
-    email: str | None = None
+    correo: str | None = None
 
     @field_validator("telefono")
     @classmethod
     def phone(cls, value):
-        return None if value is None else normalize_phone(value)
+        if value is None:
+            return value
+        value = re.sub(r"[\s()-]", "", value)
+        if not re.fullmatch(r"(?:\+504)?[389][0-9]{7}", value):
+            raise ValueError("Ingresa un celular hondureño de 8 dígitos que comience con 9, 8 o 3.")
+        return value if value.startswith("+504") else "+504" + value
 
-    @field_validator("email")
+    @field_validator("correo")
     @classmethod
-    def email_format(cls, value):
+    def email(cls, value):
         if value is None:
             return value
         value = value.strip().lower()
         if len(value) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
-            raise ValueError("Ingresa un correo electrónico válido")
+            raise ValueError("Ingresa un correo válido")
         return value
 
 
 def profile(user):
     return {"id": str(user.id), "nombre_completo": user.nombre_completo,
-            "email": user.correo, "dni": user.dni, "telefono": user.telefono,
+            "email": user.correo, "telefono": user.telefono,
             "roles": sorted(r.rol for r in user.roles),
             "estado_identidad": user.estado_identidad}
 
@@ -115,42 +116,32 @@ def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     return profile(user)
 
 
+# HU-06 ST-02: actualización del perfil (teléfono y correo).
 @router.patch("/users/me")
 def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
-    changes = data.model_dump(exclude_unset=True)
-    if not changes:
-        raise HTTPException(400, "No hay cambios que guardar")
+    if data.telefono is None and data.correo is None:
+        raise HTTPException(400, "No enviaste ningún dato para actualizar")
 
-    new_phone = changes.get("telefono")
-    if new_phone and new_phone != user.telefono:
-        taken = db.scalar(select(User).where(User.telefono == new_phone, User.id != user.id))
-        if taken:
-            raise HTTPException(409, "Este teléfono ya está registrado")
-        user.telefono = new_phone
-
-    new_email = changes.get("email")
-    email_changed = bool(new_email) and new_email != user.correo
-    if email_changed:
-        user.correo = new_email
-
+    email_changed = data.correo is not None and data.correo != user.correo
     try:
+        if data.telefono is not None:
+            user.telefono = data.telefono
+        if email_changed:
+            user.correo = data.correo
         db.flush()
         if email_changed:
-            auth.update_user(claims["uid"], email=new_email)
+            auth.update_user(claims["uid"], email=data.correo)
         db.commit()
+        db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Este teléfono ya está registrado") from None
+        raise HTTPException(409, "Ese teléfono o correo ya está registrado") from None
     except auth.EmailAlreadyExistsError:
         db.rollback()
-        raise HTTPException(409, "Este correo ya está registrado") from None
-    except (ValueError, FirebaseError):
-        db.rollback()
-        raise HTTPException(422, "No se pudo actualizar el correo") from None
-    db.refresh(user)
+        raise HTTPException(409, "Ese correo ya está en uso") from None
     return profile(user)
 
 
