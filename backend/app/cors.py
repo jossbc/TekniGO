@@ -17,6 +17,6 @@ def configure_cors(app):
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins(),
-        allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )

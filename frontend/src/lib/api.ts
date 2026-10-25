@@ -8,13 +8,24 @@ export type Profile = {
   estado_identidad: string
 }
 
-export async function api<T>(path: string, user: User, body?: unknown): Promise<T> {
+export async function api<T>(path: string, user: User, body?: unknown, method?: string): Promise<T> {
   const token = await user.getIdToken()
-  const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
+  
+  const httpMethod = method || (body === undefined ? 'GET' : 'POST')
+
+  const options: RequestInit = {
+    method: httpMethod,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
+  }
+
+  // Asegura que no se envíe un body si el método es GET o HEAD
+  if (body !== undefined && httpMethod !== 'GET' && httpMethod !== 'HEAD') {
+    options.body = JSON.stringify(body)
+  }
+
+  const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`, options)
+
+
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
     const detail = typeof data.detail === 'string' ? data.detail :

@@ -37,46 +37,48 @@ export const TariffSettings: React.FC = () => {
                 return;
             }
 
-            const token = await currentUser.getIdToken();
-
-            await api('/technicians/me/tariff', currentUser, {
-                method: 'PATCH',
-                body: formData,
-            });
+            await api('/technicians/me/tariff', currentUser, formData, 'PATCH');
 
             setMessage('Tarifa actualizada satisfactoriamente.');
 
         }catch (error){
-            setMessage('Error al actualizar la tarifa. Inténtalo de nuevo.');
+            setMessage(error instanceof Error ? error.message : 'Error al actualizar la tarifa. Inténtalo de nuevo.');
         } finally{
             setLoading(false);
         }
     };
 
   return (
-    <div className="max-w-md mx-auto p-6 bg-white rounded-lg shadow-md">
-      <h2 className="text-xl font-bold mb-4">Configurar Tarifa Base</h2>
-      
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <div className="tariff-container">
+      <h2 className="tariff-title">
+        Configurar Tarifa Base
+      </h2>
+
+      <form onSubmit={handleSubmit} className="tariff-form">
         <div>
-          <label className="block text-sm font-medium text-gray-700">Tarifa Base (Lempiras)</label>
+          <label className="tariff-label">
+            Tarifa Base (Lempiras)
+          </label>
           <input
             type="number"
             step="0.01"
             min="0.01"
-            value={formData.tarifa_base}
+            value={formData.tarifa_base || ''}
             onChange={(e) => setFormData({ ...formData, tarifa_base: parseFloat(e.target.value) || 0 })}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+            className="tariff-input"
+            placeholder="0.00"
             required
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">Unidad de Cobro</label>
+          <label className="tariff-label">
+            Unidad de Cobro
+          </label>
           <select
             value={formData.unidad_cobro}
             onChange={(e) => setFormData({ ...formData, unidad_cobro: e.target.value as PricingUnit })}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+            className="tariff-select"
           >
             <option value="POR_HORA">Por Hora</option>
             <option value="POR_SERVICIO">Por Servicio</option>
@@ -88,12 +90,13 @@ export const TariffSettings: React.FC = () => {
         <button
           type="submit"
           disabled={loading}
-          className="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 disabled:opacity-50"
+          className="tariff-button"
         >
           {loading ? 'Guardando...' : 'Guardar Cambios'}
         </button>
 
-        {message && <p className="text-sm text-center mt-2 text-gray-600">{message}</p>}
+        {error && <p className="tariff-error">{error}</p>}
+        {message && <p className="tariff-message">{message}</p>}
       </form>
     </div>
   );
