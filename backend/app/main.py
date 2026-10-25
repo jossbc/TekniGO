@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.firebase import initialize_firebase
 from app.cors import configure_cors
 from app.users import router
+from app.technicians import router as technicians_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,7 +20,7 @@ app = FastAPI(
 )
 configure_cors(app)
 app.include_router(router)
-
+app.include_router(technicians_router)
 
 @app.get("/health")
 def health():
