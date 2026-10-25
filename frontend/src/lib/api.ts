@@ -10,7 +10,7 @@ export type Profile = {
   estado_identidad: string
 }
 
-export async function api<T>(path: string, user: User, body?: unknown, method?: 'POST' | 'PATCH'): Promise<T> {
+export async function api<T>(path: string, user: User, body?: unknown, method?: 'POST' | 'PATCH'| 'PUT'): Promise<T> {
   const token = await user.getIdToken()
   const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),

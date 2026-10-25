@@ -5,6 +5,7 @@ import { ArrowLeft, CheckCircle2, CircleAlert, Image as ImageIcon, Lock } from '
 import { auth } from './lib/firebase'
 import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
+import SpecialtySelector from './components/SpecialtySelector'
 import { normalizeEmail, normalizeHonduranPhone, PHONE_HINT } from './lib/validation'
 
 type ProfileChanges = { telefono?: string; correo?: string }
@@ -191,6 +192,10 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
           {isTechnician && (
             <>
+              <section className="account-card" style={card}>
+              <h2 style={cardTitle}>Especialidades</h2>
+                <SpecialtySelector user={user} />
+              </section>
               <section className="account-card" style={card}>
                 <h2 style={cardTitle}>Resumen profesional</h2>
                 <label htmlFor="resumen" style={{ display: 'block', fontWeight: 600, fontSize: '1rem', marginBottom: 8 }}>
