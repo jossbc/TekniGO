@@ -32,3 +32,10 @@ class TechnicianProfile(Base):
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), primary_key=True)
     disponible: Mapped[bool] = mapped_column(Boolean, default=False)
     estado_verificacion: Mapped[str] = mapped_column(String(30), default="NO_VERIFICADO")
+
+
+class Specialty(Base):
+    __tablename__ = "especialidades"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    nombre: Mapped[str] = mapped_column(String(80), unique=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
