@@ -4,21 +4,23 @@ export type Profile = {
   id: string
   nombre_completo: string
   email: string
+  dni: string
+  telefono: string
   roles: ('CLIENTE' | 'TECNICO')[]
   estado_identidad: string
 }
 
-export async function api<T>(path: string, user: User, body?: unknown): Promise<T> {
+export async function api<T>(path: string, user: User, body?: unknown, method?: 'POST' | 'PATCH'): Promise<T> {
   const token = await user.getIdToken()
   const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
+    method: method ?? (body === undefined ? 'GET' : 'POST'),
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
     const detail = typeof data.detail === 'string' ? data.detail :
-      Array.isArray(data.detail) ? data.detail.map((item: {msg: string}) => item.msg).join('. ') : 'No pudimos completar la solicitud.'
+      Array.isArray(data.detail) ? data.detail.map((item: {msg: string}) => item.msg.replace(/^Value error, /, '')).join('. ') : 'No pudimos completar la solicitud.'
     throw new Error(detail)
   }
   return response.status === 204 ? undefined as T : response.json()
