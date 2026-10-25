@@ -2,9 +2,9 @@ import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from firebase_admin import auth
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from firebase_admin import auth, exceptions
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,6 @@ from app.models import TechnicianProfile, User, UserRole
 from app.security import get_current_user
 
 router = APIRouter()
-
 
 class Registration(BaseModel):
     nombre_completo: str = Field(min_length=2, max_length=150)
@@ -46,10 +45,47 @@ class Registration(BaseModel):
         return value if value.startswith("+504") else "+504" + value
 
 
+class ProfileUpdate(BaseModel):
+
+    model_config = ConfigDict(extra="forbid")
+
+    telefono: str | None = None
+    correo: str | None = None
+
+    @field_validator("telefono")
+    @classmethod
+    def phone(cls, value):
+        if value is None:
+            return value
+        value = re.sub(r"[\s()-]", "", value)
+        if not value:
+            raise ValueError("Ingresa tu teléfono")
+        if not re.fullmatch(r"(?:\+504)?[389][0-9]{7}", value):
+            raise ValueError("Ingresa un celular hondureño de 8 dígitos que comience con 9, 8 o 3.")
+        return value if value.startswith("+504") else "+504" + value
+
+    @field_validator("correo")
+    @classmethod
+    def email(cls, value):
+        if value is None:
+            return value
+        value = value.strip().lower()
+        if not value:
+            raise ValueError("Ingresa tu correo")
+        if len(value) > 254 or not re.fullmatch(r"[^@\s]+@(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|info|biz|io|dev|app|[a-z]{2})", value):
+            raise ValueError("Ingresa un correo válido")
+        return value
+
+
 def profile(user):
     return {"id": str(user.id), "nombre_completo": user.nombre_completo,
             "email": user.correo, "roles": sorted(r.rol for r in user.roles),
             "estado_identidad": user.estado_identidad}
+
+
+def own_profile(user):
+    # Datos personales completos: solo se devuelven a la propia persona (HU-06).
+    return {**profile(user), "dni": user.dni, "telefono": user.telefono}
 
 
 @router.post("/users/register", status_code=201)
@@ -79,7 +115,6 @@ def register(data: Registration, claims=Depends(get_current_user), db: Session =
         raise HTTPException(409, "El DNI o teléfono ya está registrado, o hubo un registro simultáneo. Revisa los datos e intenta de nuevo.") from None
     return profile(user)
 
-
 @router.get("/users/me")
 def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
@@ -87,8 +122,60 @@ def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
         raise HTTPException(404, "Completa tu registro en TekniGO")
     return profile(user)
 
+@router.get("/users/me/personal")
+def my_personal_data(claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    return own_profile(user)
+
+def ensure_free(db, user, column, value, message):
+    taken = db.scalar(select(User.id).where(column == value, User.id != user.id))
+    if taken:
+        raise HTTPException(409, message)
+
+
+# HU-06 ST-02: actualización del perfil (teléfono y correo).
+@router.patch("/users/me")
+def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    if data.telefono is None and data.correo is None:
+        raise HTTPException(400, "No enviaste ningún dato para actualizar")
+
+    phone_changed = data.telefono is not None and data.telefono != user.telefono
+    email_changed = data.correo is not None and data.correo != user.correo.lower()
+    if not phone_changed and not email_changed:
+        return own_profile(user)
+
+    if phone_changed:
+        ensure_free(db, user, User.telefono, data.telefono, "Este teléfono ya está registrado")
+    if email_changed:
+        ensure_free(db, user, func.lower(User.correo), data.correo, "Ese correo ya está en uso")
+
+    try:
+        if phone_changed:
+            user.telefono = data.telefono
+        if email_changed:
+            user.correo = data.correo
+        db.flush()
+        if email_changed:
+            auth.update_user(claims["uid"], email=data.correo)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Ese teléfono o correo ya está registrado. Revisa los datos e intenta de nuevo.") from None
+    except auth.EmailAlreadyExistsError:
+        db.rollback()
+        raise HTTPException(409, "Ese correo ya está en uso") from None
+    except exceptions.FirebaseError:
+        db.rollback()
+        raise HTTPException(502, "No pudimos actualizar tu correo en este momento. Intenta de nuevo.") from None
+    return own_profile(user)
+
 
 @router.post("/auth/logout", status_code=204)
 def logout(claims=Depends(get_current_user)):
-    # Política inicial explícita: cerrar todas las sesiones de esta cuenta.
     auth.revoke_refresh_tokens(claims["uid"])
