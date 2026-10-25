@@ -4,7 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth, exceptions
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,6 @@ from app.models import TechnicianProfile, User, UserRole
 from app.security import get_current_user
 
 router = APIRouter()
-
 
 class Registration(BaseModel):
     nombre_completo: str = Field(min_length=2, max_length=150)
@@ -46,7 +45,6 @@ class Registration(BaseModel):
         return value if value.startswith("+504") else "+504" + value
 
 
-
 class ProfileUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
@@ -74,7 +72,7 @@ class ProfileUpdate(BaseModel):
         value = value.strip().lower()
         if not value:
             raise ValueError("Ingresa tu correo")
-        if len(value) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+        if len(value) > 254 or not re.fullmatch(r"[^@\s]+@(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|info|biz|io|dev|app|[a-z]{2})", value):
             raise ValueError("Ingresa un correo válido")
         return value
 
@@ -122,6 +120,12 @@ def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     return profile(user)
 
 
+def ensure_free(db, user, column, value, message):
+    taken = db.scalar(select(User.id).where(column == value, User.id != user.id))
+    if taken:
+        raise HTTPException(409, message)
+
+
 # HU-06 ST-02: actualización del perfil (teléfono y correo).
 @router.patch("/users/me")
 def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -136,6 +140,11 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     if not phone_changed and not email_changed:
         return profile(user)
 
+    if phone_changed:
+        ensure_free(db, user, User.telefono, data.telefono, "Este teléfono ya está registrado")
+    if email_changed:
+        ensure_free(db, user, func.lower(User.correo), data.correo, "Ese correo ya está en uso")
+
     try:
         if phone_changed:
             user.telefono = data.telefono
@@ -148,7 +157,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(409, "Este teléfono ya está registrado") from None
+        raise HTTPException(409, "Ese teléfono o correo ya está registrado. Revisa los datos e intenta de nuevo.") from None
     except auth.EmailAlreadyExistsError:
         db.rollback()
         raise HTTPException(409, "Ese correo ya está en uso") from None
@@ -160,5 +169,4 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
 
 @router.post("/auth/logout", status_code=204)
 def logout(claims=Depends(get_current_user)):
-    # Política inicial explícita: cerrar todas las sesiones de esta cuenta.
     auth.revoke_refresh_tokens(claims["uid"])

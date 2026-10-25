@@ -7,3 +7,12 @@ export function normalizeHonduranPhone(value: string): string {
   }
   return normalized.startsWith('+504') ? normalized : `+504${normalized}`
 }
+
+export function normalizeEmail(value: string): string {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) throw new Error('Ingresa tu correo')
+             if (normalized.length > 254 || !/^[^@\s]+@(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|info|biz|io|dev|app|hn)$/.test(normalized)) {
+    throw new Error('Ingresa un correo válido')
+  }
+  return normalized
+}

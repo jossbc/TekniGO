@@ -6,6 +6,8 @@ import { auth } from "./lib/firebase";
 import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
+import ProfilePage from "./ProfilePage";
+
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -38,6 +40,7 @@ export default function App() {
       <Route path="/registro" element={<AccessPage mode="register" user={user} />} />
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/cliente" element={user ? <Account user={user} space="CLIENTE" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <Account user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -199,9 +202,16 @@ export default function App() {
   }
 }
 
-function Header({ mode, authenticated }: { mode?: Mode; authenticated: boolean }) {
+function initials(name?: string, email?: string | null) {
+  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length > 1) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (email?.[0] ?? "?").toUpperCase();
+}
+
+function Header({ mode, authenticated, name, email }: { mode?: Mode; authenticated: boolean; name?: string; email?: string | null }) {
   return (
-    <header className="header">
+    <header className="header" style={authenticated ? { height: 80 } : undefined}>
       <Brand />
       <nav aria-label="Navegación principal">
         {!authenticated && (
@@ -214,6 +224,20 @@ function Header({ mode, authenticated }: { mode?: Mode; authenticated: boolean }
             {mode === "login" ? "Crear una cuenta" : "Iniciar sesión"}
             <ArrowUpRight size={17} />
           </Link>
+        )}
+        {authenticated && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 14 }}>
+            <Link to="/perfil" style={{ color: "#1d4ed8", fontWeight: 600, textDecoration: "none" }}>
+              Mi perfil
+            </Link>
+            <span
+              title={email ?? undefined}
+              aria-hidden="true"
+              style={{ width: 40, height: 40, borderRadius: "50%", background: "#fde8d7", color: "#9a3412", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}
+            >
+              {initials(name, email)}
+            </span>
+          </span>
         )}
       </nav>
     </header>
@@ -477,6 +501,16 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   );
 }
 
+function ProfileRoute({ user }: { user: User }) {
+  const [name, setName] = useState<string>();
+  return (
+    <div className="site">
+      <Header authenticated={true} name={name} email={user.email} />
+      <ProfilePage user={user} onName={setName} />
+    </div>
+  );
+}
+
 function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -515,7 +549,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   }
   return (
     <div className="site">
-      <Header authenticated={true} />
+       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
       <main className="account">
         <h1>Hola{profile ? `, ${profile.nombre_completo.split(" ")[0]}` : ""}.</h1>
         <p>{space === "TECNICO" ? "Espacio de técnico" : space === "CLIENTE" ? "Espacio de cliente" : "Elige cómo quieres continuar."}</p>
@@ -556,6 +590,10 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <h2>Tu cuenta</h2>
                 <p>{profile.nombre_completo}</p>
                 <p className="email-value">{profile.email}</p>
+                
+                <Link to="/perfil">
+                Editar mi perfil <ArrowUpRight size={15} />
+                </Link>
                 {profile.roles.length < 2 && (
                   <Link to="/registro">
                     Agregar rol de {profile.roles.includes("CLIENTE") ? "técnico" : "cliente"} <ArrowUpRight size={15} />
