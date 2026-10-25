@@ -76,7 +76,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
   useEffect(() => {
     let active = true
-    api<Profile>('/users/me', user)
+ api<Profile>('/users/me/personal', user)
       .then((value) => {
         if (!active) return
         setProfile(value)

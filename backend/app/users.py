@@ -79,9 +79,13 @@ class ProfileUpdate(BaseModel):
 
 def profile(user):
     return {"id": str(user.id), "nombre_completo": user.nombre_completo,
-            "email": user.correo, "dni": user.dni, "telefono": user.telefono,
-            "roles": sorted(r.rol for r in user.roles),
+            "email": user.correo, "roles": sorted(r.rol for r in user.roles),
             "estado_identidad": user.estado_identidad}
+
+
+def own_profile(user):
+    # Datos personales completos: solo se devuelven a la propia persona (HU-06).
+    return {**profile(user), "dni": user.dni, "telefono": user.telefono}
 
 
 @router.post("/users/register", status_code=201)
@@ -111,7 +115,6 @@ def register(data: Registration, claims=Depends(get_current_user), db: Session =
         raise HTTPException(409, "El DNI o teléfono ya está registrado, o hubo un registro simultáneo. Revisa los datos e intenta de nuevo.") from None
     return profile(user)
 
-
 @router.get("/users/me")
 def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
@@ -119,6 +122,12 @@ def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
         raise HTTPException(404, "Completa tu registro en TekniGO")
     return profile(user)
 
+@router.get("/users/me/personal")
+def my_personal_data(claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    return own_profile(user)
 
 def ensure_free(db, user, column, value, message):
     taken = db.scalar(select(User.id).where(column == value, User.id != user.id))
@@ -138,7 +147,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     phone_changed = data.telefono is not None and data.telefono != user.telefono
     email_changed = data.correo is not None and data.correo != user.correo.lower()
     if not phone_changed and not email_changed:
-        return profile(user)
+        return own_profile(user)
 
     if phone_changed:
         ensure_free(db, user, User.telefono, data.telefono, "Este teléfono ya está registrado")
@@ -164,7 +173,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     except exceptions.FirebaseError:
         db.rollback()
         raise HTTPException(502, "No pudimos actualizar tu correo en este momento. Intenta de nuevo.") from None
-    return profile(user)
+    return own_profile(user)
 
 
 @router.post("/auth/logout", status_code=204)
