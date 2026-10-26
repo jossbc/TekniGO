@@ -16,3 +16,20 @@ export function normalizeEmail(value: string): string {
   }
   return normalized
 }
+
+
+export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
+export const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+export const IMAGE_RULES_HINT = 'Formatos permitidos: JPG, PNG o WEBP. Tamaño máximo: 5 MB por archivo.'
+
+export function validateIdentityImage(file: File | null | undefined, label: string): string {
+  if (!file) return `Debes adjuntar ${label}.`
+  if (file.size <= 0) return `El archivo de ${label} está vacío.`
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type as (typeof ALLOWED_IMAGE_TYPES)[number])) {
+    return `El formato de ${label} no es válido. Usa JPG, PNG o WEBP.`
+  }
+  if (file.size > MAX_IMAGE_SIZE_BYTES) {
+    return `El archivo de ${label} supera el tamaño máximo de 5 MB.`
+  }
+  return ''
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { signOut, type User } from 'firebase/auth'
-import { ArrowLeft, CheckCircle2, CircleAlert, Image as ImageIcon, Lock } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock } from 'lucide-react'
 import { auth } from './lib/firebase'
 import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
@@ -14,6 +14,12 @@ type ProfileChanges = { telefono?: string; correo?: string }
 type Errors = { telefono?: string; correo?: string }
 
 const ROLE_LABELS: Record<string, string> = { CLIENTE: 'Cliente', TECNICO: 'Técnico' }
+const IDENTITY_STATUS_LABELS: Record<string, string> = {
+  PENDIENTE: 'Pendiente de verificación',
+  EN_REVISION: 'En revisión administrativa',
+  VERIFICADO: 'Verificado',
+  RECHAZADO: 'Rechazado (requiere reenvío)',
+}
 
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '2.25rem 3rem' }
 
@@ -70,6 +76,7 @@ function FieldError({ message }: { message?: string }) {
 
 export default function ProfilePage({ user, onName }: { user: User; onName?: (name: string) => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [identityStatus, setIdentityStatus] = useState<string>('PENDIENTE')
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -78,10 +85,14 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
   useEffect(() => {
     let active = true
- api<Profile>('/users/me/personal', user)
-      .then((value) => {
+    Promise.all([
+      api<Profile>('/users/me/personal', user),
+      api<{ estado_identidad: string; documentos: unknown[] }>('/users/me/identity-documents', user).catch(() => null),
+    ])
+      .then(([value, docsInfo]) => {
         if (!active) return
         setProfile(value)
+        setIdentityStatus(docsInfo ? docsInfo.estado_identidad : value.estado_identidad)
         onName?.(value.nombre_completo)
       })
       .catch((err) => { if (active) setError(errorMessage(err)) })
@@ -188,13 +199,26 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
               <Item label="DNI">{formatDni(profile.dni)}</Item>
               <Item label="Teléfono">{formatPhone(profile.telefono)}</Item>
               <Item label="Rol">{profile.roles.map((r) => ROLE_LABELS[r] ?? r).join(' y ')}</Item>
+              <Item label="Verificación de identidad">
+                <span className="status-pill" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.95rem' }}>
+                  {identityStatus === 'VERIFICADO' ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}
+                  {IDENTITY_STATUS_LABELS[identityStatus] ?? identityStatus}
+                </span>
+                {identityStatus === 'PENDIENTE' && (
+                  <div style={{ marginTop: 8, fontSize: '0.95rem' }}>
+                    <Link to="/verificacion" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      Subir DNI y selfie <ArrowUpRight size={15} />
+                    </Link>
+                  </div>
+                )}
+              </Item>
             </div>
           </section>
 
           {isTechnician && (
             <>
               <section className="account-card" style={card}>
-              <h2 style={cardTitle}>Especialidades</h2>
+                <h2 style={cardTitle}>Especialidades</h2>
                 <SpecialtySelector user={user} />
               </section>
               <section className="account-card" style={card}>
@@ -223,10 +247,10 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                   <p style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>Próximamente.</p>
                 </div>
               </section>
-                <section className="account-card" style={card}>
+              <section className="account-card" style={card}>
                 <h2 style={cardTitle}>Mis servicios</h2>
-                 <ServiceManager user={user} />
-                </section>
+                <ServiceManager user={user} />
+              </section>
             </>
           )}
         </div>

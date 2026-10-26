@@ -7,6 +7,7 @@ import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
+import ClientIdentityVerification from "./components/ClientIdentityVerification";
 
 
 export function accountPath(roles: Profile["roles"]) {
@@ -41,6 +42,7 @@ export default function App() {
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/verificacion" element={user ? <VerificationRoute user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/cliente" element={user ? <Account user={user} space="CLIENTE" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <Account user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -501,6 +503,42 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   );
 }
 
+function VerificationRoute({ user }: { user: User }) {
+  const [profile, setProfile] = useState<Profile | null>(null);
+  useEffect(() => {
+    let active = true;
+    api<Profile>("/users/me", user)
+      .then((value) => {
+        if (active) setProfile(value);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [user]);
+  return (
+    <div className="site">
+      <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
+      <main className="account" style={{ margin: "0 auto 90px" }}>
+        <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
+        <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
+        <section className="account-card" style={{ padding: "2.5rem" }}>
+          <ClientIdentityVerification
+            user={user}
+            initialStatus={profile?.estado_identidad}
+            onStatusChange={(estado_identidad) => setProfile((prev) => (prev ? { ...prev, estado_identidad } : prev))}
+          />
+        </section>
+        <p style={{ marginTop: "1.5rem" }}>
+          <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            ← Volver a mi cuenta
+          </Link>
+        </p>
+      </main>
+    </div>
+  );
+}
+
 function ProfileRoute({ user }: { user: User }) {
   const [name, setName] = useState<string>();
   return (
@@ -609,7 +647,9 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <span className="status-pill">
                   <Clock3 size={15} /> Pendiente de verificación
                 </span>
-                <p className="role-note">La carga y revisión de documentos se incorporarán con las HU correspondientes.</p>
+                <Link to="/verificacion">
+                  Subir DNI y selfie <ArrowUpRight size={15} />
+                </Link>
               </section>
             </div>
           </>
