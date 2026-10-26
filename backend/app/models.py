@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, func, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,6 +32,9 @@ class TechnicianProfile(Base):
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), primary_key=True)
     disponible: Mapped[bool] = mapped_column(Boolean, default=False)
     estado_verificacion: Mapped[str] = mapped_column(String(30), default="NO_VERIFICADO")
+    #--Campos Para HU-09 Tarifas Base--
+    tarifa_base: Mapped[float] = mapped_column(Numeric(10,2), default=0.0)
+    unidad_cobro: Mapped[str] = mapped_column(String(20), default="POR HORA")
 
 
 class Specialty(Base):
