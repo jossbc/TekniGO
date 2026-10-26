@@ -6,6 +6,8 @@ import { auth } from './lib/firebase'
 import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
 import SpecialtySelector from './components/SpecialtySelector'
+import ServiceManager from './components/ServiceManager'
+
 import { normalizeEmail, normalizeHonduranPhone, PHONE_HINT } from './lib/validation'
 
 type ProfileChanges = { telefono?: string; correo?: string }
@@ -14,7 +16,7 @@ type Errors = { telefono?: string; correo?: string }
 const ROLE_LABELS: Record<string, string> = { CLIENTE: 'Cliente', TECNICO: 'Técnico' }
 
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '2.25rem 3rem' }
-// Los Field ya traen su propio margen inferior, por eso el formulario no lleva espacio vertical extra.
+
 const formGrid = { ...grid, gap: '0 3rem' }
 const card = { padding: '2.5rem' }
 const cardTitle = { margin: '0 0 1.25rem', fontSize: '1.6rem' }
@@ -38,7 +40,6 @@ function check(fn: (value: string) => string, value: string) {
   catch (err) { return (err as Error).message }
 }
 
-// Si el mensaje del backend habla solo del teléfono o solo del correo, va debajo de ese campo.
 function fieldFromServer(message: string): Errors | null {
   const text = message.toLowerCase()
   if (text.startsWith('no pudimos')) return null
@@ -222,6 +223,10 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                   <p style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>Próximamente.</p>
                 </div>
               </section>
+                <section className="account-card" style={card}>
+                <h2 style={cardTitle}>Mis servicios</h2>
+                 <ServiceManager user={user} />
+                </section>
             </>
           )}
         </div>
