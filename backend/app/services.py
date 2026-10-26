@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models import Service, Specialty, TechnicianSpecialty
 from app.security import get_current_user
 from app.specialties import get_technician
+from app.models import Service, Specialty, TechnicianProfile, TechnicianSpecialty
 
 router = APIRouter()
 
@@ -141,3 +142,24 @@ def update_service(service_id: uuid.UUID, data: ServiceUpdate,
     db.commit()
     db.refresh(service)
     return service_out(db, service)
+
+# HU-08 ST-04 (CA-04): servicios activos de un técnico, para su perfil público.
+@router.get("/technicians/{usuario_id}/services")
+def public_services(usuario_id: uuid.UUID, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    if db.get(TechnicianProfile, usuario_id) is None:
+        raise HTTPException(404, "No se encontró al técnico")
+    rows = db.scalars(
+        select(Service)
+        .where(Service.usuario_id == usuario_id, Service.activo.is_(True))
+        .order_by(Service.nombre)
+    ).all()
+    result = []
+    for s in rows:
+        specialty = db.get(Specialty, s.especialidad_id)
+        result.append({
+            "id": str(s.id),
+            "nombre": s.nombre,
+            "descripcion": s.descripcion,
+            "especialidad": specialty.nombre if specialty else None,
+        })
+    return result
