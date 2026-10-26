@@ -55,6 +55,12 @@ export default function SpecialtySelector({ user }: { user: User }) {
 
   return (
     <div>
+        {notice && (
+        <div className="success-alert" role="status" style={{ fontSize: '1.1rem', marginBottom: '1.25rem' }}>
+        <CheckCircle2 size={22} />
+        <span>{notice}</span>
+        </div>
+      )}
       <p style={{ margin: '0 0 1rem' }}>Elige los oficios en los que trabajas. Puedes marcar varios.</p>
 
       {!catalog && !error && <p role="status">Cargando especialidades…</p>}
@@ -82,11 +88,6 @@ export default function SpecialtySelector({ user }: { user: User }) {
       {error && (
         <p role="alert" style={{ color: '#b91c1c', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, margin: '1rem 0 0' }}>
           <CircleAlert size={16} /> {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" style={{ color: '#166534', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, margin: '1rem 0 0' }}>
-          <CheckCircle2 size={16} /> {notice}
         </p>
       )}
 
