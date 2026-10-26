@@ -11,6 +11,7 @@ export type Profile = {
 }
 
 export async function api<T>(path: string, user: User, body?: unknown, method?: string): Promise<T> {
+
   const token = await user.getIdToken()
   
   const httpMethod = method || (body === undefined ? 'GET' : 'POST')
