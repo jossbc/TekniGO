@@ -2,12 +2,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Specialty, TechnicianProfile, TechnicianSpecialty, User
+from app.models import Specialty, SpecialtySuggestion, TechnicianProfile, TechnicianSpecialty, User
 from app.security import get_current_user
 
 router = APIRouter()
@@ -17,6 +17,12 @@ class SpecialtySelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     especialidad_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class SuggestionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str = Field(min_length=3, max_length=80)
 
 
 def get_technician(claims, db):
@@ -39,6 +45,15 @@ def specialties_of(db, user_id):
         .order_by(Specialty.nombre)
     ).all()
     return [{"id": str(s.id), "nombre": s.nombre} for s in rows]
+
+
+def suggestions_of(db, user_id):
+    rows = db.scalars(
+        select(SpecialtySuggestion)
+        .where(SpecialtySuggestion.usuario_id == user_id)
+        .order_by(SpecialtySuggestion.creado_en.desc())
+    ).all()
+    return [{"id": str(s.id), "nombre": s.nombre, "estado": s.estado} for s in rows]
 
 
 # HU-07 ST-02: catálogo de especialidades disponibles (CA-01).
@@ -73,3 +88,29 @@ def save_my_specialties(data: SpecialtySelection, claims=Depends(get_current_use
         db.rollback()
         raise HTTPException(409, "No se pudieron guardar las especialidades. Intenta de nuevo.") from None
     return specialties_of(db, technician.usuario_id)
+
+
+# Opción "Otro": el técnico propone una especialidad que queda PENDIENTE hasta que un administrador la apruebe.
+@router.post("/technicians/me/specialty-suggestions", status_code=201)
+def suggest_specialty(data: SuggestionIn, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    technician = get_technician(claims, db)
+    nombre = " ".join(data.nombre.split())
+    if len(nombre) < 3:
+        raise HTTPException(400, "Escribe el nombre de la especialidad")
+    if db.scalar(select(Specialty.id).where(func.lower(Specialty.nombre) == nombre.lower())):
+        raise HTTPException(409, "Esa especialidad ya está en la lista. Márcala arriba.")
+    if db.scalar(select(SpecialtySuggestion.id).where(
+        SpecialtySuggestion.usuario_id == technician.usuario_id,
+        func.lower(SpecialtySuggestion.nombre) == nombre.lower(),
+        SpecialtySuggestion.estado == "PENDIENTE",
+    )):
+        raise HTTPException(409, "Ya enviaste esa especialidad y está pendiente de revisión")
+    db.add(SpecialtySuggestion(usuario_id=technician.usuario_id, nombre=nombre))
+    db.commit()
+    return suggestions_of(db, technician.usuario_id)
+
+
+@router.get("/technicians/me/specialty-suggestions")
+def my_suggestions(claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    technician = get_technician(claims, db)
+    return suggestions_of(db, technician.usuario_id)

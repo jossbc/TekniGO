@@ -48,3 +48,11 @@ class TechnicianSpecialty(Base):
     __tablename__ = "tecnicos_especialidades"
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"), primary_key=True)
     especialidad_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("especialidades.id"), primary_key=True)
+
+class SpecialtySuggestion(Base):
+    __tablename__ = "sugerencias_especialidades"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"), index=True)
+    nombre: Mapped[str] = mapped_column(String(80))
+    estado: Mapped[str] = mapped_column(String(20), default="PENDIENTE", server_default="PENDIENTE")
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
