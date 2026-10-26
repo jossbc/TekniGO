@@ -52,3 +52,19 @@ test('HU-01 requests all five fields with or without an existing session', async
     }
   }
 })
+
+
+test('HU-15 validates identity document image formats and size limits before upload', async () => {
+  const result = await build({entryPoints: ['src/lib/validation.ts'], bundle: true, write: false, platform: 'node', format: 'cjs'})
+  const module = {exports: {}}
+  new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, module, module.exports)
+  const { validateIdentityImage, MAX_IMAGE_SIZE_BYTES } = module.exports
+
+  for (const type of ['image/jpeg', 'image/png', 'image/webp']) {
+    assert.equal(validateIdentityImage({ size: 2048, type }, 'el DNI (frente)'), '')
+  }
+  assert.match(validateIdentityImage(null, 'el DNI (frente)'), /Debes adjuntar/)
+  assert.match(validateIdentityImage({ size: 0, type: 'image/jpeg' }, 'la selfie'), /vacío/)
+  assert.match(validateIdentityImage({ size: 1024, type: 'application/pdf' }, 'el DNI (reverso)'), /formato/)
+  assert.match(validateIdentityImage({ size: MAX_IMAGE_SIZE_BYTES + 1, type: 'image/png' }, 'la selfie'), /5 MB/)
+})
