@@ -45,7 +45,7 @@ def update_my_tariff(
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
     if not user:
         raise HTTPException(
-            status_code = status.HTTP_400_NOT_FOUND,
+            status_code = status.HTTP_404_NOT_FOUND,
             detail = "Usuario no encontrado. Completa tu registro"
         )
     
@@ -71,4 +71,96 @@ def update_my_tariff(
         usuario_id = str(tech_profile.usuario_id),
         tarifa_base = float(tech_profile.tarifa_base),
         unidad_cobro = str(tech_profile.unidad_cobro)
+    )
+
+
+# --- ESQUEMAS Y ENDPOINTS HU-11: GESTIONAR DISPONIBILIDAD ---
+class AvailabilityUpdate(BaseModel):
+    disponible: bool = Field(..., description="Estado de disponibilidad del técnico (True = Disponible, False = No disponible)")
+
+
+class AvailabilityResponse(BaseModel):
+    usuario_id: str
+    disponible: bool
+    estado_verificacion: str
+    puede_recibir_contrataciones: bool
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/me/availability", response_model=AvailabilityResponse, status_code=status.HTTP_200_OK)
+def get_my_availability(
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado. Completa tu registro.",
+        )
+
+    has_technician_role = any(role.rol == "TECNICO" for role in user.roles)
+    if not has_technician_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo los usuarios con rol TECNICO pueden gestionar disponibilidad.",
+        )
+
+    tech_profile = db.get(TechnicianProfile, user.id)
+    if not tech_profile:
+        tech_profile = TechnicianProfile(usuario_id=user.id, disponible=False)
+        db.add(tech_profile)
+        db.commit()
+        db.refresh(tech_profile)
+
+    # CA-04 y condiciones transversales: disponible y verificado son dimensiones distintas,
+    # pero no disponible impide recibir nuevas contrataciones.
+    puede_contratar = bool(tech_profile.disponible and tech_profile.estado_verificacion == "VERIFICADO")
+
+    return AvailabilityResponse(
+        usuario_id=str(tech_profile.usuario_id),
+        disponible=bool(tech_profile.disponible),
+        estado_verificacion=str(tech_profile.estado_verificacion),
+        puede_recibir_contrataciones=puede_contratar,
+    )
+
+
+@router.patch("/me/availability", response_model=AvailabilityResponse, status_code=status.HTTP_200_OK)
+def update_my_availability(
+    data: AvailabilityUpdate,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado. Completa tu registro.",
+        )
+
+    has_technician_role = any(role.rol == "TECNICO" for role in user.roles)
+    if not has_technician_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo los usuarios con rol TECNICO pueden cambiar su disponibilidad.",
+        )
+
+    tech_profile = db.get(TechnicianProfile, user.id)
+    if not tech_profile:
+        tech_profile = TechnicianProfile(usuario_id=user.id)
+        db.add(tech_profile)
+
+    tech_profile.disponible = data.disponible
+    db.commit()
+    db.refresh(tech_profile)
+
+    puede_contratar = bool(tech_profile.disponible and tech_profile.estado_verificacion == "VERIFICADO")
+
+    return AvailabilityResponse(
+        usuario_id=str(tech_profile.usuario_id),
+        disponible=bool(tech_profile.disponible),
+        estado_verificacion=str(tech_profile.estado_verificacion),
+        puede_recibir_contrataciones=puede_contratar,
     )

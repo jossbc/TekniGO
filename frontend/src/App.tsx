@@ -7,8 +7,8 @@ import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
+import { AvailabilityToggle } from "./components/AvailabilityToggle";
 import ClientIdentityVerification from "./components/ClientIdentityVerification";
-
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -523,11 +523,7 @@ function VerificationRoute({ user }: { user: User }) {
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
         <section className="account-card" style={{ padding: "2.5rem" }}>
-          <ClientIdentityVerification
-            user={user}
-            initialStatus={profile?.estado_identidad}
-            onStatusChange={(estado_identidad) => setProfile((prev) => (prev ? { ...prev, estado_identidad } : prev))}
-          />
+          <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => setProfile((prev) => (prev ? { ...prev, estado_identidad } : prev))} />
         </section>
         <p style={{ marginTop: "1.5rem" }}>
           <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -587,7 +583,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   }
   return (
     <div className="site">
-       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
+      <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
       <main className="account">
         <h1>Hola{profile ? `, ${profile.nombre_completo.split(" ")[0]}` : ""}.</h1>
         <p>{space === "TECNICO" ? "Espacio de técnico" : space === "CLIENTE" ? "Espacio de cliente" : "Elige cómo quieres continuar."}</p>
@@ -628,9 +624,9 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <h2>Tu cuenta</h2>
                 <p>{profile.nombre_completo}</p>
                 <p className="email-value">{profile.email}</p>
-                
+
                 <Link to="/perfil">
-                Editar mi perfil <ArrowUpRight size={15} />
+                  Editar mi perfil <ArrowUpRight size={15} />
                 </Link>
                 {profile.roles.length < 2 && (
                   <Link to="/registro">
@@ -651,6 +647,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                   Subir DNI y selfie <ArrowUpRight size={15} />
                 </Link>
               </section>
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>
         )}
