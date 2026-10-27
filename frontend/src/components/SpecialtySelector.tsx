@@ -142,7 +142,7 @@ export default function SpecialtySelector({ user }: { user: User }) {
             <input id="otra-especialidad" type="text" value={otherText} maxLength={80}
               placeholder="Ej. Instalación de paneles solares"
               onChange={(e) => { setOtherText(e.currentTarget.value); setOtherError('') }}
-              style={{ flex: '1 1 240px', minHeight: 48, padding: '0 14px', borderRadius: 12, border: '1px solid #d1d5db', font: 'inherit' }} />
+              style={{ flex: '1 1 240px', minWidth: 0, maxWidth: '100%', minHeight: 48, padding: '0 14px', borderRadius: 12, border: '1px solid #d1d5db', font: 'inherit' }} />
             <Button type="button" style={{ width: 'auto', padding: '0.8rem 1.4rem', fontSize: '1rem' }}
               disabled={otherBusy} onClick={sendSuggestion}>
               {otherBusy ? 'Enviando…' : 'Enviar sugerencia'}

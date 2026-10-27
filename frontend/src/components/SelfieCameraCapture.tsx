@@ -207,7 +207,7 @@ export default function SelfieCameraCapture({ value, error, onCapture }: Props) 
             )}
           </div>
         ) : (
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="responsive-actions">
             <Button
               type="button"
               disabled={!videoReady}

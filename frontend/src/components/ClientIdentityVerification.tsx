@@ -222,7 +222,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
           transition: 'border-color 0.2s, background-color 0.2s',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span
               style={{

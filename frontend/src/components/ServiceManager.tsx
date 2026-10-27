@@ -167,7 +167,7 @@ export default function ServiceManager({ user }: { user: User }) {
             </p>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+          <div className="responsive-actions">
             <Button type="button" className="button-outline" style={smallButton} disabled={busy} onClick={closeForm}>Cancelar</Button>
             {specialties.length > 0 && (
               <Button type="submit" style={smallButton} disabled={busy}>
@@ -192,14 +192,14 @@ export default function ServiceManager({ user }: { user: User }) {
               background: s.activo ? 'transparent' : '#f9fafb', opacity: s.activo ? 1 : 0.8,
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                <div style={{ flex: '1 1 260px' }}>
+                <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{s.nombre}</div>
                   <div style={{ color: '#6b7280', fontSize: '0.9rem', margin: '2px 0 6px' }}>
                     {s.especialidad?.nombre ?? 'Sin especialidad'} · {s.activo ? 'Activo' : 'Desactivado'}
                   </div>
                   <div style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{s.descripcion}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="responsive-actions">
                   <Button type="button" className="button-outline" style={smallButton} onClick={() => openForm(s)}>Editar</Button>
                   <Button type="button" className="button-outline" style={smallButton} onClick={() => toggleActive(s)}>
                     {s.activo ? 'Desactivar' : 'Activar'}

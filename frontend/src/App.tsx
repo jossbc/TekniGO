@@ -523,7 +523,7 @@ function VerificationRoute({ user }: { user: User }) {
       <main className="account" style={{ margin: "0 auto 90px" }}>
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
-        <section className="account-card" style={{ padding: "2.5rem" }}>
+        <section className="account-card profile-card">
           <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => setProfile((prev) => (prev ? { ...prev, estado_identidad } : prev))} />
         </section>
         <p style={{ marginTop: "1.5rem" }}>

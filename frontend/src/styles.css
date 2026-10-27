@@ -10,6 +10,59 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 
 
+/* Keep intrinsic content and controls inside narrow cards without hiding overflow. */
+.site, .header nav, .account, .account-card, .form-panel, .form-content,
+.account-card div, .account-card form, .account-card fieldset, .account-card li {
+  min-width: 0;
+}
+.account-card, .success-alert, .status-pill { overflow-wrap: anywhere; }
+.account-card fieldset { min-inline-size: 0; }
+input, select, textarea { min-width: 0; max-width: 100%; }
+textarea { font: inherit; resize: vertical; }
+img, video, canvas { max-width: 100%; }
+.button { max-width: 100%; white-space: normal; text-align: center; }
+.status-pill { max-width: 100%; }
+.status-pill svg, [role="alert"] svg { flex-shrink: 0; }
+.profile-card { padding: clamp(16px, 4vw, 40px); }
+.profile-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.profile-card-header h2 { margin: 0; font-size: clamp(20px, 3vw, 25.6px); }
+.profile-action { width: auto; padding: 12px 24px; font-size: 16px; }
+.responsive-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+
+@media (max-width: 760px) {
+  .header { height: auto; min-height: 85px; flex-wrap: wrap; padding: 16px 0; }
+  .header nav { flex-wrap: wrap; justify-content: flex-end; }
+  .access-layout { grid-template-columns: minmax(0, 1fr); }
+  .account-grid { grid-template-columns: minmax(0, 1fr); }
+  .account h1 { font-size: clamp(28px, 7vw, 38px); letter-spacing: -1px; }
+  .account-card { padding: 20px; }
+  .profile-card { padding: clamp(16px, 4vw, 28px); }
+  .field input, .field select, .account-card input:not([type="checkbox"]):not([type="radio"]),
+  .account-card select, .account-card textarea { font-size: 16px; }
+  .field label { font-size: 13px; }
+  .field small { font-size: 12px; }
+  .account-card input[type="file"]::file-selector-button { max-width: 100%; white-space: normal; }
+  .button { min-height: 44px; }
+}
+
+@media (max-width: 480px) {
+  .profile-card-header { align-items: stretch; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+  .responsive-actions { width: 100%; flex-direction: column; align-items: stretch; }
+  .responsive-actions > .button { flex-shrink: 1; }
+  .profile-card-header .button { width: 100%; }
+  .field-row, .role-picker { grid-template-columns: minmax(0, 1fr); }
+  .field-row { gap: 0; }
+  .header { gap: 12px; }
+  .header nav { margin-left: auto; }
+}
+
 .tariff-container {
   max-width: 420px;
   margin: 40px auto;

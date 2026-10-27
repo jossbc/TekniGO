@@ -24,12 +24,10 @@ const IDENTITY_STATUS_LABELS: Record<string, string> = {
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '2.25rem 3rem' }
 
 const formGrid = { ...grid, gap: '0 3rem' }
-const card = { padding: '2.5rem' }
 const cardTitle = { margin: '0 0 1.25rem', fontSize: '1.6rem' }
 const inputStyle = { fontSize: '1rem', minHeight: 52 }
 const lockedStyle = { ...inputStyle, background: '#f3f4f6', color: '#6b7280', cursor: 'not-allowed' }
 const redBorder = { borderColor: '#b91c1c' }
-const actionButton = { width: 'auto', padding: '0.8rem 1.6rem', fontSize: '1rem' }
 
 function formatPhone(value: string) {
   const match = /^\+504(\d{4})(\d{4})$/.exec(value)
@@ -169,7 +167,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
   const isTechnician = !!profile?.roles.includes('TECNICO')
 
   return (
-    <main className="account" style={{ margin: '0 auto 90px' }}>
+    <main className="account profile-page" style={{ margin: '0 auto 90px' }}>
       {notice && (
         <div className="success-alert" role="status">
           <CheckCircle2 size={20} />
@@ -185,11 +183,10 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
       {profile && !editing && (
         <div style={{ display: 'grid', gap: '1.5rem' }}>
-          <section className="account-card" style={card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: '1.75rem' }}>
-              <h2 style={{ margin: 0, whiteSpace: 'nowrap', fontSize: '1.6rem' }}>Datos personales</h2>
-              <Button type="button" className={notice ? 'button-outline' : ''}
-                style={{ ...actionButton, flexShrink: 0, whiteSpace: 'nowrap' }} onClick={startEditing}>
+          <section className="account-card profile-card">
+            <div className="profile-card-header">
+              <h2>Datos personales</h2>
+              <Button type="button" className={`profile-action ${notice ? 'button-outline' : ''}`} onClick={startEditing}>
                 Editar perfil
               </Button>
             </div>
@@ -217,11 +214,11 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
           {isTechnician && (
             <>
-              <section className="account-card" style={card}>
+              <section className="account-card profile-card">
                 <h2 style={cardTitle}>Especialidades</h2>
                 <SpecialtySelector user={user} />
               </section>
-              <section className="account-card" style={card}>
+              <section className="account-card profile-card">
                 <h2 style={cardTitle}>Resumen profesional</h2>
                 <label htmlFor="resumen" style={{ display: 'block', fontWeight: 600, fontSize: '1rem', marginBottom: 8 }}>
                   Cuéntales a los clientes qué haces
@@ -232,7 +229,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                 <small style={{ color: '#6b7280' }}>Próximamente: esta sección se habilitará en una próxima entrega.</small>
               </section>
 
-              <section className="account-card" style={card}>
+              <section className="account-card profile-card">
                 <h2 style={cardTitle}>Galería de trabajos</h2>
                 <div style={{ border: '2px dashed #cbd5e1', borderRadius: 16, padding: '2.5rem 1rem', textAlign: 'center' }}>
                   <ImageIcon size={36} color="#2563eb" />
@@ -240,14 +237,14 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                   <p style={{ margin: '0 auto 1.25rem', maxWidth: 440 }}>
                     Súbelas para que los clientes vean lo que sabes hacer. Solo fotos de tus trabajos: los documentos personales, como el DNI, nunca se muestran aquí.
                   </p>
-                  <Button type="button" className="button-outline" disabled
-                    style={{ ...actionButton, display: 'inline-flex', cursor: 'not-allowed' }}>
+                  <Button type="button" className="button-outline profile-action" disabled
+                    style={{ display: 'inline-flex', cursor: 'not-allowed' }}>
                     Agregar fotos
                   </Button>
                   <p style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>Próximamente.</p>
                 </div>
               </section>
-              <section className="account-card" style={card}>
+              <section className="account-card profile-card">
                 <h2 style={cardTitle}>Mis servicios</h2>
                 <ServiceManager user={user} />
               </section>
@@ -257,7 +254,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
       )}
 
       {profile && editing && (
-        <form onSubmit={submit} noValidate className="account-card" style={card}>
+        <form onSubmit={submit} noValidate className="account-card profile-card">
           <div style={formGrid}>
             <Field label="Nombre completo" value={profile.nombre_completo} readOnly style={lockedStyle} />
             <Field label="DNI" value={formatDni(profile.dni)} readOnly style={lockedStyle} />
@@ -286,9 +283,9 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
             <strong>Rol:</strong> {profile.roles.map((r) => ROLE_LABELS[r] ?? r).join(' y ')}
           </p>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-            <Button type="button" className="button-outline" style={actionButton} disabled={busy} onClick={cancelEditing}>Cancelar</Button>
-            <Button type="submit" style={actionButton} disabled={busy}>{busy ? 'Guardando…' : 'Guardar cambios'}</Button>
+          <div className="responsive-actions">
+            <Button type="button" className="button-outline profile-action" disabled={busy} onClick={cancelEditing}>Cancelar</Button>
+            <Button type="submit" className="profile-action" disabled={busy}>{busy ? 'Guardando…' : 'Guardar cambios'}</Button>
           </div>
         </form>
       )}
