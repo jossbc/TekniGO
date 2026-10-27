@@ -80,4 +80,4 @@ class PendingRequirementsTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             get_current_user(HTTPAuthorizationCredentials(scheme='Bearer', credentials='old-token'))
         self.assertEqual(error.exception.status_code, 401)
-        verify.assert_called_once_with('old-token', check_revoked=True)
+        verify.assert_called_once_with('old-token', check_revoked=True, clock_skew_seconds=5)

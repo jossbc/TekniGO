@@ -3,6 +3,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from firebase_admin import auth
 
 bearer = HTTPBearer(auto_error=False)
+# Allow small clock differences between Firebase and the API host.
+TOKEN_CLOCK_SKEW_SECONDS = 5
 
 
 def get_current_user(
@@ -19,6 +21,7 @@ def get_current_user(
         return auth.verify_id_token(
             credentials.credentials,
             check_revoked=True,
+            clock_skew_seconds=TOKEN_CLOCK_SKEW_SECONDS,
         )
     except (
         auth.InvalidIdTokenError,
