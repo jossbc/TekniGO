@@ -7,7 +7,7 @@ import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
-
+import { AvailabilityToggle } from "./components/AvailabilityToggle";
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -549,7 +549,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   }
   return (
     <div className="site">
-       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
+      <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
       <main className="account">
         <h1>Hola{profile ? `, ${profile.nombre_completo.split(" ")[0]}` : ""}.</h1>
         <p>{space === "TECNICO" ? "Espacio de técnico" : space === "CLIENTE" ? "Espacio de cliente" : "Elige cómo quieres continuar."}</p>
@@ -590,9 +590,9 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <h2>Tu cuenta</h2>
                 <p>{profile.nombre_completo}</p>
                 <p className="email-value">{profile.email}</p>
-                
+
                 <Link to="/perfil">
-                Editar mi perfil <ArrowUpRight size={15} />
+                  Editar mi perfil <ArrowUpRight size={15} />
                 </Link>
                 {profile.roles.length < 2 && (
                   <Link to="/registro">
@@ -611,6 +611,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 </span>
                 <p className="role-note">La carga y revisión de documentos se incorporarán con las HU correspondientes.</p>
               </section>
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>
         )}
