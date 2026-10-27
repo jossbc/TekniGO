@@ -9,6 +9,8 @@ import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
 import { AvailabilityToggle } from "./components/AvailabilityToggle";
 import ClientIdentityVerification from "./components/ClientIdentityVerification";
+import { useAccount } from "./lib/useAccount";
+import { AccountStatus } from "./components/AccountStatus";
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -268,8 +270,7 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
       const password = String(form.get("password") || "");
       if (mode === "login") {
         await signInWithEmailAndPassword(auth, email, password);
-        // Account loads the API profile before deciding the destination.
-        navigate("/mi-cuenta");
+        navigate("/mi-cuenta", { replace: true });
       } else {
         const phone = normalizeHonduranPhone(String(form.get("phone") || ""));
         if (user) {
@@ -537,10 +538,13 @@ function VerificationRoute({ user }: { user: User }) {
 
 function ProfileRoute({ user }: { user: User }) {
   const [name, setName] = useState<string>();
+  const { state, retry } = useAccount(user);
   return (
     <div className="site">
       <Header authenticated={true} name={name} email={user.email} />
-      <ProfilePage user={user} onName={setName} />
+      {state.status === 'ready' ? <ProfilePage user={user} onName={setName} /> : (
+        <main className="account"><AccountStatus state={state} retry={retry} /></main>
+      )}
     </div>
   );
 }
@@ -548,24 +552,28 @@ function ProfileRoute({ user }: { user: User }) {
 function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const { state, retry, updateProfile } = useAccount(user);
+  const profile = state.status === 'ready' ? state.profile : null;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let active = true;
-    api<Profile>("/users/me", user)
-      .then((value) => {
-        if (active) {
-          setProfile(value);
-        }
-      })
-      .catch((err) => {
-        if (active) setError(errorMessage(err));
-      });
-    return () => {
-      active = false;
-    };
-  }, [user]);
+  const [addingRole, setAddingRole] = useState(false);
+  const [roleNotice, setRoleNotice] = useState("");
+  async function addRole() {
+    if (!profile || addingRole) return;
+    const rol = profile.roles.includes("CLIENTE") ? "TECNICO" : "CLIENTE";
+    setAddingRole(true);
+    setError("");
+    setRoleNotice("");
+    try {
+      const updated = await api<Profile>("/users/me/roles", user, { rol });
+      updateProfile(updated);
+      setRoleNotice(`Rol de ${rol === "TECNICO" ? "técnico" : "cliente"} agregado. Ya puedes usar ambos espacios.`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setAddingRole(false);
+    }
+  }
   if (profile && space && !profile.roles.includes(space)) return <Navigate to={accountPath(profile.roles)} replace state={location.state} />;
   if (profile && !space && profile.roles.length === 1) return <Navigate to={accountPath(profile.roles)} replace state={location.state} />;
   async function logout() {
@@ -608,13 +616,9 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
             {error}
           </div>
         )}
-        {!profile ? (
-          <>
-            <Link className="button" to="/registro">
-              Completar mi registro <ArrowRight size={18} />
-            </Link>
-          </>
-        ) : (
+        <AccountStatus state={state} retry={retry} />
+        {roleNotice && <div className="success-alert" role="status">{roleNotice}</div>}
+        {profile && (
           <>
             <div className="account-grid">
               <section className="account-card">
@@ -628,10 +632,10 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <Link to="/perfil">
                   Editar mi perfil <ArrowUpRight size={15} />
                 </Link>
-                {profile.roles.length < 2 && (
-                  <Link to="/registro">
-                    Agregar rol de {profile.roles.includes("CLIENTE") ? "técnico" : "cliente"} <ArrowUpRight size={15} />
-                  </Link>
+                {(!profile.roles.includes("CLIENTE") || !profile.roles.includes("TECNICO")) && (
+                  <Button type="button" className="button-outline" onClick={addRole} disabled={addingRole || busy}>
+                    {addingRole ? "Agregando rol…" : `Agregar rol de ${profile.roles.includes("CLIENTE") ? "técnico" : "cliente"}`}
+                  </Button>
                 )}
               </section>
               <section className="account-card">
@@ -652,7 +656,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
           </>
         )}
         <div className="logout-row">
-          <Button className="button-outline" onClick={logout} disabled={busy}>
+          <Button className="button-outline" onClick={logout} disabled={busy || addingRole}>
             {busy ? "Cerrando sesiones…" : "Cerrar sesion"}
           </Button>
         </div>

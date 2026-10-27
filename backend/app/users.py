@@ -88,6 +88,35 @@ def own_profile(user):
     return {**profile(user), "dni": user.dni, "telefono": user.telefono}
 
 
+class RoleAddition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rol: Literal["CLIENTE", "TECNICO"]
+
+
+def ensure_role(db: Session, user: User, role: Literal["CLIENTE", "TECNICO"]) -> None:
+    """Agrega el rol y su perfil técnico si faltan; el endpoint confirma la transacción."""
+    if not db.get(UserRole, (user.id, role)):
+        db.add(UserRole(usuario_id=user.id, rol=role))
+    if role == "TECNICO" and not db.get(TechnicianProfile, user.id):
+        db.add(TechnicianProfile(usuario_id=user.id))
+
+
+@router.post("/users/me/roles")
+def add_role(data: RoleAddition, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update())
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    try:
+        ensure_role(db, user, data.rol)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "No pudimos agregar el rol. Actualiza tu cuenta e intenta nuevamente.") from None
+    return profile(user)
+
+
 @router.post("/users/register", status_code=201)
 def register(data: Registration, claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
@@ -103,11 +132,7 @@ def register(data: Registration, claims=Depends(get_current_user), db: Session =
         db.add(user)
     try:
         db.flush()
-        existing = db.get(UserRole, (user.id, data.rol))
-        if not existing:
-            db.add(UserRole(usuario_id=user.id, rol=data.rol))
-        if data.rol == "TECNICO" and not db.get(TechnicianProfile, user.id):
-            db.add(TechnicianProfile(usuario_id=user.id))
+        ensure_role(db, user, data.rol)
         db.commit()
         db.refresh(user)
     except IntegrityError:

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import User, TechnicianProfile
 from app.security import get_current_user
-from app.users import Registration, register, me, logout
+from app.users import Registration, RoleAddition, add_role, register, me, logout
 
 class IdentityTests(unittest.TestCase):
     def setUp(self):
@@ -31,6 +31,39 @@ class IdentityTests(unittest.TestCase):
         technician = self.db.scalars(select(TechnicianProfile)).one()
         self.assertFalse(technician.disponible)
         self.assertEqual(technician.estado_verificacion, 'NO_VERIFICADO')
+    def test_add_role_uses_saved_identity_and_is_idempotent(self):
+        first = self.register()
+        before = self.db.scalars(select(User)).one()
+        identity = (before.nombre_completo, before.correo, before.dni, before.telefono, before.estado_identidad)
+        for _ in range(2):
+            result = add_role(RoleAddition(rol='TECNICO'), self.claims, self.db)
+            self.assertEqual(result['id'], first['id'])
+            self.assertEqual(result['roles'], ['CLIENTE', 'TECNICO'])
+        after = self.db.scalars(select(User)).one()
+        self.assertEqual((after.nombre_completo, after.correo, after.dni, after.telefono, after.estado_identidad), identity)
+        self.assertEqual(len(self.db.scalars(select(User)).all()), 1)
+        technician = self.db.scalars(select(TechnicianProfile)).one()
+        self.assertFalse(technician.disponible)
+        self.assertEqual(technician.estado_verificacion, 'NO_VERIFICADO')
+    def test_technician_can_add_client_without_resetting_professional_profile(self):
+        self.register(rol='TECNICO')
+        technician = self.db.scalars(select(TechnicianProfile)).one()
+        technician.tarifa_base = 250
+        self.db.commit()
+        result = add_role(RoleAddition(rol='CLIENTE'), self.claims, self.db)
+        self.assertEqual(result['roles'], ['CLIENTE', 'TECNICO'])
+        self.assertEqual(self.db.scalars(select(TechnicianProfile)).one().tarifa_base, 250)
+    def test_add_role_cannot_grant_admin_or_target_another_user(self):
+        for data in ({'rol': 'ADMIN'}, {'rol': 'TECNICO', 'usuario_id': 'other'}, {'rol': 'TECNICO', 'dni': '0801200012345'}):
+            with self.assertRaises(ValidationError):
+                RoleAddition(**data)
+    def test_add_role_requires_registered_account(self):
+        self.register()
+        with self.assertRaises(HTTPException) as caught:
+            add_role(RoleAddition(rol='TECNICO'), {'uid': 'other-user'}, self.db)
+        self.assertEqual(caught.exception.status_code, 404)
+        self.assertEqual(me(self.claims, self.db)['roles'], ['CLIENTE'])
+        self.assertEqual(self.db.scalars(select(TechnicianProfile)).all(), [])
     def test_normalized_duplicates_rejected(self):
         self.register()
         self.claims = {'uid': 'other-user', 'email': 'otro@example.com'}

@@ -10,6 +10,13 @@ export type Profile = {
   estado_identidad: string
 }
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 export async function api<T>(path: string, user: User, body?: unknown, method?: string): Promise<T> {
 
   const token = await user.getIdToken()
@@ -26,14 +33,21 @@ export async function api<T>(path: string, user: User, body?: unknown, method?: 
     options.body = JSON.stringify(body)
   }
 
-  const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`, options)
+  const url = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`
+  let response = await fetch(url, options)
+  if (response.status === 401) {
+    // Recover an expired token once; a revoked session still requires sign-in.
+    const refreshedToken = await user.getIdToken(true)
+    options.headers = { ...options.headers, Authorization: `Bearer ${refreshedToken}` }
+    response = await fetch(url, options)
+  }
 
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
     const detail = typeof data.detail === 'string' ? data.detail :
       Array.isArray(data.detail) ? data.detail.map((item: {msg: string}) => item.msg.replace(/^Value error, /, '')).join('. ') : 'No pudimos completar la solicitud.'
-    throw new Error(detail)
+    throw new ApiError(response.status, detail)
   }
   return response.status === 204 ? undefined as T : response.json()
 }
