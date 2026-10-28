@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -13,9 +13,17 @@ router = APIRouter(prefix="/technicians", tags=["Technicians"])
 #Opciones válidas para la unidad de cobro
 PricingUnit = Literal["POR_HORA", "POR_SERVICIO", "POR_DIA", "POR_PROYECTO"]
 
+#---MODELO DE TARIFAS HU-09--
 class TariffUpdate(BaseModel):
     tarifa_base: float = Field(..., description = "Tarifa base en Lempiras")
     unidad_cobro: PricingUnit = Field(..., description = "Unidad de Cobro Elegida")
+
+#--MODELO DE ZONAS DE COBERTURA (HU-10)--
+class CoverageZone(BaseModel):
+    municipio: str
+    sector: str
+class TechnicianCoverageUpdate(BaseModel):
+    zonas_coberturas: List[CoverageZone]
 
     @field_validator("tarifa_base")
     @classmethod
@@ -72,6 +80,26 @@ def update_my_tariff(
         tarifa_base = float(tech_profile.tarifa_base),
         unidad_cobro = str(tech_profile.unidad_cobro)
     )
+
+#--ENDPOINT PARA OBTENER LAS ZONAS ACTUALES DEL TECNICO
+@router.get("/me/coverage-zones", response_model=List[CoverageZone])
+def get_coverage_zones(current_user: dict = Depends(get_current_active_user)):
+    #BUSCAR ZONAS DEL TECNICO
+    zones = database_service.get_technician_zones(current_user["id"])
+    return zones
+
+#--ENDPOINT PARA ACTUALIZAR/REGISTRAR MULTIPLES ZONAS DE COBERTURAS
+@router.patch("/me/coverage-zones", response_model=dict)
+def update_coverage_zones(
+    payload: TechnicianCoverageUpdate,
+    current_user: dict = Depends(get_current_active_user)
+):
+    try:
+        #--Guardar zonas en BD asociadas al tecnico
+        database_service.save_technician_zone(current_user["id"], [zone.dict() for zone in payload.zonas_coberturas])
+        return {"status": "success", "message": "Zonas de cobertura actualizadas correctamente."}
+    except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 # --- ESQUEMAS Y ENDPOINTS HU-11: GESTIONAR DISPONIBILIDAD ---
