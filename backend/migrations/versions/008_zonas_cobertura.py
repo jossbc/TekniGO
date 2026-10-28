@@ -13,9 +13,10 @@ def upgrade():
         "zonas_cobertura",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("usuario_id", sa.Uuid(), sa.ForeignKey("perfiles_tecnicos.usuario_id", ondelete="CASCADE"), nullable=False, index=True),
-        sa.Column("municipio", sa.String(35), nullable=False),
-        sa.Column("sector", sa.String(35), nullable=False),
-        sa.UniqueConstraint("usuario_id", "municipio", "sector", name="uq_usuario_municipio_sector"),
+        sa.Column("departamento",sa.String(50),nullable=False),
+        sa.Column("municipio", sa.String(50), nullable=False),
+        sa.Column("sector", sa.String(100), nullable=False),
+        sa.UniqueConstraint("usuario_id", "departamento" ,"municipio", "sector", name="uq_usuario,depto_municipio_sector"),
     )
     op.execute(sa.text('ALTER TABLE "zonas_cobertura" ENABLE ROW LEVEL SECURITY'))
     op.execute(sa.text('REVOKE ALL ON TABLE "zonas_cobertura" FROM anon, authenticated'))

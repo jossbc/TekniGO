@@ -28,15 +28,16 @@ class TariffUpdate(BaseModel):
 
 #--MODELO DE ZONAS DE COBERTURA (HU-10)--
 class CoverageZoneItem(BaseModel):
-    municipio: str = Field(..., min_length=2, max_length=35)
-    sector: str = Field(..., min_length=2, max_length=35)
+    departamento: str = Field(..., min_length=2, max_length=50)
+    municipio: str = Field(..., min_length=2, max_length=50)
+    sector: str = Field(..., min_length=2, max_length=100)
     class Config:
         from_attributes = True
-        
+
 class TechnicianCoverageUpdate(BaseModel):
     zonas_cobertura: List[CoverageZoneItem] = Field(
         ..., 
-        description="Lista de zonas de cobertura (municipios y sectores) donde opera el técnico"
+        description="Lista de zonas de cobertura (departamentos, municipios y sectores) donde opera el técnico"
     )
 
 
@@ -133,16 +134,17 @@ def update_coverage_zones(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo los técnicos pueden configurar zonas de cobertura.",
         )
-    # Evitar duplicados exactos (mismo municipio y sector)
+     # Evitar duplicados exactos (mismo departamento, municipio y sector)
     seen = set()
     cleaned_zones = []
     for item in payload.zonas_cobertura:
+        dep = item.departamento.strip()
         mun = item.municipio.strip()
         sec = item.sector.strip()
-        key = (mun.lower(), sec.lower())
+        key = (dep.lower(), mun.lower(), sec.lower())
         if key not in seen:
             seen.add(key)
-            cleaned_zones.append(CoverageZone(usuario_id=user.id, municipio=mun, sector=sec))
+            cleaned_zones.append(CoverageZone(usuario_id=user.id, departamento=dep, municipio=mun, sector=sec))
     # Reemplazar las zonas anteriores del técnico por las nuevas
     db.execute(delete(CoverageZone).where(CoverageZone.usuario_id == user.id))
     db.add_all(cleaned_zones)
