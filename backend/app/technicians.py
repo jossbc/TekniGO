@@ -1,11 +1,11 @@
-from typing import Literal
+from typing import Literal, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select,delete
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import TechnicianProfile, User, UserRole
+from app.models import TechnicianProfile, User, UserRole, CoverageZone
 from app.security import get_current_user
 
 router = APIRouter(prefix="/technicians", tags=["Technicians"])
@@ -13,10 +13,11 @@ router = APIRouter(prefix="/technicians", tags=["Technicians"])
 #Opciones válidas para la unidad de cobro
 PricingUnit = Literal["POR_HORA", "POR_SERVICIO", "POR_DIA", "POR_PROYECTO"]
 
+#---MODELO DE TARIFAS HU-09--
 class TariffUpdate(BaseModel):
     tarifa_base: float = Field(..., description = "Tarifa base en Lempiras")
     unidad_cobro: PricingUnit = Field(..., description = "Unidad de Cobro Elegida")
-
+    
     @field_validator("tarifa_base")
     @classmethod
     def validate_positive_tariff(cls, value:float) -> float:
@@ -24,6 +25,21 @@ class TariffUpdate(BaseModel):
         if value <= 0:
             raise ValueError("La tarifa debe ser mayor que cero (0)")
         return value
+
+#--MODELO DE ZONAS DE COBERTURA (HU-10)--
+class CoverageZoneItem(BaseModel):
+    municipio: str = Field(..., min_length=2, max_length=35)
+    sector: str = Field(..., min_length=2, max_length=35)
+    class Config:
+        from_attributes = True
+        
+class TechnicianCoverageUpdate(BaseModel):
+    zonas_cobertura: List[CoverageZoneItem] = Field(
+        ..., 
+        description="Lista de zonas de cobertura (municipios y sectores) donde opera el técnico"
+    )
+
+
 
 class TariffResponse(BaseModel):
         usuario_id: str
@@ -72,6 +88,66 @@ def update_my_tariff(
         tarifa_base = float(tech_profile.tarifa_base),
         unidad_cobro = str(tech_profile.unidad_cobro)
     )
+
+#--ENDPOINT PARA OBTENER LAS ZONAS ACTUALES DEL TECNICO
+@router.get("/me/coverage-zones", response_model=List[CoverageZoneItem], status_code=status.HTTP_200_OK)
+def get_coverage_zones(claims=Depends(get_current_user),
+    db: Session = Depends(get_db),):
+    #BUSCAR ZONAS DEL TECNICO
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado. Completa tu registro.",
+        )
+    has_technician_role = any(role.rol == "TECNICO" for role in user.roles)
+    if not has_technician_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo los técnicos pueden consultar sus zonas de cobertura.",
+        )
+    zones = db.scalars(
+        select(CoverageZone)
+        .where(CoverageZone.usuario_id == user.id)
+        .order_by(CoverageZone.municipio, CoverageZone.sector)
+    ).all()
+    
+    return zones
+
+#--ENDPOINT PARA ACTUALIZAR/REGISTRAR MULTIPLES ZONAS DE COBERTURAS
+@router.patch("/me/coverage-zones", response_model=List[CoverageZoneItem], status_code=status.HTTP_200_OK)
+def update_coverage_zones(
+    payload: TechnicianCoverageUpdate,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado. Completa tu registro.",
+        )
+    has_technician_role = any(role.rol == "TECNICO" for role in user.roles)
+    if not has_technician_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo los técnicos pueden configurar zonas de cobertura.",
+        )
+    # Evitar duplicados exactos (mismo municipio y sector)
+    seen = set()
+    cleaned_zones = []
+    for item in payload.zonas_cobertura:
+        mun = item.municipio.strip()
+        sec = item.sector.strip()
+        key = (mun.lower(), sec.lower())
+        if key not in seen:
+            seen.add(key)
+            cleaned_zones.append(CoverageZone(usuario_id=user.id, municipio=mun, sector=sec))
+    # Reemplazar las zonas anteriores del técnico por las nuevas
+    db.execute(delete(CoverageZone).where(CoverageZone.usuario_id == user.id))
+    db.add_all(cleaned_zones)
+    db.commit()
+    return cleaned_zones
 
 
 # --- ESQUEMAS Y ENDPOINTS HU-11: GESTIONAR DISPONIBILIDAD ---

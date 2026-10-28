@@ -7,7 +7,7 @@ import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
 import SpecialtySelector from './components/SpecialtySelector'
 import ServiceManager from './components/ServiceManager'
-
+import CoverageZoneSelector from './CoverageZoneSelector'
 import { normalizeEmail, normalizeHonduranPhone, PHONE_HINT } from './lib/validation'
 
 type ProfileChanges = { telefono?: string; correo?: string }
@@ -247,6 +247,10 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
               <section className="account-card profile-card">
                 <h2 style={cardTitle}>Mis servicios</h2>
                 <ServiceManager user={user} />
+              </section>
+                            <section className="account-card profile-card">
+                <h2 style={cardTitle}>Zonas de cobertura</h2>
+                <CoverageZoneSelector user={user} />
               </section>
             </>
           )}
