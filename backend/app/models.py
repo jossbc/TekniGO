@@ -90,6 +90,6 @@ class IdentityDocument(Base):
 class CoverageZone(Base):
     __tablename__ = "zonas_cobertura"
     id: Mapped[uuid.UUID] = mapped_column(primary_key = True, default=uuid.uuid4)
-    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"),nullable=False)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"),nullable=False, index = True)
     municipio: Mapped[str] = mapped_column(String(35),nullable=False)
     sector: Mapped[str] = mapped_column(String(35),nullable=False)
