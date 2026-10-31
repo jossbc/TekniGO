@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState'
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { CheckCircle2, CircleAlert, Clock3, CreditCard, ShieldCheck, Upload, X } from 'lucide-react'
@@ -43,12 +44,17 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
   const [formError, setFormError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [attempt, setAttempt] = useState(0)
 
   const frontalInputRef = useRef<HTMLInputElement | null>(null)
   const reversoInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     let active = true
+    setLoading(true)
+    setLoadError('')
     api<IdentityDocsResponse>('/users/me/identity-documents', user)
       .then((res) => {
         if (!active) return
@@ -56,15 +62,15 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
         setHasUploadedDocs(uploaded)
         setStatus(uploaded ? res.estado_identidad : 'PENDIENTE')
       })
-      .catch(() => {
+      .catch((err) => {
         if (!active) return
-        setHasUploadedDocs(false)
-        setStatus(initialStatus === 'EN_REVISION' ? 'EN_REVISION' : 'PENDIENTE')
+        setLoadError(errorMessage(err))
       })
+      .finally(() => { if (active) setLoading(false) })
     return () => {
       active = false
     }
-  }, [user, initialStatus])
+  }, [user, initialStatus, attempt])
 
   useEffect(() => {
     if (!dniFrontal) {
@@ -173,7 +179,13 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
     }
   }
 
-  if (hasUploadedDocs && status === 'VERIFICADO') {
+  if (loading) return <LoadingState message="Consultando el estado de tus documentos…" detail="Espera mientras comprobamos si ya los enviaste." />
+  if (loadError) return <div>
+    <p className="alert" role="alert">{loadError}</p>
+    <Button type="button" onClick={() => setAttempt((value) => value + 1)}>Reintentar consulta</Button>
+  </div>
+
+  if (status === 'VERIFICADO') {
     return (
       <div className="success-alert" role="status">
         <CheckCircle2 size={20} />
@@ -364,6 +376,8 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
           {formError}
         </div>
       )}
+
+      {busy && <LoadingState variant="inline" message="Enviando tus documentos…" detail="Mantén esta página abierta hasta que termine el envío." />}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <Button type="submit" disabled={busy} style={{ width: 'auto', padding: '0.8rem 1.6rem', fontSize: '1rem' }}>

@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState'
 import { useEffect, useState } from "react";
 import type { User } from "firebase/auth";
 import { CheckCircle2, Clock3, Power } from "lucide-react";
@@ -56,6 +57,8 @@ export function AvailabilityToggle({ user }: { user: User }) {
       setSaving(false);
     }
   }
+
+  if (loading) return <section className="account-card"><LoadingState message="Consultando tu disponibilidad." /></section>;
 
   const isAvailable = Boolean(data?.disponible);
 

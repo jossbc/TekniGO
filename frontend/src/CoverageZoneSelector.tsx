@@ -1,3 +1,4 @@
+import LoadingState from './components/LoadingState'
 import { useEffect, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { CheckCircle2, CircleAlert, MapPin, Plus, Trash2, X } from 'lucide-react'
@@ -130,7 +131,7 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
     ? (hondurasLocation as Record<string, string[]>)[selectedDepto] ?? []
     : []
   if (loading) {
-    return <p style={{ color: 'var(--muted)' }}>Cargando zonas de cobertura…</p>
+    return <LoadingState message="Cargando zonas de cobertura." />
   }
   return (
     <div>

@@ -1,3 +1,4 @@
+import LoadingState from './components/LoadingState'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { signOut, type User } from 'firebase/auth'
@@ -164,6 +165,8 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
     }
   }
 
+  if (!profile && !error) return <main className="account"><LoadingState message="Cargando tu perfil." /></main>
+
   const isTechnician = !!profile?.roles.includes('TECNICO')
 
   return (
@@ -179,7 +182,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
       <h1 style={{ marginTop: 0 }}>{editing ? 'Editar perfil' : 'Mi perfil'}</h1>
       {!notice && <p>{editing ? 'Puedes cambiar tu correo y tu teléfono.' : 'Revisa los datos que tienes registrados en TekniGO.'}</p>}
 
-      {!profile && !error && <p role="status">Cargando tu perfil…</p>}
+
 
       {profile && !editing && (
         <div style={{ display: 'grid', gap: '1.5rem' }}>

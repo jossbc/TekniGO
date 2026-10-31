@@ -4,6 +4,7 @@ import { auth } from '../lib/firebase'
 import type { AccountState } from '../lib/account'
 import { Button } from './ui'
 import { useState } from 'react'
+import LoadingState from './LoadingState'
 
 export function AccountStatus({ state, retry }: { state: AccountState; retry: () => void }) {
   const [error, setError] = useState('')
@@ -19,7 +20,7 @@ export function AccountStatus({ state, retry }: { state: AccountState; retry: ()
       setBusy(false)
     }
   }
-  if (state.status === 'loading') return <p role="status">Cargando tu cuenta…</p>
+  if (state.status === 'loading') return <LoadingState message="Cargando tu cuenta." detail="Estamos consultando tus datos para mostrarte tu espacio." />
   if (state.status === 'missing') return <>
     <p>Completa tu registro para acceder a tu perfil.</p>
     <Link className="button" to="/registro">Completar mi registro</Link>

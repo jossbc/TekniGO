@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState'
 import { useEffect, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { CheckCircle2, CircleAlert } from 'lucide-react'
@@ -125,6 +126,8 @@ export default function ServiceManager({ user }: { user: User }) {
       setError(errorMessage(err))
     }
   }
+
+  if (!services && !error) return <LoadingState message="Cargando tus servicios." />
 
   return (
     <div>
@@ -260,7 +263,7 @@ export default function ServiceManager({ user }: { user: User }) {
         </form>
       )}
 
-      {!services && !error && <p role="status">Cargando tus servicios…</p>}
+
 
       {services && services.length === 0 && !formOpen && (
         <p style={{ color: '#6b7280' }}>Aún no has agregado servicios.</p>

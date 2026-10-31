@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState'
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { CheckCircle2, CircleAlert } from 'lucide-react'
@@ -90,6 +91,8 @@ export default function SpecialtySelector({ user }: { user: User }) {
     }
   }
 
+  if (!catalog && !error) return <LoadingState message="Cargando especialidades." />
+
   return (
     <div>
       {notice && (
@@ -100,7 +103,7 @@ export default function SpecialtySelector({ user }: { user: User }) {
       )}
       <p style={{ margin: '0 0 1rem' }}>Elige los oficios en los que trabajas. Puedes marcar varios.</p>
 
-      {!catalog && !error && <p role="status">Cargando especialidades…</p>}
+
 
       {catalog && (
         <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))' }}>

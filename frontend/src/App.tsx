@@ -1,3 +1,4 @@
+import LoadingState from './components/LoadingState'
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { createUserWithEmailAndPassword, EmailAuthProvider, onIdTokenChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, type User, sendPasswordResetEmail } from "firebase/auth";
@@ -11,6 +12,8 @@ import { AvailabilityToggle } from "./components/AvailabilityToggle";
 import ClientIdentityVerification from "./components/ClientIdentityVerification";
 import { useAccount } from "./lib/useAccount";
 import { AccountStatus } from "./components/AccountStatus";
+import CompleteRegistration from "./CompleteRegistration";
+import { registrationComplete, registrationRequirements } from "./lib/registration";
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -32,15 +35,14 @@ export default function App() {
   );
   if (!ready)
     return (
-      <main className="loading" role="status">
-        Preparando tu espacio…
-      </main>
+      <LoadingState variant="screen" detail="Estamos comprobando tu sesión de forma segura." />
     );
   return (
     <Routes>
       <Route path="/" element={<AccessPage mode="login" user={user} />} />
       <Route path="/ingresar" element={<AccessPage mode="login" user={user} />} />
       <Route path="/registro" element={<AccessPage mode="register" user={user} />} />
+      <Route path="/registro/completar" element={user ? <CompleteRegistration user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
@@ -286,7 +288,7 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
           telefono: phone,
           rol: role,
         });
-        navigate("/mi-cuenta", { state: { registrationSuccess: true } });
+        navigate("/registro/completar", { replace: true });
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -505,18 +507,10 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
 }
 
 function VerificationRoute({ user }: { user: User }) {
-  const [profile, setProfile] = useState<Profile | null>(null);
-  useEffect(() => {
-    let active = true;
-    api<Profile>("/users/me", user)
-      .then((value) => {
-        if (active) setProfile(value);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [user]);
+  const { state, retry, updateProfile } = useAccount(user);
+  const profile = state.status === 'ready' ? state.profile : null;
+  if (state.status === 'loading') return <LoadingState variant="screen" message="Cargando la verificación de identidad." />;
+  if (!profile) return <div className="site"><main className="account"><AccountStatus state={state} retry={retry} /></main></div>;
   return (
     <div className="site">
       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
@@ -524,7 +518,7 @@ function VerificationRoute({ user }: { user: User }) {
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
         <section className="account-card profile-card">
-          <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => setProfile((prev) => (prev ? { ...prev, estado_identidad } : prev))} />
+          <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
         </section>
         <p style={{ marginTop: "1.5rem" }}>
           <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -558,6 +552,17 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   const [busy, setBusy] = useState(false);
   const [addingRole, setAddingRole] = useState(false);
   const [roleNotice, setRoleNotice] = useState("");
+  const [registrationPending, setRegistrationPending] = useState(false);
+  const [registrationError, setRegistrationError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setRegistrationPending(false);
+    setRegistrationError("");
+    if (profile) registrationRequirements(user, profile)
+      .then((requirements) => { if (active) setRegistrationPending(!registrationComplete(requirements)); })
+      .catch((err) => { if (active) setRegistrationError(errorMessage(err)); });
+    return () => { active = false; };
+  }, [user, profile]);
   async function addRole() {
     if (!profile || addingRole) return;
     const rol = profile.roles.includes("CLIENTE") ? "TECNICO" : "CLIENTE";
@@ -574,6 +579,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
       setAddingRole(false);
     }
   }
+  if (state.status === "loading") return <LoadingState variant="screen" message="Cargando tu cuenta." detail="Estamos consultando tus datos para mostrarte tu espacio." />;
   if (profile && space && !profile.roles.includes(space)) return <Navigate to={accountPath(profile.roles)} replace state={location.state} />;
   if (profile && !space && profile.roles.length === 1) return <Navigate to={accountPath(profile.roles)} replace state={location.state} />;
   async function logout() {
@@ -617,6 +623,12 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
           </div>
         )}
         <AccountStatus state={state} retry={retry} />
+        {registrationPending && <section className="account-card" style={{ marginBottom: 24 }}>
+          <h2>Completa tu registro</h2>
+          <p>Faltan documentos o datos de tu perfil. Puedes continuar desde donde lo dejaste.</p>
+          <Link className="button" to="/registro/completar">Continuar con el paso 2</Link>
+        </section>}
+        {registrationError && <div className="alert" role="alert">No pudimos comprobar los requisitos de registro: {registrationError} <Link to="/registro/completar">Revisar mi registro</Link></div>}
         {roleNotice && <div className="success-alert" role="status">{roleNotice}</div>}
         {profile && (
           <>
@@ -642,13 +654,13 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 <span className="step-icon">
                   <ShieldCheck size={22} />
                 </span>
-                <h2>Verificación pendiente</h2>
-                <p>Tu cuenta fue registrada. Para contratar u ofrecer servicios necesitas completar la verificación de identidad.</p>
+                <h2>{profile.estado_identidad === "VERIFICADO" ? "Identidad verificada" : profile.estado_identidad === "EN_REVISION" ? "Identidad en revisión" : "Verificación pendiente"}</h2>
+                <p>{profile.estado_identidad === "VERIFICADO" ? "Tu identidad fue verificada correctamente." : profile.estado_identidad === "EN_REVISION" ? "Recibimos tus documentos. Están pendientes de revisión administrativa." : "Para contratar u ofrecer servicios necesitas completar la verificación de identidad."}</p>
                 <span className="status-pill">
-                  <Clock3 size={15} /> Pendiente de verificación
+                  <Clock3 size={15} /> {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
                 </span>
                 <Link to="/verificacion">
-                  Subir DNI y selfie <ArrowUpRight size={15} />
+                  {profile.estado_identidad === "EN_REVISION" || profile.estado_identidad === "VERIFICADO" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />
                 </Link>
               </section>
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
