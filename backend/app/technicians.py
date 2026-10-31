@@ -1,5 +1,6 @@
-from typing import Literal, List
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+import uuid
+from typing import Literal, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select,delete
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ from app.models import TechnicianProfile, User, UserRole, CoverageZone, Specialt
 from app.security import get_current_user
 from app.storage import PrivateDocumentStorage
 from app.identity_documents import UploadedPart, _parse_multipart_parts, _require_admin
-from datetime import date
+from datetime import date, timedelta
 
 router = APIRouter(prefix="/technicians", tags=["Technicians"])
 
@@ -335,7 +336,7 @@ def _parse_date_field(value: str | None, label: str) -> date | None:
         raise HTTPException(400, f"La fecha de emisión de {label} tiene formato inválido (usar AAAA-MM-DD)")
 @router.patch("/technicians/me/verification-documents", status_code=201)
 async def upload_verification_documents(
-    request: status,
+    request: Request,
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -365,6 +366,10 @@ async def upload_verification_documents(
         parts["fecha_penales"].content.decode("utf-8", errors="replace") if "fecha_penales" in parts else None,
         "los antecedentes penales",
     )
+    # --- NUEVA VALIDACIÓN ST-04: Vigencia de antecedentes ---
+    _validar_vigencia_antecedentes(fecha_policiales, "los antecedentes policiales")
+    _validar_vigencia_antecedentes(fecha_penales, "los antecedentes penales")
+
     store = PrivateDocumentStorage()
     stored_docs: list[IdentityDocument] = []
     for field_key, (doc_type, label) in TECHNICIAN_DOC_TYPES.items():
@@ -427,6 +432,7 @@ def download_verification_document_admin(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+# Restringe estrictamente el acceso solo a administradores
     _require_admin(claims, db)
     doc = db.get(IdentityDocument, document_id)
     if doc is None:
@@ -437,6 +443,71 @@ def download_verification_document_admin(
     except FileNotFoundError:
         raise HTTPException(404, "Archivo privado no encontrado") from None
     return Response(
-        content=raw_bytes, media_type=doc.content_type,
+        content=raw_bytes, 
+        media_type=doc.content_type,
         headers={"Cache-Control": "no-store, private"},
     )
+
+# Define el límite de antigüedad permitido (ej. 90 días o 3 meses)
+MAX_ANTIGUEDAD_DIAS = 90
+
+def _validar_vigencia_antecedentes(fecha: date | None, label: str):
+    if not fecha:
+        raise HTTPException(400, f"Indica la fecha de emisión de {label}.")
+    
+    hoy = date.today()
+    if fecha > hoy:
+        raise HTTPException(400, f"La fecha de emisión de {label} no puede ser una fecha futura.")
+    
+    # Calcular diferencia de días
+    antiguedad = (hoy - fecha).days
+    if antiguedad > MAX_ANTIGUEDAD_DIAS:
+        raise HTTPException(
+            400, 
+            f"La constancia de {label} ha expirado (emitida hace {antiguedad} días). El límite máximo de vigencia es de {MAX_ANTIGUEDAD_DIAS} días."
+        )
+
+class DocumentReviewItem(BaseModel):
+    documento_id: uuid.UUID
+    estado: str  # 'APROBADO' o 'RECHAZADO'
+    observaciones: Optional[str] = None
+
+class AdminVerificationReviewSchema(BaseModel):
+    estado_verificacion: str  # 'VERIFICADO' o 'RECHAZADO'
+    observaciones_verificacion: Optional[str] = None
+    documentos: List[DocumentReviewItem]
+
+
+@router.patch("/admin/technicians/{usuario_id}/verification-review")
+def review_technician_verification(
+    usuario_id: uuid.UUID,
+    payload: AdminVerificationReviewSchema,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 1. Validar que quien ejecuta sea administrador
+    _require_admin(claims, db)
+
+    # 2. Buscar perfil del técnico
+    technician = db.get(TechnicianProfile, usuario_id)
+    if not technician:
+        raise HTTPException(404, "No se encontró el perfil del técnico.")
+
+    # 3. Actualizar estado general y observaciones del perfil
+    technician.estado_verificacion = payload.estado_verificacion
+    technician.observaciones_verificacion = payload.observaciones_verificacion
+
+    # 4. Actualizar el estado y observaciones individuales de cada documento evaluado
+    for doc_review in payload.documentos:
+        doc = db.get(IdentityDocument, doc_review.documento_id)
+        if doc and doc.usuario_id == usuario_id:
+            doc.estado = doc_review.estado
+            doc.observaciones = doc_review.observaciones
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Verificación del técnico actualizada a: {technician.estado_verificacion}",
+        "estado_verificacion": technician.estado_verificacion,
+    }
