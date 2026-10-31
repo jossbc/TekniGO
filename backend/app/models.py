@@ -66,6 +66,10 @@ class Service(Base):
     especialidad_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("especialidades.id"), index=True)
     nombre: Mapped[str] = mapped_column(String(100))
     descripcion: Mapped[str] = mapped_column(Text)
+    # -- Campos HU-09: Tarifas Base por Servicio --
+    tarifa_base: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0, server_default="0.0")
+    unidad_cobro: Mapped[str] = mapped_column(String(20), default="POR_HORA", server_default="POR_HORA")
+    # ---------------------------------------------
     activo: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
