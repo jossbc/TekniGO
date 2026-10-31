@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func, Numeric
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,6 +32,8 @@ class TechnicianProfile(Base):
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), primary_key=True)
     disponible: Mapped[bool] = mapped_column(Boolean, default=False)
     estado_verificacion: Mapped[str] = mapped_column(String(30), default="NO_VERIFICADO")
+    # HU-16 ST-02: Observaciones de la revisión documental del técnico
+    observaciones_verificacion: Mapped[str | None] = mapped_column(Text, nullable=True)
     #--Campos Para HU-09 Tarifas Base--
     tarifa_base: Mapped[float] = mapped_column(Numeric(10,2), default=0.0)
     unidad_cobro: Mapped[str] = mapped_column(String(20), default="POR HORA")
@@ -72,7 +74,7 @@ class Service(Base):
 class IdentityDocument(Base):
     __tablename__ = "documentos_identidad"
     __table_args__ = (
-        CheckConstraint("tipo IN ('DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE')", name="ck_documento_identidad_tipo"),
+        CheckConstraint("tipo IN ('DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE', 'ANTECEDENTES_POLICIALES', 'ANTECEDENTES_PENALES')", name="ck_documento_identidad_tipo"),
         CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO')", name="ck_documento_identidad_estado"),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -83,6 +85,8 @@ class IdentityDocument(Base):
     tamano_bytes: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
     estado: Mapped[str] = mapped_column(String(20), default="PENDIENTE", server_default="PENDIENTE")
+    # HU-16 ST-02 / ST-04: Fecha de emisión declarada para antecedentes
+    fecha_emision_declarada: Mapped[date | None] = mapped_column(Date, nullable=True)
     observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

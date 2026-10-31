@@ -5,8 +5,11 @@ from sqlalchemy import select,delete
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import TechnicianProfile, User, UserRole, CoverageZone
+from app.models import TechnicianProfile, User, UserRole, CoverageZone, IdentityDocument
 from app.security import get_current_user
+from app.storage import PrivateDocumentStorage
+from app.identity_documents import UploadedPart, _parse_multipart_parts, _require_admin
+from datetime import date
 
 router = APIRouter(prefix="/technicians", tags=["Technicians"])
 
@@ -241,4 +244,136 @@ def update_my_availability(
         disponible=bool(tech_profile.disponible),
         estado_verificacion=str(tech_profile.estado_verificacion),
         puede_recibir_contrataciones=puede_contratar,
+    )
+
+# --- HU-16 ST-03: Verificación documental del técnico ---
+    TECHNICIAN_DOC_TYPES = {
+    "dni_frontal": ("DNI_FRONTAL", "el DNI (frente)"),
+    "dni_reverso": ("DNI_REVERSO", "el DNI (reverso)"),
+    "selfie": ("SELFIE", "la selfie"),
+    "antecedentes_policiales": ("ANTECEDENTES_POLICIALES", "los antecedentes policiales"),
+    "antecedentes_penales": ("ANTECEDENTES_PENALES", "los antecedentes penales"),
+}
+def _serialize_verification_doc(doc: IdentityDocument) -> dict:
+    return {
+        "id": str(doc.id),
+        "tipo": doc.tipo,
+        "estado": doc.estado,
+        "observaciones": doc.observaciones,
+        "fecha_emision_declarada": doc.fecha_emision_declarada.isoformat() if doc.fecha_emision_declarada else None,
+        "creado_en": doc.creado_en.isoformat() if doc.creado_en else None,
+    }
+def _parse_date_field(value: str | None, label: str) -> date | None:
+    if not value or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        raise HTTPException(400, f"La fecha de emisión de {label} tiene formato inválido (usar AAAA-MM-DD)")
+@router.patch("/technicians/me/verification-documents", status_code=201)
+async def upload_verification_documents(
+    request: status,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    if not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "La cuenta no tiene rol de técnico")
+    technician = db.get(TechnicianProfile, user.id)
+    if technician is None:
+        raise HTTPException(404, "No se encontró tu perfil de técnico")
+    if technician.estado_verificacion == "VERIFICADO":
+        raise HTTPException(409, "Tu perfil de técnico ya fue verificado")
+    if technician.estado_verificacion == "EN_REVISION":
+        raise HTTPException(409, "Ya tienes una solicitud de verificación pendiente de revisión")
+    body = await request.body()
+    parts = _parse_multipart_parts(request.headers.get("content-type", ""), body)
+    for field_key in TECHNICIAN_DOC_TYPES:
+        if field_key not in parts or not parts[field_key].content:
+            _, label = TECHNICIAN_DOC_TYPES[field_key]
+            raise HTTPException(400, f"Falta adjuntar el archivo de {label}")
+    fecha_policiales = _parse_date_field(
+        parts["fecha_policiales"].content.decode("utf-8", errors="replace") if "fecha_policiales" in parts else None,
+        "los antecedentes policiales",
+    )
+    fecha_penales = _parse_date_field(
+        parts["fecha_penales"].content.decode("utf-8", errors="replace") if "fecha_penales" in parts else None,
+        "los antecedentes penales",
+    )
+    store = PrivateDocumentStorage()
+    stored_docs: list[IdentityDocument] = []
+    for field_key, (doc_type, label) in TECHNICIAN_DOC_TYPES.items():
+        part = parts[field_key]
+        saved = store.store(
+            user_id=user.id, doc_type=doc_type,
+            content=part.content, declared_content_type=part.content_type, label=label,
+        )
+        fecha = None
+        if doc_type == "ANTECEDENTES_POLICIALES":
+            fecha = fecha_policiales
+        elif doc_type == "ANTECEDENTES_PENALES":
+            fecha = fecha_penales
+        stored_docs.append(IdentityDocument(
+            usuario_id=user.id, tipo=doc_type,
+            ruta_privada=saved.ruta_privada, content_type=saved.content_type,
+            tamano_bytes=saved.tamano_bytes, sha256=saved.sha256,
+            estado="PENDIENTE", fecha_emision_declarada=fecha,
+        ))
+    doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
+    db.execute(delete(IdentityDocument).where(
+        IdentityDocument.usuario_id == user.id,
+        IdentityDocument.tipo.in_(doc_types_list),
+    ))
+    db.add_all(stored_docs)
+    technician.estado_verificacion = "EN_REVISION"
+    db.commit()
+    for doc in stored_docs:
+        db.refresh(doc)
+    return {
+        "estado_verificacion": technician.estado_verificacion,
+        "documentos": [_serialize_verification_doc(doc) for doc in stored_docs],
+    }
+@router.get("/technicians/me/verification-documents")
+def list_verification_documents(
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    technician = db.get(TechnicianProfile, user.id)
+    if technician is None:
+        raise HTTPException(404, "No se encontró tu perfil de técnico")
+    doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
+    docs = db.scalars(
+        select(IdentityDocument).where(
+            IdentityDocument.usuario_id == user.id,
+            IdentityDocument.tipo.in_(doc_types_list),
+        ).order_by(IdentityDocument.creado_en.asc())
+    ).all()
+    return {
+        "estado_verificacion": technician.estado_verificacion,
+        "observaciones": technician.observaciones_verificacion,
+        "documentos": [_serialize_verification_doc(doc) for doc in docs],
+    }
+@router.get("/admin/verification-documents/{document_id}/content")
+def download_verification_document_admin(
+    document_id: uuid.UUID,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin(claims, db)
+    doc = db.get(IdentityDocument, document_id)
+    if doc is None:
+        raise HTTPException(404, "No se encontró el documento")
+    store = PrivateDocumentStorage()
+    try:
+        raw_bytes = store.read_private(doc.ruta_privada)
+    except FileNotFoundError:
+        raise HTTPException(404, "Archivo privado no encontrado") from None
+    return Response(
+        content=raw_bytes, media_type=doc.content_type,
+        headers={"Cache-Control": "no-store, private"},
     )

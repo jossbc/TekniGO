@@ -14,6 +14,7 @@ ALLOWED_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
+    "application/pdf": ".pdf",
 }
 
 PRIVATE_BUCKET = "documentos-identidad"
@@ -28,13 +29,15 @@ class StoredDocument:
     sha256: str
 
 
-def detect_image_mime(content: bytes) -> str | None:
+def detect_mime(content: bytes) -> str | None:
     if len(content) >= 3 and content[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
     if len(content) >= 8 and content[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "image/webp"
+    if len(content) >= 5 and content[:5] == b"%PDF-":
+        return "application/pdf"
     return None
 
 
@@ -44,9 +47,9 @@ def validate_document_bytes(content: bytes, declared_content_type: str | None, l
     if len(content) > MAX_DOCUMENT_BYTES:
         raise HTTPException(400, f"El archivo de {label} supera el tamaño máximo permitido de 5 MB")
 
-    real_mime = detect_image_mime(content)
+    real_mime = detect_mime(content)
     if real_mime not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(400, f"El archivo de {label} no es una imagen válida (solo JPG, PNG o WEBP)")
+        raise HTTPException(400, f"El archivo de {label} no es válido (solo JPG, PNG, WEBP o PDF)")
 
     if declared_content_type and declared_content_type in ALLOWED_CONTENT_TYPES and declared_content_type != real_mime:
         raise HTTPException(400, f"El contenido real de {label} no coincide con el formato declarado")
