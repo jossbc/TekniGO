@@ -1,11 +1,11 @@
 from typing import Literal, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select,delete
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import TechnicianProfile, User, UserRole, CoverageZone
+from app.models import TechnicianProfile, User, UserRole, CoverageZone, Specialty, TechnicianSpecialty
 from app.security import get_current_user
 
 router = APIRouter(prefix="/technicians", tags=["Technicians"])
@@ -242,3 +242,132 @@ def update_my_availability(
         estado_verificacion=str(tech_profile.estado_verificacion),
         puede_recibir_contrataciones=puede_contratar,
     )
+
+
+# --- ESQUEMAS Y ENDPOINTS HU-12 y HU-13: CATÁLOGO Y FILTROS ---
+
+class CatalogTechnician(BaseModel):
+    usuario_id: str
+    nombre_completo: str
+    especialidades: List[str]
+    estado_verificacion: str
+    tarifa_base: float
+    unidad_cobro: str
+    calificacion_promedio: float
+
+    class Config:
+        from_attributes = True
+
+@router.get("/catalog", response_model=List[CatalogTechnician], status_code=status.HTTP_200_OK)
+def get_technicians_catalog(
+    nombre: str = Query(None, description="Filtrar por nombre del técnico"),
+    especialidad: str = Query(None, description="Filtrar por nombre de especialidad"),
+    municipio: str = Query(None, description="Filtrar por municipio"),
+    db: Session = Depends(get_db)
+):
+    # CA-01 (HU-12): El catálogo debe mostrar técnicos verificados (y disponibles)
+    query = (
+        select(User, TechnicianProfile)
+        .join(TechnicianProfile, User.id == TechnicianProfile.usuario_id)
+        .where(
+            TechnicianProfile.disponible == True,
+            TechnicianProfile.estado_verificacion == "VERIFICADO"
+        )
+    )
+
+    # Filtros de la HU-13 + Búsqueda por nombre
+    if nombre:
+        query = query.where(User.nombre_completo.ilike(f"%{nombre}%"))
+        
+    if especialidad:
+        query = query.join(TechnicianSpecialty, User.id == TechnicianSpecialty.usuario_id)\
+                     .join(Specialty, TechnicianSpecialty.especialidad_id == Specialty.id)\
+                     .where(Specialty.nombre.ilike(f"%{especialidad}%"))
+                     
+    if municipio:
+        query = query.join(CoverageZone, User.id == CoverageZone.usuario_id)\
+                     .where(CoverageZone.municipio.ilike(f"%{municipio}%"))
+
+    results = db.execute(query).unique().all()
+
+    catalog = []
+    for user, profile in results:
+        # Obtener las especialidades reales del técnico (CA-02 de HU-12)
+        specs_query = (
+            select(Specialty.nombre)
+            .join(TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id)
+            .where(TechnicianSpecialty.usuario_id == user.id)
+        )
+        specs = db.scalars(specs_query).all()
+
+        catalog.append({
+            "usuario_id": str(user.id),
+            "nombre_completo": user.nombre_completo,
+            "especialidades": list(specs),
+            "estado_verificacion": profile.estado_verificacion,
+            "tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
+            "unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA",
+            "calificacion_promedio": 5.0 # MOCK: Se conectará a valor real en futuros Sprints
+        })
+    
+    return catalog
+
+    # --- ENDPOINT HU-13: VISTA DETALLADA DEL PERFIL DEL TÉCNICO ---
+
+class PublicService(BaseModel):
+    id: str
+    nombre: str
+    descripcion: str
+
+class TechnicianPublicProfile(BaseModel):
+    usuario_id: str
+    nombre_completo: str
+    especialidades: List[str]
+    servicios: List[PublicService]
+    estado_verificacion: str
+    tarifa_base: float
+    unidad_cobro: str
+    calificacion_promedio: float
+    
+    class Config:
+        from_attributes = True
+
+@router.get("/profile/{user_id}", response_model=TechnicianPublicProfile, status_code=status.HTTP_200_OK)
+def get_technician_public_profile(user_id: str, db: Session = Depends(get_db)):
+    # Buscar al usuario y su perfil de técnico
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Técnico no encontrado.")
+        
+    tech_profile = db.get(TechnicianProfile, user_id)
+    if not tech_profile or not tech_profile.disponible:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El perfil no está disponible.")
+
+    # 1. Obtener Especialidades
+    specs_query = select(Specialty.nombre).join(
+        TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id
+    ).where(TechnicianSpecialty.usuario_id == user.id)
+    specs = db.scalars(specs_query).all()
+
+    # 2. Obtener Servicios Activos (CA-05 de HU-13)
+    # Importamos Service arriba si no lo teníamos: from app.models import Service
+    from app.models import Service 
+    services_query = select(Service).where(Service.usuario_id == user.id, Service.activo == True)
+    services = db.scalars(services_query).all()
+
+    # 3. Formatear la respuesta
+    public_services = [
+        {"id": str(s.id), "nombre": s.nombre, "descripcion": s.descripcion}
+        for s in services
+    ]
+
+    return {
+        "usuario_id": str(user.id),
+        "nombre_completo": user.nombre_completo,
+        "especialidades": list(specs),
+        "servicios": public_services,
+        "estado_verificacion": tech_profile.estado_verificacion,
+        "tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0,
+        "unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
+        "calificacion_promedio": 5.0 # MOCK: Futuros Sprints
+    }
