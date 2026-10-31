@@ -16,6 +16,7 @@ import { useAccount } from "./lib/useAccount";
 import { AccountStatus } from "./components/AccountStatus";
 import CompleteRegistration from "./CompleteRegistration";
 import { registrationComplete, registrationRequirements } from "./lib/registration";
+import TechnicianVerificationForm from "./components/TechnicianVerificationForm";
 
 export function accountPath(roles: Profile["roles"]) {
   return roles.length === 1 ? (roles[0] === "TECNICO" ? "/tecnico" : "/cliente") : "/mi-cuenta";
@@ -526,8 +527,20 @@ function VerificationRoute({ user }: { user: User }) {
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
         <EmailVerification user={user} />
-        <section className="account-card profile-card">
-          <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
+                 <section className="account-card profile-card">
+          {profile?.roles.includes('TECNICO') ? (
+            <TechnicianVerificationForm
+              user={user}
+              initialStatus={profile?.estado_identidad}
+              onStatusChange={(estado) => updateProfile({ ...profile, estado_identidad: estado })}
+            />
+          ) : (
+            <ClientIdentityVerification
+              user={user}
+              initialStatus={profile?.estado_identidad}
+              onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })}
+            />
+          )}
         </section>
         <p style={{ marginTop: "1.5rem" }}>
           <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
