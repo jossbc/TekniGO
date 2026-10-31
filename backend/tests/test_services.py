@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Service, Specialty, TechnicianProfile, TechnicianSpecialty, User, UserRole
-from app.services import ServiceIn, ServiceUpdate, create_service, my_services, public_services, update_service
+from app.services import ServiceIn, ServiceTariffUpdate, ServiceUpdate, create_service, my_services, public_services, update_service, update_service_tariff
 
 NAME = 'Instalacion de tomacorrientes'
 DESCRIPTION = 'Instalo y reparo tomacorrientes en casas y locales.'
@@ -236,7 +236,7 @@ class ServiceTests(unittest.TestCase):
     def test_public_profile_hides_private_data(self):
         self.create()
         result = public_services(self.user_id(self.tech), self.client, self.db)
-        self.assertEqual(set(result[0]), {'id', 'nombre', 'descripcion', 'especialidad'})
+        self.assertEqual(set(result[0]), {'id', 'nombre', 'descripcion', 'especialidad', 'tarifa_base', 'unidad_cobro'})
 
     def test_public_profile_of_unknown_technician_is_not_found(self):
         self.assertEqual(self.status_of(lambda: public_services(uuid.uuid4(), self.client, self.db)), 404)
@@ -244,6 +244,53 @@ class ServiceTests(unittest.TestCase):
     def test_public_profile_of_a_client_is_not_found(self):
         self.assertEqual(self.status_of(lambda: public_services(self.user_id(self.client), self.client, self.db)), 404)
 
+        # ---- HU-09: Tarifas base por servicio (CA-01 a CA-05) ----
+
+    def test_service_creation_stores_tariff_and_unit(self):
+        # CA-01 y CA-02: El técnico ingresa tarifa y unidad de cobro
+        result = create_service(
+            ServiceIn(nombre='Instalacion breaker', descripcion='Instalo breaker principal',
+                      especialidad_id=self.electricidad, tarifa_base=250.50, unidad_cobro='POR_SERVICIO'),
+            self.tech, self.db
+        )
+        self.assertEqual(result['tarifa_base'], 250.50)
+        self.assertEqual(result['unidad_cobro'], 'POR_SERVICIO')
+
+        stored = my_services(self.tech, self.db)[0]
+        self.assertEqual(stored['tarifa_base'], 250.50)
+        self.assertEqual(stored['unidad_cobro'], 'POR_SERVICIO')
+
+    def test_service_tariff_zero_or_negative_is_rejected(self):
+        # CA-03: La tarifa debe ser mayor que cero
+        for invalid in (0, -10, -0.01):
+            with self.subTest(tariff=invalid):
+                self.assertEqual(self.status_of(lambda: create_service(
+                    ServiceIn(nombre='Prueba tarifa', descripcion='Descripcion de prueba',
+                              especialidad_id=self.electricidad, tarifa_base=invalid, unidad_cobro='POR_HORA'),
+                    self.tech, self.db
+                )), 400)
+
+    def test_service_tariff_can_be_updated(self):
+        # CA-05: Las tarifas deben poder actualizarse
+        created = self.create()
+        updated = self.update(created['id'], tarifa_base=450.0, unidad_cobro='POR_DIA')
+        self.assertEqual(updated['tarifa_base'], 450.0)
+        self.assertEqual(updated['unidad_cobro'], 'POR_DIA')
+
+        stored = my_services(self.tech, self.db)[0]
+        self.assertEqual(stored['tarifa_base'], 450.0)
+        self.assertEqual(stored['unidad_cobro'], 'POR_DIA')
+
+    def test_service_tariff_dedicated_endpoint(self):
+        # HU-09 ST-02: Endpoint específico de actualización de tarifas
+        created = self.create()
+        updated = update_service_tariff(
+            uuid.UUID(created['id']),
+            ServiceTariffUpdate(tarifa_base=320.0, unidad_cobro='POR_PROYECTO'),
+            self.tech, self.db
+        )
+        self.assertEqual(updated['tarifa_base'], 320.0)
+        self.assertEqual(updated['unidad_cobro'], 'POR_PROYECTO')
 
 if __name__ == '__main__':
     unittest.main()
