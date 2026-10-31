@@ -4,3 +4,4 @@ frontend/.env
 frontend/.env.local
 frontend/test-results/
 frontend/playwright-report/
+.vscode/
