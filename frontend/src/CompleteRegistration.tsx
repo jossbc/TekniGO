@@ -13,7 +13,7 @@ import CoverageZoneSelector from './CoverageZoneSelector'
 import { Brand, Button } from './components/ui'
 
 export default function CompleteRegistration({ user }: { user: User }) {
-  const { state, retry } = useAccount(user)
+  const { state, retry, updateProfile } = useAccount(user)
   const navigate = useNavigate()
   const location = useLocation()
   const [busy, setBusy] = useState(false)
@@ -56,7 +56,8 @@ export default function CompleteRegistration({ user }: { user: User }) {
         <EmailVerification user={user} initialNotice={location.state?.emailVerificationNotice} />
         <section className="account-card profile-card" style={{ marginBottom: 24 }}>
           <h2>Verificación de identidad</h2>
-          <ClientIdentityVerification user={user} initialStatus={profile.estado_identidad} />
+          <ClientIdentityVerification user={user} initialStatus={profile.estado_identidad}
+            onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
         </section>
         {profile.roles.includes('TECNICO') && <>
           <section className="account-card profile-card" style={{ marginBottom: 24 }}>

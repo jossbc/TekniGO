@@ -27,7 +27,8 @@ def main():
         run([str(worker), '-m', 'pip', 'install', '--no-cache-dir', '--force-reinstall',
              '--no-deps', 'opencv-contrib-python-headless==4.10.0.84'])
     print('4/5: preparando modelos en el directorio de la aplicación…', flush=True)
-    run([str(worker), '-m', 'app.identity_worker', '--prepare', '--debug'])
+    # Native crashes bypass Python exceptions; include the active Python stack.
+    run([str(worker), '-X', 'faulthandler', '-m', 'app.identity_worker', '--prepare', '--debug'])
     print('5/5: ejecutando pruebas de la API…', flush=True)
     run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests'])
     print('OK: construcción terminada. No se aplicaron migraciones ni se modificaron cuentas.', flush=True)

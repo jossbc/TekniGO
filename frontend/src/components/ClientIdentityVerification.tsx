@@ -49,31 +49,52 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [attempt, setAttempt] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
+  const statusCallback = useRef(onStatusChange)
+  const profileStatus = useRef(initialStatus)
+  statusCallback.current = onStatusChange
+  profileStatus.current = initialStatus
 
   const frontalInputRef = useRef<HTMLInputElement | null>(null)
   const reversoInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
+    if (busy) return
     let active = true
-    setLoading(true)
-    setLoadError('')
-    api<IdentityDocsResponse>('/users/me/identity-documents', user)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    async function refresh() {
+      setRefreshing(true)
+      await api<IdentityDocsResponse>('/users/me/identity-documents', user)
       .then((res) => {
         if (!active) return
         const uploaded = Array.isArray(res.documentos) && res.documentos.length > 0
         setHasUploadedDocs(uploaded)
         setStatus(uploaded ? res.estado_identidad : 'PENDIENTE')
         setProcessing(res.procesamiento)
+        setLoadError('')
+        if (res.estado_identidad !== profileStatus.current) {
+          profileStatus.current = res.estado_identidad
+          statusCallback.current?.(res.estado_identidad)
+        }
+        if (uploaded && res.estado_identidad === 'EN_REVISION') {
+          timer = setTimeout(refresh, 10000)
+        }
       })
       .catch((err) => {
         if (!active) return
         setLoadError(errorMessage(err))
+        timer = setTimeout(refresh, 10000)
       })
-      .finally(() => { if (active) setLoading(false) })
+      .finally(() => {
+        if (active) { setLoading(false); setRefreshing(false) }
+      })
+    }
+    void refresh()
     return () => {
       active = false
+      clearTimeout(timer)
     }
-  }, [user, initialStatus, attempt])
+  }, [user, initialStatus, attempt, busy])
 
   useEffect(() => {
     if (!dniFrontal) {
@@ -227,8 +248,9 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
         <p style={{ marginTop: '0.75rem', marginBottom: 0 }}>
           {processing?.observacion || 'Ya recibimos tu DNI por ambos lados y tu selfie. Tu identidad sigue pendiente de verificación.'}
         </p>
-        <Button type="button" className="button-outline" style={{ width: 'auto', marginTop: 16 }} onClick={() => setAttempt((value) => value + 1)}>Actualizar estado</Button>
-        {(processing?.estado === 'ERROR' || processing?.estado === 'INCIERTO') && <Button type="button" disabled={busy} style={{ width: 'auto', marginTop: 16 }} onClick={retryProcessing}>
+        <Button type="button" disabled={busy || refreshing} className="button-outline" style={{ width: 'auto', marginTop: 16, marginRight: 12 }} onClick={() => setAttempt((value) => value + 1)}>{refreshing ? 'Actualizando...' : 'Actualizar estado'}</Button>
+        {busy && <LoadingState variant="inline" message="Evaluando tu identidad." detail="El resultado aparecerá aquí al terminar." />}
+        {(!processing || processing.estado === 'ERROR' || processing.estado === 'INCIERTO') && <Button type="button" disabled={busy || refreshing} style={{ width: 'auto', marginTop: 16 }} onClick={retryProcessing}>
           {busy ? 'Comprobando…' : 'Reintentar evaluación'}
         </Button>}
         {formError && <p className="alert" role="alert">{formError}</p>}
