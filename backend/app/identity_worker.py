@@ -12,18 +12,27 @@ import sys
 from app.identity_text import compare_document_text
 
 
-def load_models():
+def load_models(*, debug=False):
     # Shared by explicit warm-up and actual evaluation.
     root = Path(__file__).resolve().parents[1]
     os.environ.setdefault('DEEPFACE_HOME', str(root / '.identity_models'))
     os.environ.setdefault('PADDLE_PDX_CACHE_HOME', str(root / '.identity_models' / 'paddle'))
     os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
     os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+    def stage(message):
+        if debug:
+            print(message, file=sys.stderr, flush=True)
+
+    stage('Modelos: importando PaddleOCR...')
     from paddleocr import PaddleOCR
+    stage('Modelos: importando DeepFace/TensorFlow...')
     from deepface import DeepFace
+    stage('Modelos: creando OCR...')
     ocr = PaddleOCR(lang='es', ocr_version='PP-OCRv5', use_doc_orientation_classify=False,
                     use_doc_unwarping=False, use_textline_orientation=False, enable_mkldnn=False)
+    stage('Modelos: creando Facenet512...')
     DeepFace.build_model('Facenet512')
+    stage('Modelos: preparación completada.')
     return ocr, DeepFace
 
 
@@ -162,7 +171,7 @@ def main():
     if sys.argv[1:] in (['--prepare'], ['--prepare', '--debug']):
         try:
             with redirect_stdout(io.StringIO()):
-                load_models()
+                load_models(debug='--debug' in sys.argv)
         except Exception as error:
             if isinstance(error, ModuleNotFoundError):
                 print(f'Falta una dependencia del entorno de identidad: {error.name}.')
