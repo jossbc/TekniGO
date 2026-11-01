@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func, Numeric
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -73,14 +73,43 @@ class Service(Base):
     actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class IdentityVerificationRequest(Base):
+    __tablename__ = "solicitudes_verificacion_identidad"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "version", name="uq_solicitud_identidad_version"),
+        CheckConstraint("version > 0", name="ck_solicitud_identidad_version"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IdentityVerificationResult(Base):
+    __tablename__ = "resultados_verificacion_identidad"
+    __table_args__ = (
+        CheckConstraint("estado IN ('PENDIENTE', 'EN_REVISION', 'RECHAZADO', 'VERIFICADO', 'INCIERTO', 'ERROR')", name="ck_resultado_identidad_estado"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    solicitud_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("solicitudes_verificacion_identidad.id"), index=True)
+    estado: Mapped[str] = mapped_column(String(30))
+    motivo: Mapped[str] = mapped_column(Text)
+    proceso_responsable: Mapped[str] = mapped_column(String(100))
+    version_proceso: Mapped[str] = mapped_column(String(50))
+    evidencia: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IdentityDocument(Base):
     __tablename__ = "documentos_identidad"
     __table_args__ = (
         CheckConstraint("tipo IN ('DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE')", name="ck_documento_identidad_tipo"),
         CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO')", name="ck_documento_identidad_estado"),
+        UniqueConstraint("solicitud_id", "tipo", name="uq_documento_solicitud_tipo"),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), index=True)
+    solicitud_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("solicitudes_verificacion_identidad.id"), index=True)
     tipo: Mapped[str] = mapped_column(String(30))
     ruta_privada: Mapped[str] = mapped_column(String(500), unique=True)
     content_type: Mapped[str] = mapped_column(String(50))

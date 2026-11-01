@@ -1,0 +1,10 @@
+# Optional local ML runtime. Install in a separate Python 3.13 environment.
+# Keep the FastAPI environment and CI independent of these large packages.
+paddleocr>=3.0,<4
+paddlepaddle>=3.3,<4
+deepface>=0.0.103,<0.1
+tensorflow>=2.20,<2.22
+tf-keras>=2.20,<2.22
+opencv-python>=4.10,<5
+numpy>=2,<3
+Werkzeug>=3.1,<4

@@ -186,7 +186,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
             user.correo = data.correo
         db.flush()
         if email_changed:
-            auth.update_user(claims["uid"], email=data.correo)
+            auth.update_user(claims["uid"], email=data.correo, email_verified=False)
         db.commit()
         db.refresh(user)
     except IntegrityError:

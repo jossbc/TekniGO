@@ -4,10 +4,14 @@ import os
 import urllib.error
 import urllib.request
 import uuid
+import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {
@@ -69,20 +73,34 @@ def _cipher_stream(data: bytes, secret: bytes, nonce: bytes) -> bytes:
     return bytes(out)
 
 
+def _key_material(secret_key: str | None = None) -> bytes:
+    secret = secret_key if secret_key is not None else os.getenv("PRIVATE_STORAGE_SECRET", "")
+    if len(secret.encode("utf-8")) < 32 or secret == "teknigo-private-storage-key":
+        raise HTTPException(503, "Configura una clave privada de cifrado segura de al menos 32 bytes")
+    return secret.encode("utf-8")
+
+
 def encrypt_bytes(data: bytes, secret_key: str | None = None) -> bytes:
-    key_material = (secret_key or os.getenv("PRIVATE_STORAGE_SECRET") or "teknigo-private-storage-key").encode("utf-8")
-    enc_key = hashlib.sha256(b"enc:" + key_material).digest()
-    mac_key = hashlib.sha256(b"mac:" + key_material).digest()
-    nonce = os.urandom(16)
-    ciphertext = _cipher_stream(data, enc_key, nonce)
-    tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-    return b"TKGO1" + nonce + tag + ciphertext
+    key = hashlib.sha256(b"TKGO2:" + _key_material(secret_key)).digest()
+    nonce = os.urandom(12)
+    return b"TKGO2" + nonce + AESGCM(key).encrypt(nonce, data, b"TKGO2")
 
 
 def decrypt_bytes(payload: bytes, secret_key: str | None = None) -> bytes:
+    if payload[:5] == b"TKGO2":
+        key = hashlib.sha256(b"TKGO2:" + _key_material(secret_key)).digest()
+        if len(payload) < 33:
+            raise ValueError("Archivo privado incompleto")
+        try:
+            return AESGCM(key).decrypt(payload[5:17], payload[17:], b"TKGO2")
+        except InvalidTag:
+            raise ValueError("No se pudo verificar la integridad del archivo privado") from None
     if len(payload) < 5 + 16 + 32 or payload[:5] != b"TKGO1":
         raise ValueError("Formato de archivo privado inválido")
-    key_material = (secret_key or os.getenv("PRIVATE_STORAGE_SECRET") or "teknigo-private-storage-key").encode("utf-8")
+    # Legacy reads require the original key explicitly; never try a default key.
+    _key_material(secret_key)
+    legacy_secret = secret_key if secret_key is not None else os.getenv("PRIVATE_STORAGE_LEGACY_SECRET") or os.getenv("PRIVATE_STORAGE_SECRET")
+    key_material = legacy_secret.encode("utf-8")
     enc_key = hashlib.sha256(b"enc:" + key_material).digest()
     mac_key = hashlib.sha256(b"mac:" + key_material).digest()
     nonce = payload[5:21]
@@ -97,6 +115,27 @@ def decrypt_bytes(payload: bytes, secret_key: str | None = None) -> bytes:
 class PrivateDocumentStorage:
     def __init__(self, base_dir: Path | None = None):
         self.base_dir = base_dir or Path(os.getenv("PRIVATE_STORAGE_DIR", str(DEFAULT_LOCAL_DIR)))
+        self.local_override = base_dir is not None
+
+    def _supabase_config(self) -> tuple[str, str] | None:
+        if self.local_override:
+            return None
+        url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        if not url and not key:
+            if os.getenv("PRIVATE_STORAGE_BACKEND") == "local":
+                return None
+            raise HTTPException(503, "Configura el almacenamiento privado de Supabase")
+        parsed = urlsplit(url)
+        if not key or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            raise HTTPException(503, "Configuración del almacenamiento privado incompleta o inválida")
+        return url, key
+
+    def _local_target(self, object_key: str) -> Path:
+        target = (self.base_dir / object_key).resolve()
+        if not target.is_relative_to(self.base_dir.resolve()):
+            raise ValueError("Ruta privada inválida")
+        return target
 
     def store(
         self,
@@ -113,15 +152,11 @@ class PrivateDocumentStorage:
         object_key = f"identidad/{user_id}/{doc_type.lower()}_{uuid.uuid4().hex}{ext}.enc"
         encrypted = encrypt_bytes(content)
 
-        supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-
-        if supabase_url and supabase_key:
-            self._upload_supabase(supabase_url, supabase_key, object_key, encrypted)
+        config = self._supabase_config()
+        if config:
+            self._upload_supabase(*config, object_key, encrypted)
         else:
-            target = (self.base_dir / object_key).resolve()
-            if not str(target).startswith(str(self.base_dir.resolve())):
-                raise HTTPException(400, "Ruta de almacenamiento inválida")
+            target = self._local_target(object_key)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(encrypted)
 
@@ -137,10 +172,38 @@ class PrivateDocumentStorage:
         if not ruta_privada.startswith(prefix):
             raise ValueError("Ruta privada desconocida")
         object_key = ruta_privada[len(prefix) :]
-        target = (self.base_dir / object_key).resolve()
-        if not str(target).startswith(str(self.base_dir.resolve())) or not target.is_file():
-            raise FileNotFoundError("Archivo privado no encontrado")
-        return decrypt_bytes(target.read_bytes())
+        if not re.fullmatch(r"identidad/[0-9a-f-]{36}/(?:dni_frontal|dni_reverso|selfie)_[0-9a-f]{32}\.(?:jpg|png|webp)\.enc", object_key):
+            raise ValueError("Ruta privada inválida")
+        config = self._supabase_config()
+        if config:
+            payload = self._download_supabase(*config, object_key)
+        else:
+            payload = self._local_target(object_key).read_bytes()
+        try:
+            return decrypt_bytes(payload)
+        except ValueError:
+            raise HTTPException(502, "No se pudo comprobar la integridad del documento privado") from None
+
+    def _download_supabase(self, base_url: str, service_key: str, object_key: str) -> bytes:
+        req = urllib.request.Request(
+            f"{base_url}/storage/v1/object/authenticated/{PRIVATE_BUCKET}/{object_key}",
+            headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
+        )
+        try:
+            with _private_urlopen(req) as response:
+                if response.status != 200:
+                    raise HTTPException(502, "No se pudo recuperar el documento privado")
+                payload = response.read(MAX_DOCUMENT_BYTES + 1025)
+                if len(payload) > MAX_DOCUMENT_BYTES + 1024:
+                    raise HTTPException(502, "Documento privado demasiado grande")
+                return payload
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code == 404:
+                raise FileNotFoundError("Archivo privado no encontrado") from None
+            raise HTTPException(502, "No se pudo recuperar el documento privado") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise HTTPException(502, "Error de conexión con el almacenamiento privado") from None
 
     def _upload_supabase(self, base_url: str, service_key: str, object_key: str, encrypted: bytes) -> None:
         url = f"{base_url}/storage/v1/object/{PRIVATE_BUCKET}/{object_key}"
@@ -152,13 +215,26 @@ class PrivateDocumentStorage:
                 "Authorization": f"Bearer {service_key}",
                 "apikey": service_key,
                 "Content-Type": "application/octet-stream",
-                "x-upsert": "true",
+                "x-upsert": "false",
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with _private_urlopen(req) as resp:
                 if resp.status not in (200, 201):
                     raise HTTPException(502, "No se pudo almacenar el documento de forma privada")
-        except urllib.error.URLError:
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise HTTPException(502, "No se pudo almacenar el documento de forma privada") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
             raise HTTPException(502, "Error de conexión con el almacenamiento privado") from None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _private_urlopen(request):
+    # Do not forward backend credentials to a redirect destination.
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=15)
 

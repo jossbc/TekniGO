@@ -1,4 +1,6 @@
 .venv/
+.venv-identity/
+.identity_models/
 .env
 secrets/
 __pycache__/

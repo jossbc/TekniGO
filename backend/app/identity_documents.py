@@ -4,13 +4,14 @@ from email.parser import BytesParser
 from email.policy import default as default_email_policy
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import IdentityDocument, User
+from app.models import IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, User
 from app.security import get_current_user
-from app.storage import PrivateDocumentStorage
+from app.storage import PrivateDocumentStorage, validate_document_bytes
 
 router = APIRouter()
 
@@ -21,8 +22,11 @@ class UploadedPart:
     content_type: str | None = None
 
 
-def _get_user(claims: dict, db: Session) -> User:
-    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+def _get_user(claims: dict, db: Session, *, lock: bool = False) -> User:
+    query = select(User).where(User.firebase_uid == claims["uid"])
+    if lock:
+        query = query.with_for_update()
+    user = db.scalar(query.execution_options(populate_existing=True))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
     return user
@@ -72,7 +76,7 @@ def submit_identity_documents(
     db: Session,
     storage: PrivateDocumentStorage | None = None,
 ) -> dict:
-    user = _get_user(claims, db)
+    user = _get_user(claims, db, lock=True)
     existing_docs = db.scalars(
         select(IdentityDocument.id).where(IdentityDocument.usuario_id == user.id)
     ).all()
@@ -88,6 +92,14 @@ def submit_identity_documents(
         ("SELFIE", "la selfie", selfie),
     ]
 
+    # Validate the whole submission before storing any of its files.
+    for _, label, part in items:
+        validate_document_bytes(part.content, part.content_type, label)
+    version = (db.scalar(select(func.max(IdentityVerificationRequest.version)).where(
+        IdentityVerificationRequest.usuario_id == user.id,
+    )) or 0) + 1
+    request_id = uuid.uuid4()
+
     stored_docs: list[IdentityDocument] = []
     for doc_type, label, part in items:
         saved = store.store(
@@ -100,6 +112,7 @@ def submit_identity_documents(
         stored_docs.append(
             IdentityDocument(
                 usuario_id=user.id,
+                solicitud_id=request_id,
                 tipo=doc_type,
                 ruta_privada=saved.ruta_privada,
                 content_type=saved.content_type,
@@ -109,31 +122,78 @@ def submit_identity_documents(
             )
         )
 
-    db.execute(delete(IdentityDocument).where(IdentityDocument.usuario_id == user.id))
-    db.add_all(stored_docs)
-    user.estado_identidad = "EN_REVISION"
-    db.commit()
+    try:
+        db.add(IdentityVerificationRequest(id=request_id, usuario_id=user.id, version=version))
+        db.flush()
+        db.add_all(stored_docs)
+        db.add(IdentityVerificationResult(
+            solicitud_id=request_id, estado="EN_REVISION",
+            motivo="Documentos recibidos. Pendientes de verificación de identidad.",
+            proceso_responsable="CARGA_DOCUMENTAL", version_proceso="1",
+        ))
+        user.estado_identidad = "EN_REVISION"
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Ya se registró un envío. Actualiza el estado antes de reintentar.") from None
     for doc in stored_docs:
         db.refresh(doc)
-
-    return {
-        "estado_identidad": user.estado_identidad,
-        "documentos": [_serialize_doc(doc) for doc in stored_docs],
-    }
+    if any(role.rol == 'CLIENTE' for role in user.roles):
+        from app.identity_processing import process_current_identity
+        process_current_identity(claims, db, storage=store)
+    return get_my_identity_documents(claims, db)
 
 
 def get_my_identity_documents(claims: dict, db: Session) -> dict:
     user = _get_user(claims, db)
+    current = db.scalar(select(IdentityVerificationRequest).where(
+        IdentityVerificationRequest.usuario_id == user.id,
+    ).order_by(IdentityVerificationRequest.version.desc()).limit(1))
     docs = db.scalars(
         select(IdentityDocument)
         .where(IdentityDocument.usuario_id == user.id)
+        .where(IdentityDocument.solicitud_id == current.id if current else False)
         .order_by(IdentityDocument.creado_en.asc())
     ).all()
     effective_status = user.estado_identidad if docs else "PENDIENTE"
+    processing = db.scalar(select(IdentityVerificationResult).where(
+        IdentityVerificationResult.solicitud_id == current.id,
+        IdentityVerificationResult.proceso_responsable == 'PROCESAMIENTO_IDENTIDAD',
+    ).order_by(IdentityVerificationResult.creado_en.desc()).limit(1)) if current else None
     return {
         "estado_identidad": effective_status,
+        "solicitud_id": str(current.id) if current else None,
+        "version": current.version if current else None,
         "documentos": [_serialize_doc(doc) for doc in docs],
+        "procesamiento": {
+            "estado": processing.estado, "observacion": processing.motivo,
+            "fecha": processing.creado_en.isoformat(),
+        } if processing else None,
     }
+
+
+def get_my_identity_history(claims: dict, db: Session) -> dict:
+    user = _get_user(claims, db)
+    requests = db.scalars(select(IdentityVerificationRequest).where(
+        IdentityVerificationRequest.usuario_id == user.id,
+    ).order_by(IdentityVerificationRequest.version.desc())).all()
+    ids = [request.id for request in requests]
+    docs = db.scalars(select(IdentityDocument).where(
+        IdentityDocument.solicitud_id.in_(ids), IdentityDocument.usuario_id == user.id,
+    ).order_by(IdentityDocument.creado_en, IdentityDocument.id)).all() if ids else []
+    results = db.scalars(select(IdentityVerificationResult).where(
+        IdentityVerificationResult.solicitud_id.in_(ids),
+    ).order_by(IdentityVerificationResult.creado_en, IdentityVerificationResult.id)).all() if ids else []
+    return {"solicitudes": [{
+        "id": str(request.id), "version": request.version,
+        "creado_en": request.creado_en.isoformat(),
+        "documentos": [_serialize_doc(doc) for doc in docs if doc.solicitud_id == request.id],
+        "resultados": [{
+            "id": str(result.id), "estado": result.estado, "motivo": result.motivo,
+            "proceso_responsable": result.proceso_responsable,
+            "version_proceso": result.version_proceso, "creado_en": result.creado_en.isoformat(),
+        } for result in results if result.solicitud_id == request.id],
+    } for request in requests]}
 
 
 def get_document_content_for_admin(
@@ -179,6 +239,22 @@ def list_my_identity_documents_endpoint(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    return get_my_identity_documents(claims, db)
+
+
+@router.get("/users/me/identity-history")
+def list_my_identity_history_endpoint(
+    claims=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    return get_my_identity_history(claims, db)
+
+
+@router.post("/users/me/identity-verification")
+def process_my_identity_endpoint(
+    claims=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    from app.identity_processing import process_current_identity
+    process_current_identity(claims, db)
     return get_my_identity_documents(claims, db)
 
 

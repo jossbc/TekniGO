@@ -29,7 +29,7 @@ def check_connection():
     import socket
     from sqlalchemy import inspect, text
     from sqlalchemy.exc import OperationalError, SQLAlchemyError
-    from app.database import get_engine
+    from app.database import get_engine, database_schema
 
     try:
         engine = get_engine()
@@ -41,12 +41,14 @@ def check_connection():
             connection.execute(text("SET LOCAL statement_timeout = '5000'"))
             connection.execute(text("SELECT 1"))
             print("4/4: consultando tablas y revision...", flush=True)
-            tables = set(inspect(connection).get_table_names(schema="public"))
+            schema = database_schema()
+            print('Esquema consultado:', schema)
+            tables = set(inspect(connection).get_table_names(schema=schema))
             expected = {"usuarios", "usuarios_roles", "perfiles_tecnicos"}
             missing = sorted(expected - tables)
             print("OK: conexión PostgreSQL comprobada con SELECT 1.")
             if "alembic_version" in tables:
-                version = connection.execute(text("SELECT version_num FROM public.alembic_version")).scalars().all()
+                version = connection.execute(text(f'SELECT version_num FROM "{schema}".alembic_version')).scalars().all()
                 print("Revisión Alembic:", ", ".join(version) or "sin revisión")
             if missing:
                 print("Tablas iniciales pendientes:", ", ".join(missing))
