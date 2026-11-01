@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "010_documentos_tecnico"
-down_revision = "009_tarifas_servicios"
+revision = "012_documentos_tecnico"
+down_revision = "011_procesamiento_identidad"
 branch_labels = None
 depends_on = None
 
