@@ -114,8 +114,7 @@ export default function SelfieCameraCapture({ value, error, onCapture }: Props) 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    ctx.translate(canvas.width, 0)
-    ctx.scale(-1, 1)
+    // Mirror only the live preview; preserve camera pixels for document comparison.
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
     // Apagar el hardware de la cámara inmediatamente después de capturar el frame

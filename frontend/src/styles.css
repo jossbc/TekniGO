@@ -22,6 +22,7 @@ textarea { font: inherit; resize: vertical; }
 img, video, canvas { max-width: 100%; }
 .button { max-width: 100%; white-space: normal; text-align: center; }
 .status-pill { max-width: 100%; }
+.status-pill-verified { background: #edf9f1; color: #185c3c; }
 .status-pill svg, [role="alert"] svg { flex-shrink: 0; }
 .profile-card { padding: clamp(16px, 4vw, 40px); }
 .profile-card-header {

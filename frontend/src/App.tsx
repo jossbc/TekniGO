@@ -1,4 +1,6 @@
 import LoadingState from './components/LoadingState'
+import EmailVerification from './components/EmailVerification'
+import { requestEmailVerification } from './lib/emailVerification'
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { createUserWithEmailAndPassword, EmailAuthProvider, onIdTokenChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, type User, sendPasswordResetEmail } from "firebase/auth";
@@ -288,7 +290,13 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
           telefono: phone,
           rol: role,
         });
-        navigate("/registro/completar", { replace: true });
+        let emailVerificationNotice = '';
+        try {
+          if (await requestEmailVerification(identity)) emailVerificationNotice = 'Enlace enviado. Revisa tu correo y spam para confirmar tu dirección.';
+        } catch (err) {
+          emailVerificationNotice = `Tu cuenta se creó, pero no pudimos enviar el enlace: ${errorMessage(err)} Puedes solicitarlo desde esta pantalla.`;
+        }
+        navigate("/registro/completar", { replace: true, state: { emailVerificationNotice } });
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -383,7 +391,7 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
                     <p className="role-note">Una cuenta, ambas posibilidades. Podrás agregar el otro rol después.</p>
                     <Field label="Nombre completo" name="name" autoComplete="name" placeholder="Como aparece en tu identidad" minLength={2} maxLength={150} required />
                     <div className="field-row">
-                      <Field label="DNI" name="dni" inputMode="numeric" placeholder="0801-2006-00000" pattern="[0-9 -]{13,17}" required />
+                      <Field label="DNI" name="dni" inputMode="numeric" placeholder="0801-2006-00000" pattern={"[0-9 \\-]{13,17}"} required />
                       <PhoneField />
                     </div>
                   </>
@@ -517,6 +525,7 @@ function VerificationRoute({ user }: { user: User }) {
       <main className="account" style={{ margin: "0 auto 90px" }}>
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
+        <EmailVerification user={user} />
         <section className="account-card profile-card">
           <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
         </section>
@@ -630,6 +639,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
         </section>}
         {registrationError && <div className="alert" role="alert">No pudimos comprobar los requisitos de registro: {registrationError} <Link to="/registro/completar">Revisar mi registro</Link></div>}
         {roleNotice && <div className="success-alert" role="status">{roleNotice}</div>}
+        {profile && <EmailVerification user={user} />}
         {profile && (
           <>
             <div className="account-grid">
@@ -656,8 +666,8 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                 </span>
                 <h2>{profile.estado_identidad === "VERIFICADO" ? "Identidad verificada" : profile.estado_identidad === "EN_REVISION" ? "Identidad en revisión" : "Verificación pendiente"}</h2>
                 <p>{profile.estado_identidad === "VERIFICADO" ? "Tu identidad fue verificada correctamente." : profile.estado_identidad === "EN_REVISION" ? "Recibimos tus documentos. Están pendientes de revisión administrativa." : "Para contratar u ofrecer servicios necesitas completar la verificación de identidad."}</p>
-                <span className="status-pill">
-                  <Clock3 size={15} /> {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
+                <span className={`status-pill${profile.estado_identidad === "VERIFICADO" ? " status-pill-verified" : ""}`}>
+                  {profile.estado_identidad === "VERIFICADO" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Clock3 size={15} aria-hidden="true" />} {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
                 </span>
                 <Link to="/verificacion">
                   {profile.estado_identidad === "EN_REVISION" || profile.estado_identidad === "VERIFICADO" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />

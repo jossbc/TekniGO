@@ -1,7 +1,8 @@
 import LoadingState from './components/LoadingState'
 import { useState } from 'react'
 import type { User } from 'firebase/auth'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import EmailVerification from './components/EmailVerification'
 import { useAccount } from './lib/useAccount'
 import { errorMessage } from './lib/api'
 import { registrationComplete, registrationRequirements } from './lib/registration'
@@ -14,6 +15,7 @@ import { Brand, Button } from './components/ui'
 export default function CompleteRegistration({ user }: { user: User }) {
   const { state, retry } = useAccount(user)
   const navigate = useNavigate()
+  const location = useLocation()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const profile = state.status === 'ready' ? state.profile : null
@@ -51,6 +53,7 @@ export default function CompleteRegistration({ user }: { user: User }) {
       <h1>Completa tu registro</h1>
       <p>Tu cuenta ya está creada. Envía tus documentos{profile?.roles.includes('TECNICO') ? ' y guarda los datos de tu perfil técnico' : ''} para finalizar. Tu identidad quedará pendiente de revisión.</p>
       {profile && <>
+        <EmailVerification user={user} initialNotice={location.state?.emailVerificationNotice} />
         <section className="account-card profile-card" style={{ marginBottom: 24 }}>
           <h2>Verificación de identidad</h2>
           <ClientIdentityVerification user={user} initialStatus={profile.estado_identidad} />

@@ -4,6 +4,9 @@ TekniGO es un proyecto en desarrollo para conectar a personas que necesitan un s
 
 Una misma cuenta puede usarse como **cliente y técnico**, sin volver a registrarse.
 
+**Equipo:** para ejecutar los cambios de HU-17A después de actualizar el
+repositorio, seguir [la guía de instalación y pruebas](GUIA_EQUIPO.md).
+
 ## Qué se puede hacer actualmente
 
 - Crear una cuenta, iniciar sesión y recuperar la contraseña por correo.
@@ -15,7 +18,7 @@ Una misma cuenta puede usarse como **cliente y técnico**, sin volver a registra
 - Cambiar la disponibilidad del técnico. Estar disponible no reemplaza la verificación de identidad.
 - Enviar imágenes del DNI por ambos lados y una selfie para solicitar la verificación de identidad. Se aceptan JPG, PNG y WEBP de hasta 5 MB por archivo.
 
-Los documentos de identidad no se muestran en el perfil público. Enviarlos deja la solicitud en revisión; no significa que la identidad ya esté aprobada.
+Los documentos de identidad no se muestran en el perfil público. Con el procesamiento local configurado, el envío inicia una verificación básica; un resultado incierto o un error mantiene la identidad pendiente. El correo confirmado es un requisito adicional para contratar.
 
 La interfaz incluye ajustes para celular, tableta y computadora. Todavía está pendiente comprobar visualmente todas las pantallas en distintos dispositivos.
 
@@ -55,11 +58,16 @@ Desde `backend/`, comprueba la conexión:
 .\.venv\Scripts\python.exe -m app.check_database
 ```
 
-Si estás preparando una base nueva o hay cambios pendientes en su estructura, confirma con el equipo que estás usando la base correcta y ejecuta:
+Para probar estos cambios sin modificar las tablas publicadas, prepara el esquema
+de desarrollo con el backend detenido:
 
 ```powershell
-.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m app.setup_development_database
 ```
+
+El comando configura `teknigo_dev` y activa el procesamiento Python: para probar
+identidad prepara también el entorno/modelos de la guía del equipo. Las
+migraciones de `public` se coordinan por separado con la publicación.
 
 Para iniciar el servidor, desde `backend/`:
 
@@ -100,11 +108,117 @@ Abre la dirección que indique la terminal, normalmente [localhost:5173](http://
 
 ### Documentos de identidad durante el desarrollo
 
-Sin configuración de almacenamiento de Supabase, los archivos se guardan en `backend/.private_storage`. Usa imágenes de prueba y configura una clave privada propia en `PRIVATE_STORAGE_SECRET` antes de probar las cargas; conserva esa clave para poder leer los archivos guardados.
+El almacenamiento exige configurar Supabase. Para usar explícitamente el disco durante el desarrollo, establece `PRIVATE_STORAGE_BACKEND=local`; los archivos se guardarán en `backend/.private_storage`. Usa imágenes de prueba y configura una clave aleatoria de al menos 32 bytes en `PRIVATE_STORAGE_SECRET`; conserva esa clave para poder leer los archivos guardados.
 
-Para usar Supabase Storage, el servidor necesita `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y un contenedor privado llamado `documentos-identidad`. La lectura administrativa desde Supabase sigue pendiente, como se indica arriba.
+Para usar Supabase Storage, el servidor necesita `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y un contenedor privado llamado `documentos-identidad`. FastAPI recupera y descifra los archivos mediante lectura autenticada; el contenido sigue restringido a administración y los procesos internos de verificación.
 
 No subas credenciales, archivos `.env` ni documentos personales a GitHub. Las credenciales privadas se configuran en el servidor, nunca en las variables `VITE_`.
+
+### Procesamiento local de identidad (opcional)
+
+Para probar las migraciones y el recorrido completo sin cambiar las tablas
+publicadas, ejecutar desde `backend/` con el entorno del API:
+
+```powershell
+python -m app.setup_development_database
+```
+
+Este comando crea el esquema privado `teknigo_dev`, migra únicamente ese esquema
+y luego configura `DATABASE_SCHEMA=teknigo_dev` e `IDENTITY_PROCESSOR=python` en
+`backend/.env`. No cambia `DATABASE_URL` ni copia cuentas/documentos de `public`.
+Reiniciar FastAPI y completar un perfil de desarrollo con el acceso Firebase
+existente si la aplicación lo solicita. No registrar otra cuenta Firebase con
+el mismo correo. Los usuarios y documentos de desarrollo son independientes.
+
+Las transacciones de desarrollo excluyen `public` del search_path. Alembic lleva
+su revisión en `teknigo_dev.alembic_version`; al faltar una tabla de desarrollo
+no se consulta su equivalente publicado. En Render conservar el esquema
+predeterminado `public`; no copiar DATABASE_SCHEMA=teknigo_dev al servicio publicado.
+
+FastAPI puede ejecutar PaddleOCR y DeepFace en un proceso Python local con tiempo
+límite de 180 segundos. Las imágenes se transmiten por memoria, no mediante
+archivos temporales sin cifrar. El proceso no recibe credenciales del backend.
+
+Desde `backend/`, usando Python 3.13 instalado en Windows:
+
+```powershell
+py -3.13 -m venv .venv-identity
+.\.venv-identity\Scripts\python.exe -m pip install -r requirements-identity.txt
+.\.venv-identity\Scripts\python.exe -m app.identity_worker --prepare
+```
+
+La preparación descarga los modelos la primera vez y requiere conexión. No
+envía DNI ni selfies a un proveedor externo. Los modelos se guardan en
+`.identity_models/`, excluida de Git. Si la instalación o preparación falla,
+resolver primero la compatibilidad de los paquetes antes de habilitar el modo.
+
+Para comprobar OCR y rostros con imágenes originales locales antes de conectar
+la base de datos, ejecutar en ese mismo entorno:
+
+```powershell
+.\.venv-identity\Scripts\python.exe -m app.identity_worker --check-local
+```
+
+El comando solicita las rutas del frente, reverso y selfie, el DNI y el nombre
+esperados. Solo imprime controles y versiones de modelos; no sube archivos ni
+crea solicitudes. `null` indica control incierto o no implementado. Usa imágenes
+propias o autorizadas y comparte únicamente los controles, no datos personales.
+
+Una vez preparada la instalación, agregar en `backend/.env` y reiniciar FastAPI:
+
+```dotenv
+IDENTITY_PROCESSOR=python
+```
+
+Por defecto se usa el intérprete de `.venv-identity`. Para otro entorno local,
+configura `IDENTITY_PYTHON` con su ruta absoluta; no cambia el Python del API.
+
+La evaluación se inicia al enviar documentos; `POST /users/me/identity-verification`
+permite reintentar sobre la última solicitud propia, con espera de 60 segundos.
+La consulta de documentos muestra el estado y una observación comprensible.
+Se registra la versión de librerías/modelos en la evidencia privada del resultado.
+
+OCR compara el número de DNI y el nombre normalizado cuando la lectura tiene
+confianza suficiente. DeepFace compara rostros con Facenet512 y exige un único
+rostro en la selfie. Si el DNI contiene dos rostros, la heurística provisional
+solo selecciona el principal cuando su área es al menos tres veces la otra;
+en otro caso conserva la ambigüedad. Compara los recortes seleccionados sin
+elegir el rostro que mejor coincida con la selfie. Una lectura incompleta o rostro ambiguo produce un
+resultado incierto. Esto no demuestra autenticidad documental ni detección de
+vida: ambos controles permanecen sin confirmar. Con el CA-04 actualizado, la
+versión 2 del proceso puede aprobar la verificación básica si legibilidad,
+datos del DNI y comparación facial son positivos. Un control requerido incierto
+o un error mantiene la identidad pendiente; una discrepancia la rechaza.
+El correo confirmado sigue siendo un requisito separado para contratar.
+Los resultados anteriores se conservan y no se aprueban retroactivamente.
+Este modo aún requiere validación real
+de precisión; los tests con simulaciones no validan el comportamiento del modelo.
+
+Antes de probar estos endpoints con una base real, coordinar la aplicación de
+las migraciones 010 y 011 con la actualización del backend. No se aplican
+automáticamente al instalar estas dependencias.
+
+### Habilitación del cliente para contratar (HU-17A ST-06)
+
+`GET /users/me/hiring-eligibility` consulta la cuenta autenticada y devuelve
+`puede_contratar`, `identidad_verificada`, `correo_verificado` y `motivos`.
+La regla central en `app/permissions.py` exige rol CLIENTE, identidad VERIFICADO
+en PostgreSQL y correo actual confirmado en Firebase, coincidente con el perfil.
+Los errores del proveedor no habilitan la contratación. Cambiar de correo exige
+confirmar la nueva dirección antes de poder contratar.
+
+Los futuros endpoints de creación y confirmación de contrataciones deben usar
+`client: User = Depends(get_enabled_client)` importado desde `app.permissions`,
+compartir `db: Session = Depends(get_db)` y guardar la operación en esa sesión.
+La dependencia vuelve a consultar la identidad con bloqueo de fila y comprueba
+el correo en ese momento. Consultar antes el estado o habilitar un botón no
+autoriza una escritura posterior. Para llamadas internas, reutilizar
+`require_enabled_client` sobre la cuenta obtenida del servidor.
+
+Actualmente no existen endpoints de creación/confirmación de contrataciones en
+el repositorio. La conexión de esta dependencia con esos endpoints queda pendiente
+de HU-20; la creación de servicios del catálogo del técnico no es una contratación.
+Esta regla no requiere nuevas migraciones.
 
 ## Comprobar los cambios
 

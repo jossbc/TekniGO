@@ -16,6 +16,7 @@ type Props = {
 type IdentityDocsResponse = {
   estado_identidad: string
   documentos: { id: string; tipo: string; estado: string; observaciones?: string | null }[]
+  procesamiento?: { estado: string; observacion: string; fecha: string } | null
 }
 
 type FieldErrors = {
@@ -34,6 +35,7 @@ function formatSize(bytes: number): string {
 
 export default function ClientIdentityVerification({ user, initialStatus = 'PENDIENTE', onStatusChange }: Props) {
   const [status, setStatus] = useState('PENDIENTE')
+  const [processing, setProcessing] = useState<IdentityDocsResponse['procesamiento']>(null)
   const [hasUploadedDocs, setHasUploadedDocs] = useState(false)
   const [dniFrontal, setDniFrontal] = useState<File | null>(null)
   const [dniReverso, setDniReverso] = useState<File | null>(null)
@@ -61,6 +63,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
         const uploaded = Array.isArray(res.documentos) && res.documentos.length > 0
         setHasUploadedDocs(uploaded)
         setStatus(uploaded ? res.estado_identidad : 'PENDIENTE')
+        setProcessing(res.procesamiento)
       })
       .catch((err) => {
         if (!active) return
@@ -168,15 +171,30 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
         throw new Error(detail)
       }
 
+      const result: IdentityDocsResponse = await response.json()
       setHasUploadedDocs(true)
-      setStatus('EN_REVISION')
-      onStatusChange?.('EN_REVISION')
-      setNotice('Tus documentos fueron enviados y quedaron pendientes de revisión por un administrador.')
+      setStatus(result.estado_identidad)
+      setProcessing(result.procesamiento)
+      onStatusChange?.(result.estado_identidad)
+      setNotice('Tus documentos se guardaron correctamente.')
     } catch (err) {
       setFormError(errorMessage(err))
     } finally {
       setBusy(false)
     }
+  }
+
+  async function retryProcessing() {
+    if (busy) return
+    setBusy(true)
+    setFormError('')
+    try {
+      const result = await api<IdentityDocsResponse>('/users/me/identity-verification', user, undefined, 'POST')
+      setStatus(result.estado_identidad)
+      setProcessing(result.procesamiento)
+      onStatusChange?.(result.estado_identidad)
+    } catch (err) { setFormError(errorMessage(err)) }
+    finally { setBusy(false) }
   }
 
   if (loading) return <LoadingState message="Consultando el estado de tus documentos…" detail="Espera mientras comprobamos si ya los enviaste." />
@@ -189,7 +207,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
     return (
       <div className="success-alert" role="status">
         <CheckCircle2 size={20} />
-        <span>Tu identidad ya fue verificada.</span>
+        <span>Tu verificación básica de identidad está completada.</span>
       </div>
     )
   }
@@ -204,11 +222,16 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
           </div>
         )}
         <span className="status-pill" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <Clock3 size={15} /> En revisión administrativa
+          <Clock3 size={15} /> Identidad pendiente de verificación
         </span>
         <p style={{ marginTop: '0.75rem', marginBottom: 0 }}>
-          Ya recibimos tu DNI por ambos lados y tu selfie. Un administrador revisará tus documentos de forma privada.
+          {processing?.observacion || 'Ya recibimos tu DNI por ambos lados y tu selfie. Tu identidad sigue pendiente de verificación.'}
         </p>
+        <Button type="button" className="button-outline" style={{ width: 'auto', marginTop: 16 }} onClick={() => setAttempt((value) => value + 1)}>Actualizar estado</Button>
+        {(processing?.estado === 'ERROR' || processing?.estado === 'INCIERTO') && <Button type="button" disabled={busy} style={{ width: 'auto', marginTop: 16 }} onClick={retryProcessing}>
+          {busy ? 'Comprobando…' : 'Reintentar evaluación'}
+        </Button>}
+        {formError && <p className="alert" role="alert">{formError}</p>}
       </div>
     )
   }
@@ -315,6 +338,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
 
   return (
     <form onSubmit={handleSubmit} noValidate>
+      {status === 'RECHAZADO' && processing?.observacion && <p className="alert" role="alert">{processing.observacion}</p>}
       <p style={{ margin: '0 0 0.9rem' }}>
         Adjunta una fotografía clara de tu DNI por ambos lados y tómate una selfie en tiempo real para verificar tu identidad.
       </p>
