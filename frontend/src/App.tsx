@@ -518,8 +518,10 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
 function VerificationRoute({ user }: { user: User }) {
   const { state, retry, updateProfile } = useAccount(user);
   const profile = state.status === 'ready' ? state.profile : null;
+  
   if (state.status === 'loading') return <LoadingState variant="screen" message="Cargando la verificación de identidad." />;
   if (!profile) return <div className="site"><main className="account"><AccountStatus state={state} retry={retry} /></main></div>;
+  
   return (
     <div className="site">
       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
@@ -527,7 +529,7 @@ function VerificationRoute({ user }: { user: User }) {
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
         <EmailVerification user={user} />
-                 <section className="account-card profile-card">
+        <section className="account-card profile-card">
           {profile?.roles.includes('TECNICO') ? (
             <TechnicianVerificationForm
               user={user}
