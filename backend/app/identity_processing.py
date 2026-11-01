@@ -2,6 +2,7 @@
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
+import logging
 import os
 from typing import Protocol
 
@@ -17,6 +18,7 @@ PROCESS = 'PROCESAMIENTO_IDENTIDAD'
 PROCESS_VERSION = '2'
 REQUIRED_CHECKS = ('documento_legible', 'datos_coinciden', 'rostro_coincide')
 RETRY_SECONDS = 60
+logger = logging.getLogger('uvicorn.error')
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,7 @@ def process_current_identity(
     if {doc.tipo for doc in docs} != expected or len(docs) != 3:
         state, reason = 'INCIERTO', 'Faltan documentos requeridos. Es necesario enviar el DNI por ambos lados y la selfie.'
     elif adapter is not None:
+        stage = 'lectura_privada'
         try:
             store = storage or PrivateDocumentStorage()
             content = {}
@@ -120,7 +123,9 @@ def process_current_identity(
                     raise ValueError('Document fingerprint mismatch')
                 validate_document_bytes(raw, doc.content_type, 'documento de identidad')
                 content[doc.tipo] = raw
+            stage = 'evaluacion_modelos'
             checks = adapter.evaluate(dni=user.dni, nombre_completo=user.nombre_completo, documents=content)
+            stage = 'validacion_resultado'
             if not isinstance(checks, IdentityChecks):
                 raise ValueError('Invalid processor response')
             state, reason = _decision(checks)
@@ -128,8 +133,9 @@ def process_current_identity(
             if adapter.name == 'PYTHON_LOCAL_OCR_FACE':
                 evidence['modelos'] = adapter.model_versions
                 evidence['diagnostico_facial'] = adapter.face_diagnostic
-        except Exception:
+        except Exception as error:
             # Provider/storage messages may contain sensitive data; never persist them.
+            logger.warning('Identidad: fallo en %s (%s)', stage, type(error).__name__)
             state, reason = 'ERROR', 'No pudimos completar la evaluación. Tus documentos se conservan y tu identidad sigue pendiente. Intenta nuevamente más tarde.'
     result = IdentityVerificationResult(
         solicitud_id=request.id, estado=state, motivo=reason,
