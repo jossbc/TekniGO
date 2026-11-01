@@ -23,13 +23,17 @@ def load_models(*, debug=False):
         if debug:
             print(message, file=sys.stderr, flush=True)
 
+    # PaddleOCR imports its native Paddle runtime lazily. Initialize it before
+    # TensorFlow so the actual native-library load order matches the import order.
+    stage('Modelos: importando núcleo Paddle...')
+    import paddle
     stage('Modelos: importando PaddleOCR...')
     from paddleocr import PaddleOCR
-    stage('Modelos: importando DeepFace/TensorFlow...')
-    from deepface import DeepFace
     stage('Modelos: creando OCR...')
     ocr = PaddleOCR(lang='es', ocr_version='PP-OCRv5', use_doc_orientation_classify=False,
                     use_doc_unwarping=False, use_textline_orientation=False, enable_mkldnn=False)
+    stage('Modelos: importando DeepFace/TensorFlow...')
+    from deepface import DeepFace
     stage('Modelos: creando Facenet512...')
     DeepFace.build_model('Facenet512')
     stage('Modelos: preparación completada.')
