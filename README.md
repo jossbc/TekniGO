@@ -4,9 +4,6 @@ TekniGO es un proyecto en desarrollo para conectar a personas que necesitan un s
 
 Una misma cuenta puede usarse como **cliente y técnico**, sin volver a registrarse.
 
-**Equipo:** para ejecutar los cambios de HU-17A después de actualizar el
-repositorio, seguir [la guía de instalación y pruebas](GUIA_EQUIPO.md).
-
 ## Qué se puede hacer actualmente
 
 - Crear una cuenta, iniciar sesión y recuperar la contraseña por correo.
