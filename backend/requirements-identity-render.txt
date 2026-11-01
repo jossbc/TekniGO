@@ -1,0 +1,9 @@
+# Versions exercised locally. Installed separately from the API environment.
+-r requirements-identity.txt
+paddleocr==3.7.0
+paddlepaddle==3.3.1
+deepface==0.0.103
+tensorflow==2.21.0
+tf-keras==2.21.0
+numpy==2.3.5
+Werkzeug>=3.1,<4
