@@ -1,8 +1,8 @@
-import LoadingState from './components/LoadingState'
-import AccessStory from './components/AccessStory'
-import LandingPage from './LandingPage'
-import EmailVerification from './components/EmailVerification'
-import { requestEmailVerification } from './lib/emailVerification'
+import LoadingState from "./components/LoadingState";
+import AccessStory from "./components/AccessStory";
+import LandingPage from "./LandingPage";
+import EmailVerification from "./components/EmailVerification";
+import { requestEmailVerification } from "./lib/emailVerification";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { createUserWithEmailAndPassword, EmailAuthProvider, onIdTokenChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, type User, sendPasswordResetEmail } from "firebase/auth";
@@ -12,6 +12,8 @@ import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
+import CatalogPage from "./CatalogPage";
+import TechnicianPublicProfilePage from "./TechnicianPublicProfilePage";
 import { AvailabilityToggle } from "./components/AvailabilityToggle";
 import ClientIdentityVerification from "./components/ClientIdentityVerification";
 import { useAccount } from "./lib/useAccount";
@@ -39,10 +41,7 @@ export default function App() {
         : undefined,
     [],
   );
-  if (!ready && pathname !== '/')
-    return (
-      <LoadingState variant="screen" detail="Estamos comprobando tu sesión de forma segura." />
-    );
+  if (!ready && pathname !== "/") return <LoadingState variant="screen" detail="Estamos comprobando tu sesión de forma segura." />;
   const registrationUser = user || auth?.currentUser;
   return (
     <Routes>
@@ -53,6 +52,20 @@ export default function App() {
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/catalogo" element={user ? <CatalogRoute user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route
+        path="/tecnicos/:id"
+        element={
+          user ? (
+            <div className="site">
+              <Header authenticated={true} email={user.email} />
+              <TechnicianPublicProfilePage user={user} />
+            </div>
+          ) : (
+            <Navigate to="/ingresar" replace />
+          )
+        }
+      />
       <Route path="/verificacion" element={user ? <VerificationRoute user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/cliente" element={user ? <Account user={user} space="CLIENTE" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <Account user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
@@ -188,7 +201,7 @@ function initials(name?: string, email?: string | null) {
 
 function Header({ mode, authenticated, name, email, showBrand = true }: { mode?: Mode; authenticated: boolean; name?: string; email?: string | null; showBrand?: boolean }) {
   return (
-    <header className={`header${showBrand ? '' : ' header--access'}`} style={authenticated ? { height: 80 } : undefined}>
+    <header className={`header${showBrand ? "" : " header--access"}`} style={authenticated ? { height: 80 } : undefined}>
       {showBrand && <Brand />}
       <nav aria-label="Navegación principal">
         {!authenticated && (
@@ -224,7 +237,7 @@ function Header({ mode, authenticated, name, email, showBrand = true }: { mode?:
 export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [role, setRole] = useState<"CLIENTE" | "TECNICO">(location.state?.role === 'TECNICO' ? 'TECNICO' : 'CLIENTE');
+  const [role, setRole] = useState<"CLIENTE" | "TECNICO">(location.state?.role === "TECNICO" ? "TECNICO" : "CLIENTE");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -234,8 +247,8 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
     event.preventDefault();
     if (busy) return;
     const form = new FormData(event.currentTarget);
-    if (mode === 'register' && form.get('password') !== form.get('passwordConfirmation')) {
-      setError('Las contraseñas no coinciden. Revisa ambos campos.');
+    if (mode === "register" && form.get("password") !== form.get("passwordConfirmation")) {
+      setError("Las contraseñas no coinciden. Revisa ambos campos.");
       return;
     }
     if (!auth) {
@@ -265,9 +278,9 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
           telefono: phone,
           rol: role,
         });
-        let emailVerificationNotice = '';
+        let emailVerificationNotice = "";
         try {
-          if (await requestEmailVerification(identity)) emailVerificationNotice = 'Enlace enviado. Revisa tu correo y spam para confirmar tu dirección.';
+          if (await requestEmailVerification(identity)) emailVerificationNotice = "Enlace enviado. Revisa tu correo y spam para confirmar tu dirección.";
         } catch (err) {
           emailVerificationNotice = `Tu cuenta se creó, pero no pudimos enviar el enlace: ${errorMessage(err)} Puedes solicitarlo desde esta pantalla.`;
         }
@@ -280,196 +293,208 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   }
   return (
     <>
-    {mode === 'register' && busy && <LoadingState variant="screen" message="Creando tu perfil." detail="Estamos guardando tus datos y preparando el siguiente paso. Mantén esta página abierta." />}
-    <div className="site" hidden={mode === 'register' && busy}>
-      <Header mode={mode} authenticated={!!user} showBrand={false} />
-      <main className="access-layout">
-        <AccessStory />
-        <section className="form-panel" aria-labelledby="form-title">
-          <div className="form-content">
-            <div className="form-brand"><Brand /></div>
-            <h2 id="form-title">{mode === "login" ? "Qué bueno verte de nuevo." : user ? "Completa tu perfil." : "Hagamos que suceda."}</h2>
-            <p className="form-description">{mode === "login" ? "Entra a tu cuenta y encuentra tu próxima solución." : "Crea tu cuenta para encontrar ayuda u ofrecer tu talento."}</p>
-            <div className="mode-tabs">
-              <Link className={mode === "login" ? "active" : ""} to="/ingresar">
-                Iniciar sesión
-              </Link>
-              <Link className={mode === "register" ? "active" : ""} to="/registro">
-                Crear cuenta
-              </Link>
-            </div>
-            {mode === "login" && user ? (
-              <div className="existing-session">
-                <CheckCircle2 size={26} />
-                <h3>Ya tienes una sesión abierta</h3>
-                <p>Continúa a tu cuenta o utiliza el cierre de sesión para cambiar de usuario.</p>
-                <Link className="button" to="/mi-cuenta">
-                  Ir a mi cuenta <ArrowRight size={18} />
+      {mode === "register" && busy && <LoadingState variant="screen" message="Creando tu perfil." detail="Estamos guardando tus datos y preparando el siguiente paso. Mantén esta página abierta." />}
+      <div className="site" hidden={mode === "register" && busy}>
+        <Header mode={mode} authenticated={!!user} showBrand={false} />
+        <main className="access-layout">
+          <AccessStory />
+          <section className="form-panel" aria-labelledby="form-title">
+            <div className="form-content">
+              <div className="form-brand">
+                <Brand />
+              </div>
+              <h2 id="form-title">{mode === "login" ? "Qué bueno verte de nuevo." : user ? "Completa tu perfil." : "Hagamos que suceda."}</h2>
+              <p className="form-description">{mode === "login" ? "Entra a tu cuenta y encuentra tu próxima solución." : "Crea tu cuenta para encontrar ayuda u ofrecer tu talento."}</p>
+              <div className="mode-tabs">
+                <Link className={mode === "login" ? "active" : ""} to="/ingresar">
+                  Iniciar sesión
+                </Link>
+                <Link className={mode === "register" ? "active" : ""} to="/registro">
+                  Crear cuenta
                 </Link>
               </div>
-            ) : (
-              <form onSubmit={submit} onInput={event => {
-                if (mode !== 'register') return;
-                const form = event.currentTarget;
-                const password = form.elements.namedItem('password') as HTMLInputElement;
-                const confirmation = form.elements.namedItem('passwordConfirmation') as HTMLInputElement;
-                confirmation.setCustomValidity(confirmation.value && password.value !== confirmation.value ? 'Las contraseñas no coinciden.' : '');
-              }}>
-                {mode === "register" && (
-                  <>
-                    <fieldset className="role-picker">
-                      <legend>¿Cómo quieres comenzar?</legend>
-                      <button type="button" className={role === "CLIENTE" ? "selected" : ""} aria-pressed={role === "CLIENTE"} onClick={() => setRole("CLIENTE")}>
-                        <Users size={20} />
-                        <span>
-                          Busco un servicio<small>Quiero contratar ayuda</small>
-                        </span>
-                        {role === "CLIENTE" && <CheckCircle2 size={17} />}
-                      </button>
-                      <button type="button" className={role === "TECNICO" ? "selected" : ""} aria-pressed={role === "TECNICO"} onClick={() => setRole("TECNICO")}>
-                        <Wrench size={20} />
-                        <span>
-                          Ofrezco mis servicios
-                          <small>Soy profesional técnico</small>
-                        </span>
-                        {role === "TECNICO" && <CheckCircle2 size={17} />}
-                      </button>
-                    </fieldset>
-                    <p className="role-note">Una cuenta, ambas posibilidades. Podrás agregar el otro rol después.</p>
-                    <Field label="Nombre completo" name="name" autoComplete="name" placeholder="Como aparece en tu identidad" minLength={2} maxLength={150} required />
-                    <div className="field-row">
-                      <Field label="DNI" name="dni" inputMode="numeric" placeholder="0801-2006-00000" pattern={"[0-9 \\-]{13,17}"} required />
-                      <PhoneField />
+              {mode === "login" && user ? (
+                <div className="existing-session">
+                  <CheckCircle2 size={26} />
+                  <h3>Ya tienes una sesión abierta</h3>
+                  <p>Continúa a tu cuenta o utiliza el cierre de sesión para cambiar de usuario.</p>
+                  <Link className="button" to="/mi-cuenta">
+                    Ir a mi cuenta <ArrowRight size={18} />
+                  </Link>
+                </div>
+              ) : (
+                <form
+                  onSubmit={submit}
+                  onInput={(event) => {
+                    if (mode !== "register") return;
+                    const form = event.currentTarget;
+                    const password = form.elements.namedItem("password") as HTMLInputElement;
+                    const confirmation = form.elements.namedItem("passwordConfirmation") as HTMLInputElement;
+                    confirmation.setCustomValidity(confirmation.value && password.value !== confirmation.value ? "Las contraseñas no coinciden." : "");
+                  }}
+                >
+                  {mode === "register" && (
+                    <>
+                      <fieldset className="role-picker">
+                        <legend>¿Cómo quieres comenzar?</legend>
+                        <button type="button" className={role === "CLIENTE" ? "selected" : ""} aria-pressed={role === "CLIENTE"} onClick={() => setRole("CLIENTE")}>
+                          <Users size={20} />
+                          <span>
+                            Busco un servicio<small>Quiero contratar ayuda</small>
+                          </span>
+                          {role === "CLIENTE" && <CheckCircle2 size={17} />}
+                        </button>
+                        <button type="button" className={role === "TECNICO" ? "selected" : ""} aria-pressed={role === "TECNICO"} onClick={() => setRole("TECNICO")}>
+                          <Wrench size={20} />
+                          <span>
+                            Ofrezco mis servicios
+                            <small>Soy profesional técnico</small>
+                          </span>
+                          {role === "TECNICO" && <CheckCircle2 size={17} />}
+                        </button>
+                      </fieldset>
+                      <p className="role-note">Una cuenta, ambas posibilidades. Podrás agregar el otro rol después.</p>
+                      <Field label="Nombre completo" name="name" autoComplete="name" placeholder="Como aparece en tu identidad" minLength={2} maxLength={150} required />
+                      <div className="field-row">
+                        <Field label="DNI" name="dni" inputMode="numeric" placeholder="0801-2006-00000" pattern={"[0-9 \\-]{13,17}"} required />
+                        <PhoneField />
+                      </div>
+                    </>
+                  )}
+                  <Field
+                    key={user?.uid || "new-account"}
+                    label="Correo electrónico"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="tu@correo.com"
+                    defaultValue={user?.email || ""}
+                    readOnly={!!user}
+                    required
+                    hint={user ? "Este es el correo de tu cuenta activa. Confirma tu contraseña para completar el registro o agregar un rol." : undefined}
+                  />
+                  <PasswordField key={mode} autoComplete={mode === "register" && !user ? "new-password" : "current-password"} />
+                  {mode === "register" && <PasswordField name="passwordConfirmation" label="Confirmar contraseña" autoComplete={user ? "current-password" : "new-password"} />}
+                  {mode === "login" && (
+                    <div
+                      style={{
+                        textAlign: "right",
+                        marginTop: "-0.5rem",
+                        marginBottom: "1rem",
+                      }}
+                    >
+                      <Link to="/recuperar" className="link" style={{ fontSize: "0.875rem" }}>
+                        ¿Olvidaste tu contraseña?
+                      </Link>
                     </div>
-                  </>
-                )}
-                <Field
-                  key={user?.uid || "new-account"}
-                  label="Correo electrónico"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  placeholder="tu@correo.com"
-                  defaultValue={user?.email || ""}
-                  readOnly={!!user}
-                  required
-                  hint={user ? "Este es el correo de tu cuenta activa. Confirma tu contraseña para completar el registro o agregar un rol." : undefined}
-                />
-                <PasswordField key={mode} autoComplete={mode === "register" && !user ? "new-password" : "current-password"} />
-                {mode === 'register' && <PasswordField name="passwordConfirmation" label="Confirmar contraseña" autoComplete={user ? 'current-password' : 'new-password'} />}
-                {mode === "login" && (
-                  <div
-                    style={{
-                      textAlign: "right",
-                      marginTop: "-0.5rem",
-                      marginBottom: "1rem",
-                    }}
-                  >
-                    <Link to="/recuperar" className="link" style={{ fontSize: "0.875rem" }}>
-                      ¿Olvidaste tu contraseña?
-                    </Link>
-                  </div>
-                )}
-                {mode === "register" && user && (
-                  <button
-                    className="change-account"
-                    type="button"
-                    disabled={busy}
-                    onClick={async () => {
-                      try {
-                        await signOut(auth!);
-                        setError("");
-                      } catch (err) {
-                        setError(errorMessage(err));
-                      }
-                    }}
-                  >
-                    Usar otro correo para crear una cuenta nueva
-                  </button>
-                )}
-                {mode === "register" && (
-                  <p className="privacy-note">
-                    <ShieldCheck size={16} /> Tu identidad se verificará antes de habilitar contrataciones. Tus documentos no serán públicos.
-                  </p>
-                )}
-                {error && (
-                  <div className="alert" role="alert">
-                    {error}
-                  </div>
-                )}
-                <Button type="submit" disabled={busy}>
-                  {busy ? "Un momento…" : mode === "login" ? "Entrar a mi cuenta" : "Crear mi perfil"}
-                  <ArrowRight size={18} />
-                </Button>
-              </form>
-            )}
-            <p className="switch-copy">
-              {mode === "login" ? "¿Es tu primera vez por aquí?" : "¿Ya formas parte de TekniGO?"}{" "}
-              <Link to={mode === "login" ? "/registro" : "/ingresar"}>
-                {mode === "login" ? "Crea tu cuenta" : "Inicia sesión"}
-                <ChevronRight size={14} />
-              </Link>
-            </p>
-            <div className="secure-note">
-              <ShieldCheck size={16} />
-              <span>Tu información, siempre protegida.</span>
+                  )}
+                  {mode === "register" && user && (
+                    <button
+                      className="change-account"
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        try {
+                          await signOut(auth!);
+                          setError("");
+                        } catch (err) {
+                          setError(errorMessage(err));
+                        }
+                      }}
+                    >
+                      Usar otro correo para crear una cuenta nueva
+                    </button>
+                  )}
+                  {mode === "register" && (
+                    <p className="privacy-note">
+                      <ShieldCheck size={16} /> Tu identidad se verificará antes de habilitar contrataciones. Tus documentos no serán públicos.
+                    </p>
+                  )}
+                  {error && (
+                    <div className="alert" role="alert">
+                      {error}
+                    </div>
+                  )}
+                  <Button type="submit" disabled={busy}>
+                    {busy ? "Un momento…" : mode === "login" ? "Entrar a mi cuenta" : "Crear mi perfil"}
+                    <ArrowRight size={18} />
+                  </Button>
+                </form>
+              )}
+              <p className="switch-copy">
+                {mode === "login" ? "¿Es tu primera vez por aquí?" : "¿Ya formas parte de TekniGO?"}{" "}
+                <Link to={mode === "login" ? "/registro" : "/ingresar"}>
+                  {mode === "login" ? "Crea tu cuenta" : "Inicia sesión"}
+                  <ChevronRight size={14} />
+                </Link>
+              </p>
+              <div className="secure-note">
+                <ShieldCheck size={16} />
+                <span>Tu información, siempre protegida.</span>
+              </div>
             </div>
+          </section>
+        </main>
+        <section id="como-funciona" className="how-it-works" aria-label="Cómo funciona">
+          <span className="how-heading">
+            De una necesidad
+            <br />
+            <strong>a una solución.</strong>
+          </span>
+          <div>
+            <span className="step-icon">
+              <Users size={18} />
+            </span>
+            <p>
+              <strong>01. Crea tu cuenta</strong>
+              <small>Un perfil para conectar.</small>
+            </p>
+          </div>
+          <div>
+            <span className="step-icon">
+              <Wrench size={18} />
+            </span>
+            <p>
+              <strong>02. Encuentra tu conexión</strong>
+              <small>Busca ayuda u ofrece tu talento.</small>
+            </p>
+          </div>
+          <div>
+            <span className="step-icon">
+              <CheckCircle2 size={18} />
+            </span>
+            <p>
+              <strong>03. Manos a la obra</strong>
+              <small>Acuerda y resuelve con confianza.</small>
+            </p>
           </div>
         </section>
-      </main>
-      <section id="como-funciona" className="how-it-works" aria-label="Cómo funciona">
-        <span className="how-heading">
-          De una necesidad
-          <br />
-          <strong>a una solución.</strong>
-        </span>
-        <div>
-          <span className="step-icon">
-            <Users size={18} />
+        <footer className="footer">
+          <span>© {new Date().getFullYear()} TekniGO</span>
+          <span>Talento local. Soluciones reales.</span>
+          <span>
+            <MapPin size={13} /> Hecho para Honduras
           </span>
-          <p>
-            <strong>01. Crea tu cuenta</strong>
-            <small>Un perfil para conectar.</small>
-          </p>
-        </div>
-        <div>
-          <span className="step-icon">
-            <Wrench size={18} />
-          </span>
-          <p>
-            <strong>02. Encuentra tu conexión</strong>
-            <small>Busca ayuda u ofrece tu talento.</small>
-          </p>
-        </div>
-        <div>
-          <span className="step-icon">
-            <CheckCircle2 size={18} />
-          </span>
-          <p>
-            <strong>03. Manos a la obra</strong>
-            <small>Acuerda y resuelve con confianza.</small>
-          </p>
-        </div>
-      </section>
-      <footer className="footer">
-        <span>© {new Date().getFullYear()} TekniGO</span>
-        <span>Talento local. Soluciones reales.</span>
-        <span>
-          <MapPin size={13} /> Hecho para Honduras
-        </span>
-      </footer>
-    </div>
+        </footer>
+      </div>
     </>
   );
 }
 
 function VerificationRoute({ user }: { user: User }) {
   const { state, retry, updateProfile } = useAccount(user);
-  const profile = state.status === 'ready' ? state.profile : null;
-  
-  if (state.status === 'loading') return <LoadingState variant="screen" message="Cargando la verificación de identidad." />;
-  if (!profile) return <div className="site"><main className="account"><AccountStatus state={state} retry={retry} /></main></div>;
-  
+  const profile = state.status === "ready" ? state.profile : null;
+
+  if (state.status === "loading") return <LoadingState variant="screen" message="Cargando la verificación de identidad." />;
+  if (!profile)
+    return (
+      <div className="site">
+        <main className="account">
+          <AccountStatus state={state} retry={retry} />
+        </main>
+      </div>
+    );
+
   return (
     <div className="site">
       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
@@ -478,18 +503,10 @@ function VerificationRoute({ user }: { user: User }) {
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
         <EmailVerification user={user} />
         <section className="account-card profile-card">
-          {profile?.roles.includes('TECNICO') ? (
-            <TechnicianVerificationForm
-              user={user}
-              initialStatus={profile?.estado_identidad}
-              onStatusChange={(estado) => updateProfile({ ...profile, estado_identidad: estado })}
-            />
+          {profile?.roles.includes("TECNICO") ? (
+            <TechnicianVerificationForm user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado) => updateProfile({ ...profile, estado_identidad: estado })} />
           ) : (
-            <ClientIdentityVerification
-              user={user}
-              initialStatus={profile?.estado_identidad}
-              onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })}
-            />
+            <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
           )}
         </section>
         <p style={{ marginTop: "1.5rem" }}>
@@ -508,9 +525,22 @@ function ProfileRoute({ user }: { user: User }) {
   return (
     <div className="site">
       <Header authenticated={true} name={name} email={user.email} />
-      {state.status === 'ready' ? <ProfilePage user={user} onName={setName} /> : (
-        <main className="account"><AccountStatus state={state} retry={retry} /></main>
+      {state.status === "ready" ? (
+        <ProfilePage user={user} onName={setName} />
+      ) : (
+        <main className="account">
+          <AccountStatus state={state} retry={retry} />
+        </main>
       )}
+    </div>
+  );
+}
+
+function CatalogRoute({ user }: { user: User }) {
+  return (
+    <div className="site">
+      <Header authenticated={true} email={user.email} />
+      <CatalogPage user={user} />
     </div>
   );
 }
@@ -519,7 +549,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   const navigate = useNavigate();
   const location = useLocation();
   const { state, retry, updateProfile } = useAccount(user);
-  const profile = state.status === 'ready' ? state.profile : null;
+  const profile = state.status === "ready" ? state.profile : null;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [addingRole, setAddingRole] = useState(false);
@@ -530,10 +560,17 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
     let active = true;
     setRegistrationPending(false);
     setRegistrationError("");
-    if (profile) registrationRequirements(user, profile)
-      .then((requirements) => { if (active) setRegistrationPending(!registrationComplete(requirements)); })
-      .catch((err) => { if (active) setRegistrationError(errorMessage(err)); });
-    return () => { active = false; };
+    if (profile)
+      registrationRequirements(user, profile)
+        .then((requirements) => {
+          if (active) setRegistrationPending(!registrationComplete(requirements));
+        })
+        .catch((err) => {
+          if (active) setRegistrationError(errorMessage(err));
+        });
+    return () => {
+      active = false;
+    };
   }, [user, profile]);
   async function addRole() {
     if (!profile || addingRole) return;
@@ -573,16 +610,45 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
       <main className="account">
         <h1>Hola{profile ? `, ${profile.nombre_completo.split(" ")[0]}` : ""}.</h1>
         <p>{space === "TECNICO" ? "Espacio de técnico" : space === "CLIENTE" ? "Espacio de cliente" : "Elige cómo quieres continuar."}</p>
-        {profile && profile.roles.length > 1 && (
-          <nav className="logout-row" aria-label="Espacios de la cuenta">
-            <Link className="button button-outline" to="/cliente">
-              Buscar servicios
-            </Link>
-            <Link className="button button-outline" to="/tecnico">
-              Ofrecer servicios
-            </Link>
-          </nav>
-        )}
+        <nav className="logout-row" aria-label="Navegación principal" style={{ marginBottom: "2rem", gap: "1rem", flexWrap: "wrap" }}>
+          {/* 1. Pantalla de elección (cuando acaba de entrar y tiene 2 roles) */}
+          {!space && profile && profile.roles.length > 1 && (
+            <>
+              <Link className="button button-outline" to="/cliente">
+                Entrar como Cliente
+              </Link>
+              <Link className="button button-outline" to="/tecnico">
+                Entrar como Técnico
+              </Link>
+            </>
+          )}
+
+          {/* 2. Espacio de Cliente: Siempre ve 'Buscar servicios'. Si también es técnico, ve 'Cambiar a Técnico' */}
+          {space === "CLIENTE" && (
+            <>
+              <Link className="button button-outline" to="/catalogo">
+                Buscar servicios
+              </Link>
+              {profile && profile.roles.includes("TECNICO") && (
+                <Link className="button button-outline" to="/tecnico">
+                  Cambiar a Técnico
+                </Link>
+              )}
+            </>
+          )}
+
+          {/* 3. Espacio de Técnico: Siempre ve 'Ofrecer servicios'. Si también es cliente, ve 'Cambiar a Cliente' */}
+          {space === "TECNICO" && (
+            <>
+              {profile && profile.roles.includes("CLIENTE") && (
+                <Link className="button button-outline" to="/cliente">
+                  Cambiar a Cliente
+                </Link>
+              )}
+            </>
+          )}
+        </nav>
+
         {profile && location.state?.registrationSuccess && (
           <div className="success-alert" role="status">
             <CheckCircle2 size={20} />
@@ -595,14 +661,31 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
           </div>
         )}
         <AccountStatus state={state} retry={retry} />
-        {registrationPending && <section className="account-card" style={{ marginBottom: 24 }}>
-          <h2>Completa tu registro</h2>
-          <p>Faltan documentos o datos de tu perfil. Puedes continuar desde donde lo dejaste.</p>
-          <Link className="button" to="/registro/completar">Continuar con el paso 2</Link>
-        </section>}
-        {registrationError && <div className="alert" role="alert">No pudimos comprobar los requisitos de registro: {registrationError} <Link to="/registro/completar">Revisar mi registro</Link></div>}
-        {roleNotice && <div className="success-alert" role="status">{roleNotice}</div>}
+        {registrationPending && (
+          <section className="account-card" style={{ marginBottom: 24 }}>
+            <h2>Completa tu registro</h2>
+            <p>Faltan documentos o datos de tu perfil. Puedes continuar desde donde lo dejaste.</p>
+            <Link className="button" to="/registro/completar">
+              Continuar con el paso 2
+            </Link>
+          </section>
+        )}
+        {registrationError && (
+          <div className="alert" role="alert">
+            No pudimos comprobar los requisitos de registro: {registrationError} <Link to="/registro/completar">Revisar mi registro</Link>
+          </div>
+        )}
+        {roleNotice && (
+          <div className="success-alert" role="status">
+            {roleNotice}
+          </div>
+        )}
         {profile && <EmailVerification user={user} />}
+        {roleNotice && (
+          <div className="success-alert" role="status">
+            {roleNotice}
+          </div>
+        )}
         {profile && (
           <>
             <div className="account-grid">
@@ -628,9 +711,16 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
                   <ShieldCheck size={22} />
                 </span>
                 <h2>{profile.estado_identidad === "VERIFICADO" ? "Identidad verificada" : profile.estado_identidad === "EN_REVISION" ? "Identidad en revisión" : "Verificación pendiente"}</h2>
-                <p>{profile.estado_identidad === "VERIFICADO" ? "Tu identidad fue verificada correctamente." : profile.estado_identidad === "EN_REVISION" ? "Recibimos tus documentos. Están pendientes de revisión administrativa." : "Para contratar u ofrecer servicios necesitas completar la verificación de identidad."}</p>
+                <p>
+                  {profile.estado_identidad === "VERIFICADO"
+                    ? "Tu identidad fue verificada correctamente."
+                    : profile.estado_identidad === "EN_REVISION"
+                      ? "Recibimos tus documentos. Están pendientes de revisión administrativa."
+                      : "Para contratar u ofrecer servicios necesitas completar la verificación de identidad."}
+                </p>
                 <span className={`status-pill${profile.estado_identidad === "VERIFICADO" ? " status-pill-verified" : ""}`}>
-                  {profile.estado_identidad === "VERIFICADO" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Clock3 size={15} aria-hidden="true" />} {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
+                  {profile.estado_identidad === "VERIFICADO" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Clock3 size={15} aria-hidden="true" />}{" "}
+                  {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
                 </span>
                 <Link to="/verificacion">
                   {profile.estado_identidad === "EN_REVISION" || profile.estado_identidad === "VERIFICADO" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />
