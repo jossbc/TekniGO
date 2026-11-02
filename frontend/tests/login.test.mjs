@@ -9,7 +9,7 @@ const { renderToStaticMarkup } = require('react-dom/server')
 const { MemoryRouter } = require('react-router-dom')
 const result = await build({
   stdin: { contents: `export * from './src/lib/api'; export * from './src/lib/account'; export * from './src/components/AccountStatus';`, resolveDir: process.cwd(), loader: 'tsx' },
-  bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
+  bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external', loader: { '.png': 'dataurl' },
   define: { 'import.meta.env': '{}' },
 })
 const module = { exports: {} }

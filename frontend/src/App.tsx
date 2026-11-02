@@ -1,10 +1,12 @@
 import LoadingState from './components/LoadingState'
+import AccessStory from './components/AccessStory'
+import LandingPage from './LandingPage'
 import EmailVerification from './components/EmailVerification'
 import { requestEmailVerification } from './lib/emailVerification'
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { createUserWithEmailAndPassword, EmailAuthProvider, onIdTokenChanged, reauthenticateWithCredential, signInWithEmailAndPassword, signOut, type User, sendPasswordResetEmail } from "firebase/auth";
-import { ArrowRight, ArrowUpRight, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, Hammer, MapPin, ShieldCheck, Sparkles, Users, Wrench } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, MapPin, ShieldCheck, Users, Wrench } from "lucide-react";
 import { auth } from "./lib/firebase";
 import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
@@ -24,6 +26,7 @@ export function accountPath(roles: Profile["roles"]) {
 
 type Mode = "login" | "register";
 export default function App() {
+  const { pathname } = useLocation();
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(!auth);
   useEffect(
@@ -36,16 +39,17 @@ export default function App() {
         : undefined,
     [],
   );
-  if (!ready)
+  if (!ready && pathname !== '/')
     return (
       <LoadingState variant="screen" detail="Estamos comprobando tu sesión de forma segura." />
     );
+  const registrationUser = user || auth?.currentUser;
   return (
     <Routes>
-      <Route path="/" element={<AccessPage mode="login" user={user} />} />
+      <Route path="/" element={<LandingPage authenticated={!!user} />} />
       <Route path="/ingresar" element={<AccessPage mode="login" user={user} />} />
       <Route path="/registro" element={<AccessPage mode="register" user={user} />} />
-      <Route path="/registro/completar" element={user ? <CompleteRegistration user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/registro/completar" element={registrationUser ? <CompleteRegistration user={registrationUser} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
@@ -92,43 +96,7 @@ export default function App() {
       <div className="site">
         <Header authenticated={false} />
         <main className="access-layout">
-          <section className="story-panel" aria-labelledby="story-title">
-            <div className="story-copy">
-              <span className="mini-label">EL TALENTO ESTÁ MÁS CERCA DE LO QUE CREES</span>
-              <h1 id="story-title">
-                Hay alguien
-                <br />
-                que sabe
-                <br />
-                <span>cómo resolverlo.</span>
-              </h1>
-              <p>
-                Conectamos lo que necesitas con quienes
-                <br className="desktop-break" /> saben hacerlo. Fácil, cercano y en un solo lugar.
-              </p>
-            </div>
-            <div className="trade-scene" aria-hidden="true">
-              <div className="scene-grid" />
-              <span className="scene-orbit" />
-              <div className="tool-tile tile-back">
-                <Hammer size={58} strokeWidth={1.4} />
-              </div>
-              <div className="tool-tile tile-front">
-                <Wrench size={67} strokeWidth={1.5} />
-              </div>
-              <div className="floating-note">
-                <span className="note-check">
-                  <Check size={17} />
-                </span>
-                <span>
-                  Una buena conexión.<small>Un problema menos.</small>
-                </span>
-                <Sparkles size={17} />
-              </div>
-              <span className="scene-dot dot-one" />
-              <span className="scene-dot dot-two" />
-            </div>
-          </section>
+          <AccessStory />
 
           <section className="form-panel" aria-labelledby="form-title">
             <div className="form-content">
@@ -218,10 +186,10 @@ function initials(name?: string, email?: string | null) {
   return (email?.[0] ?? "?").toUpperCase();
 }
 
-function Header({ mode, authenticated, name, email }: { mode?: Mode; authenticated: boolean; name?: string; email?: string | null }) {
+function Header({ mode, authenticated, name, email, showBrand = true }: { mode?: Mode; authenticated: boolean; name?: string; email?: string | null; showBrand?: boolean }) {
   return (
-    <header className="header" style={authenticated ? { height: 80 } : undefined}>
-      <Brand />
+    <header className={`header${showBrand ? '' : ' header--access'}`} style={authenticated ? { height: 80 } : undefined}>
+      {showBrand && <Brand />}
       <nav aria-label="Navegación principal">
         {!authenticated && (
           <a className="nav-help" href="#como-funciona">
@@ -255,7 +223,8 @@ function Header({ mode, authenticated, name, email }: { mode?: Mode; authenticat
 
 export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   const navigate = useNavigate();
-  const [role, setRole] = useState<"CLIENTE" | "TECNICO">("CLIENTE");
+  const location = useLocation();
+  const [role, setRole] = useState<"CLIENTE" | "TECNICO">(location.state?.role === 'TECNICO' ? 'TECNICO' : 'CLIENTE');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -263,11 +232,16 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
   }, [mode]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return;
+    const form = new FormData(event.currentTarget);
+    if (mode === 'register' && form.get('password') !== form.get('passwordConfirmation')) {
+      setError('Las contraseñas no coinciden. Revisa ambos campos.');
+      return;
+    }
     if (!auth) {
       setError("El acceso aún no está configurado. El equipo debe completar la configuración de Firebase.");
       return;
     }
-    const form = new FormData(event.currentTarget);
     setBusy(true);
     setError("");
     try {
@@ -301,53 +275,19 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
       }
     } catch (err) {
       setError(errorMessage(err));
-    } finally {
       setBusy(false);
     }
   }
   return (
-    <div className="site">
-      <Header mode={mode} authenticated={!!user} />
+    <>
+    {mode === 'register' && busy && <LoadingState variant="screen" message="Creando tu perfil." detail="Estamos guardando tus datos y preparando el siguiente paso. Mantén esta página abierta." />}
+    <div className="site" hidden={mode === 'register' && busy}>
+      <Header mode={mode} authenticated={!!user} showBrand={false} />
       <main className="access-layout">
-        <section className="story-panel" aria-labelledby="story-title">
-          <div className="story-copy">
-            <span className="mini-label">EL TALENTO ESTÁ MÁS CERCA DE LO QUE CREES</span>
-            <h1 id="story-title">
-              Hay alguien
-              <br />
-              que sabe
-              <br />
-              <span>cómo resolverlo.</span>
-            </h1>
-            <p>
-              Conectamos lo que necesitas con quienes
-              <br className="desktop-break" /> saben hacerlo. Fácil, cercano y en un solo lugar.
-            </p>
-          </div>
-          <div className="trade-scene" aria-hidden="true">
-            <div className="scene-grid" />
-            <span className="scene-orbit" />
-            <div className="tool-tile tile-back">
-              <Hammer size={58} strokeWidth={1.4} />
-            </div>
-            <div className="tool-tile tile-front">
-              <Wrench size={67} strokeWidth={1.5} />
-            </div>
-            <div className="floating-note">
-              <span className="note-check">
-                <Check size={17} />
-              </span>
-              <span>
-                Una buena conexión.<small>Un problema menos.</small>
-              </span>
-              <Sparkles size={17} />
-            </div>
-            <span className="scene-dot dot-one" />
-            <span className="scene-dot dot-two" />
-          </div>
-        </section>
+        <AccessStory />
         <section className="form-panel" aria-labelledby="form-title">
           <div className="form-content">
+            <div className="form-brand"><Brand /></div>
             <h2 id="form-title">{mode === "login" ? "Qué bueno verte de nuevo." : user ? "Completa tu perfil." : "Hagamos que suceda."}</h2>
             <p className="form-description">{mode === "login" ? "Entra a tu cuenta y encuentra tu próxima solución." : "Crea tu cuenta para encontrar ayuda u ofrecer tu talento."}</p>
             <div className="mode-tabs">
@@ -368,7 +308,13 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
                 </Link>
               </div>
             ) : (
-              <form onSubmit={submit}>
+              <form onSubmit={submit} onInput={event => {
+                if (mode !== 'register') return;
+                const form = event.currentTarget;
+                const password = form.elements.namedItem('password') as HTMLInputElement;
+                const confirmation = form.elements.namedItem('passwordConfirmation') as HTMLInputElement;
+                confirmation.setCustomValidity(confirmation.value && password.value !== confirmation.value ? 'Las contraseñas no coinciden.' : '');
+              }}>
                 {mode === "register" && (
                   <>
                     <fieldset className="role-picker">
@@ -409,7 +355,8 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
                   required
                   hint={user ? "Este es el correo de tu cuenta activa. Confirma tu contraseña para completar el registro o agregar un rol." : undefined}
                 />
-                <PasswordField key={`${mode}-${user?.uid || "new"}`} autoComplete={mode === "register" && !user ? "new-password" : "current-password"} />
+                <PasswordField key={mode} autoComplete={mode === "register" && !user ? "new-password" : "current-password"} />
+                {mode === 'register' && <PasswordField name="passwordConfirmation" label="Confirmar contraseña" autoComplete={user ? 'current-password' : 'new-password'} />}
                 {mode === "login" && (
                   <div
                     style={{
@@ -512,6 +459,7 @@ export function AccessPage({ mode, user }: { mode: Mode; user: User | null }) {
         </span>
       </footer>
     </div>
+    </>
   );
 }
 

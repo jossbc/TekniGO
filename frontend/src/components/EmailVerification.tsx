@@ -46,7 +46,7 @@ export default function EmailVerification({ user, initialNotice = '' }: { user: 
     <h2>Verifica tu correo</h2>
     <p className="email-value">{status?.email || user.email}</p>
     {status?.email_verified ? <p className="success-alert" role="status">Correo verificado.</p> : <>
-      <p>{!status && !error ? 'Comprobando tu correo…' : 'Confirma tu correo mediante el enlace de Firebase. Esta confirmación es independiente de la revisión de tu identidad.'}</p>
+      <p>{!status && !error ? 'Comprobando tu correo…' : 'Confirma tu correo mediante el enlace. Esta confirmación es independiente de la revisión de tu identidad.'}</p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <Button type="button" onClick={() => act('send')} disabled={!!busy || wait > 0} style={{ width: 'auto' }}>
           {busy === 'send' ? 'Enviando…' : wait > 0 ? `Reenviar en ${wait} s` : 'Enviar o reenviar enlace'}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Wrench } from 'lucide-react'
+import Logo from './Logo'
 
 type Props = {
   message?: string
@@ -16,7 +16,7 @@ export default function LoadingState({ message = 'Preparando tu espacio.', detai
   }, [message])
 
   const content = <div className={`wait-state wait-state--${variant}`} role="status" aria-live="polite" aria-atomic="true">
-    <span className="wait-state__symbol" aria-hidden="true"><Wrench size={24} /><span className="wait-state__ring" /></span>
+    <span className="wait-state__symbol" aria-hidden="true"><Logo variant="symbol" /><span className="wait-state__ring" /></span>
     <div className="wait-state__copy">
       <strong>{message}</strong>
       {detail && <p>{detail}</p>}

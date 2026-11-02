@@ -1,10 +1,11 @@
 import { useId, useState, type InputHTMLAttributes, type ButtonHTMLAttributes } from 'react'
-import { Eye, EyeOff, Wrench } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
+import Logo from './Logo'
 import { Link } from 'react-router-dom'
 import { normalizeHonduranPhone, PHONE_HINT } from '../lib/validation'
 
 export function Brand() {
-  return <Link to="/" className="brand" aria-label="TekniGO, inicio"><span className="brand-symbol"><Wrench size={23}/></span><span>Tekni<span className="brand-go">GO</span><small>CONEXIONES QUE RESUELVEN</small></span></Link>
+  return <Link to="/" className="brand" aria-label="TekniGO, inicio"><Logo /></Link>
 }
 
 export function Button({ className = '', ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
@@ -29,8 +30,8 @@ export function PhoneField() {
     }}/>
 }
 
-export function PasswordField({ autoComplete = 'current-password' }: { autoComplete?: string }) {
+export function PasswordField({ autoComplete = 'current-password', name = 'password', label = 'Contraseña' }: { autoComplete?: string; name?: string; label?: string }) {
   const [visible, setVisible] = useState(false)
   const id = useId()
-  return <div className="field"><label htmlFor={id}>Contraseña</label><div className="password-input"><input id={id} name="password" type={visible ? 'text' : 'password'} minLength={8} required autoComplete={autoComplete} placeholder="Tu contraseña"/><button type="button" aria-label={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={19}/> : <Eye size={19}/>}</button></div>{autoComplete === 'new-password' && <small>Usa al menos 6 caracteres. Se aplica la política de seguridad de la cuenta.</small>}</div>
+  return <div className="field"><label htmlFor={id}>{label}</label><div className="password-input"><input id={id} name={name} type={visible ? 'text' : 'password'} minLength={8} required autoComplete={autoComplete} placeholder={name === 'passwordConfirmation' ? 'Repite tu contraseña' : 'Tu contraseña'}/><button type="button" aria-label={`${visible ? 'Ocultar' : 'Mostrar'} ${label.toLowerCase()}`} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={19}/> : <Eye size={19}/>}</button></div>{autoComplete === 'new-password' && name === 'password' && <small>Usa al menos 8 caracteres.</small>}</div>
 }
