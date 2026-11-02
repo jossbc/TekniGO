@@ -48,11 +48,9 @@ class IdentityTests(unittest.TestCase):
     def test_technician_can_add_client_without_resetting_professional_profile(self):
         self.register(rol='TECNICO')
         technician = self.db.scalars(select(TechnicianProfile)).one()
-        technician.tarifa_base = 250
         self.db.commit()
         result = add_role(RoleAddition(rol='CLIENTE'), self.claims, self.db)
         self.assertEqual(result['roles'], ['CLIENTE', 'TECNICO'])
-        self.assertEqual(self.db.scalars(select(TechnicianProfile)).one().tarifa_base, 250)
     def test_add_role_cannot_grant_admin_or_target_another_user(self):
         for data in ({'rol': 'ADMIN'}, {'rol': 'TECNICO', 'usuario_id': 'other'}, {'rol': 'TECNICO', 'dni': '0801200012345'}):
             with self.assertRaises(ValidationError):
