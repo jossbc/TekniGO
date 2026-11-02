@@ -3,7 +3,6 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { signOut, type User } from 'firebase/auth'
 import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock } from 'lucide-react'
-import { Award, ShieldAlert, ShieldCheck, Star } from 'lucide-react'
 import { auth } from './lib/firebase'
 import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
@@ -279,120 +278,105 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
           {isTechnician && (
             <>
               <section className="account-card profile-card">
-                <h2 style={cardTitle}>Estado de activación y verificación técnica</h2>
+                <h2 style={cardTitle}>Estado del perfil técnico</h2>
 
                 {/* CA-03: Mostrar Técnico Verificado separado de certificación y calificación */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
-                  <div style={{
-                    padding: '1rem',
-                    borderRadius: 12,
-                    background: techActivation?.tecnico_verificado ? '#f0fdf4' : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? '#fef2f2' : '#eff6ff',
-                    border: `1px solid ${techActivation?.tecnico_verificado ? '#86efac' : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? '#fca5a5' : '#93c5fd'}`,
-                  }}>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Estado del perfil</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: techActivation?.tecnico_verificado ? '#166534' : '#1e293b' }}>
-                      {techActivation?.tecnico_verificado ? <ShieldCheck size={20} color="#16a34a" /> : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? <ShieldAlert size={20} color="#dc2626" /> : <Clock3 size={20} color="#2563eb" />}
-                      <span>{TECH_VERIFICATION_LABELS[techActivation?.estado_verificacion ?? 'NO_VERIFICADO'] ?? techActivation?.estado_verificacion}</span>
-                    </div>
-                  </div>
+                <div style={grid}>
+                  <Item label="Verificación técnica">
+                    <span
+                      className={`status-pill ${techActivation?.tecnico_verificado ? 'status-pill-verified' : ''}`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.95rem' }}
+                    >
+                      {techActivation?.tecnico_verificado ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}
+                      {TECH_VERIFICATION_LABELS[techActivation?.estado_verificacion ?? 'NO_VERIFICADO'] ?? techActivation?.estado_verificacion}
+                    </span>
+                  </Item>
 
-                  <div style={{ padding: '1rem', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Certificación</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: '#1e293b' }}>
-                      <Award size={20} color="#2563eb" />
-                      <span>{CERTIFICATION_LABELS[techActivation?.estado_certificacion ?? 'NO_CERTIFICADO'] ?? techActivation?.estado_certificacion}</span>
-                    </div>
-                  </div>
+                  <Item label="Certificación">
+                    {CERTIFICATION_LABELS[techActivation?.estado_certificacion ?? 'NO_CERTIFICADO'] ?? techActivation?.estado_certificacion}
+                  </Item>
 
-                  <div style={{ padding: '1rem', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Calificación</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: '#1e293b' }}>
-                      <Star size={20} color="#eab308" />
-                      <span>
-                        {techActivation?.calificacion_promedio != null
-                          ? `${techActivation.calificacion_promedio.toFixed(1)} / 5.0`
-                          : 'Sin calificaciones aún'}
-                      </span>
-                    </div>
-                  </div>
+                  <Item label="Calificación">
+                    {techActivation?.calificacion_promedio != null
+                      ? `${techActivation.calificacion_promedio.toFixed(1)} / 5.0`
+                      : 'Sin calificaciones aún'}
+                  </Item>
                 </div>
 
-                {/* CA-02, CA-04, CA-05: Estado operativo para recibir contrataciones y motivo de restricción */}
+                {/* CA-02, CA-04, CA-05: Estado operativo y requisitos obligatorios */}
                 {techActivation && (
-                  <div style={{
-                    padding: '1rem 1.25rem',
-                    borderRadius: 12,
-                    background: techActivation.habilitado_operativamente ? '#f0fdf4' : '#fff7ed',
-                    border: `1px solid ${techActivation.habilitado_operativamente ? '#86efac' : '#fed7aa'}`,
-                    marginBottom: '1.25rem',
-                  }}>
-                    <div style={{ fontWeight: 700, color: techActivation.habilitado_operativamente ? '#166534' : '#9a3412', marginBottom: 4 }}>
-                      {techActivation.habilitado_operativamente
-                        ? 'Habilitado para recibir nuevas contrataciones y aparecer en el catálogo'
-                        : 'Restringido para nuevas contrataciones'}
+                  <div style={{ marginTop: '1.75rem', paddingTop: '1.5rem', borderTop: '1px solid var(--line)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: '0.85rem' }}>
+                      <div style={{ fontWeight: 600, fontSize: '1rem' }}>
+                        Requisitos de habilitación ({techActivation.requisitos.length - techActivation.requisitos_pendientes.length} de {techActivation.requisitos.length} completados)
+                      </div>
+                      <span style={{ fontSize: '0.9rem', color: techActivation.habilitado_operativamente ? '#185c3c' : 'var(--muted)', fontWeight: 500 }}>
+                        {techActivation.habilitado_operativamente
+                          ? 'Habilitado para recibir solicitudes'
+                          : 'Aún no habilitado en el catálogo'}
+                      </span>
                     </div>
-                    {!techActivation.habilitado_operativamente && techActivation.motivos_bloqueo.length > 0 && (
-                      <ul style={{ margin: '6px 0 0', paddingLeft: '1.25rem', color: '#9a3412', fontSize: '0.92rem' }}>
-                        {techActivation.motivos_bloqueo.map((motivo, idx) => (
-                          <li key={idx}>{motivo}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
 
-                {/* ST-04: Lista de requisitos obligatorios y pendientes */}
-                {techActivation && techActivation.requisitos.length > 0 && (
-                  <div>
-                    <h3 style={{ fontSize: '1.05rem', margin: '0 0 0.75rem' }}>
-                      Requisitos obligatorios de activación ({techActivation.requisitos.length - techActivation.requisitos_pendientes.length}/{techActivation.requisitos.length} aprobados y vigentes)
-                    </h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '0.75rem' }}>
-                      {techActivation.requisitos.map((req: TechnicianRequirement) => {
-                        const ok = req.aprobado && req.vigente
-                        return (
-                          <div
-                            key={req.codigo}
-                            style={{
-                              padding: '0.75rem 1rem',
-                              borderRadius: 10,
-                              border: `1px solid ${ok ? '#bbf7d0' : '#e5e7eb'}`,
-                              background: ok ? '#f0fdf4' : '#ffffff',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 4,
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                              <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{req.nombre}</span>
-                              <span style={{
-                                fontSize: '0.75rem',
-                                fontWeight: 700,
-                                padding: '2px 8px',
-                                borderRadius: 999,
-                                background: ok ? '#dcfce7' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#fee2e2' : '#fef3c7',
-                                color: ok ? '#166534' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#991b1b' : '#92400e',
-                              }}>
-                                {req.estado}
+                    {!techActivation.habilitado_operativamente && techActivation.motivos_bloqueo.length > 0 && (
+                      <p style={{ margin: '0 0 1rem', fontSize: '0.92rem', color: 'var(--muted)' }}>
+                         Pendiente para activar contrataciones: {techActivation.motivos_bloqueo.join(' ')}
+                      </p>
+                    )}
+
+                    {techActivation.requisitos.length > 0 && (
+                      <div style={{ border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+                        {techActivation.requisitos.map((req: TechnicianRequirement, idx: number) => {
+                          const ok = req.aprobado && req.vigente
+                          return (
+                            <div
+                              key={req.codigo}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 16,
+                                padding: '12px 16px',
+                                borderBottom: idx < techActivation.requisitos.length - 1 ? '1px solid var(--line)' : 'none',
+                              }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--ink)' }}>
+                                  {req.nombre}
+                                </div>
+                                {(req.motivo || req.fecha_vencimiento) && (
+                                  <div style={{ fontSize: '0.82rem', color: 'var(--muted)', marginTop: 2 }}>
+                                    {req.motivo
+                                      ? req.motivo
+                                      : `Vigente hasta ${req.fecha_vencimiento}`}
+                                  </div>
+                                )}
+                              </div>
+
+                              <span
+                                style={{
+                                  flexShrink: 0,
+                                  whiteSpace: 'nowrap',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 600,
+                                  padding: '4px 10px',
+                                  borderRadius: 999,
+                                  background: ok ? '#edf9f1' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#fff4f1' : '#f6f8fc',
+                                  color: ok ? '#185c3c' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#9c3421' : 'var(--muted)',
+                                  border: `1px solid ${ok ? '#a7d9bf' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#f5b6ab' : 'var(--line)'}`,
+                                }}
+                              >
+                                {ok ? 'Aprobado' : req.estado === 'PENDIENTE' ? 'Pendiente' : req.estado === 'FALTANTE' ? 'Faltante' : req.estado === 'VENCIDO' ? 'Vencido' : req.estado === 'RECHAZADO' ? 'Rechazado' : req.estado}
                               </span>
                             </div>
-                            {req.motivo && (
-                              <span style={{ fontSize: '0.82rem', color: '#6b7280' }}>{req.motivo}</span>
-                            )}
-                            {req.fecha_vencimiento && (
-                              <span style={{ fontSize: '0.78rem', color: '#4b5563' }}>
-                                Vigencia hasta: {req.fecha_vencimiento}
-                              </span>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
+                          )
+                        })}
+                      </div>
+                    )}
 
                     {techActivation.estado_verificacion !== 'VERIFICADO' && (
-                      <div style={{ marginTop: '1rem' }}>
-                        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-                          Gestionar documentos de verificación en Mi cuenta <ArrowUpRight size={16} />
+                      <div style={{ marginTop: '1rem', fontSize: '0.95rem' }}>
+                        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          Revisar documentos en Mi cuenta <ArrowUpRight size={15} />
                         </Link>
                       </div>
                     )}
