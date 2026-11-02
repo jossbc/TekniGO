@@ -226,6 +226,12 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
   return (
     <main className="account profile-page" style={{ margin: '0 auto 90px' }}>
+      <p style={{ margin: '0 0 1rem' }}>
+        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <ArrowLeft size={16} /> Volver a mi cuenta
+        </Link>
+      </p>
+
       {notice && (
         <div className="success-alert" role="status">
           <CheckCircle2 size={20} />
@@ -473,12 +479,6 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
           </div>
         </form>
       )}
-
-      <p style={{ marginTop: '1.5rem' }}>
-        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <ArrowLeft size={16} /> Volver a mi cuenta
-        </Link>
-      </p>
     </main>
   )
 }
