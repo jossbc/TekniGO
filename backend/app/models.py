@@ -48,9 +48,6 @@ class TechnicianProfile(Base):
     restriccion_financiera: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     estado_certificacion: Mapped[str] = mapped_column(String(30), default="NO_CERTIFICADO", server_default="NO_CERTIFICADO")
     calificacion_promedio: Mapped[float | None] = mapped_column(Numeric(3, 2), nullable=True)
-    #--Campos Para HU-09 Tarifas Base--
-    tarifa_base: Mapped[float] = mapped_column(Numeric(10,2), default=0.0)
-    unidad_cobro: Mapped[str] = mapped_column(String(20), default="POR HORA")
 
 
 class Specialty(Base):
