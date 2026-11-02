@@ -7,6 +7,8 @@ import { api, errorMessage, type Profile } from "./lib/api";
 import { Brand, Button, Field, PasswordField, PhoneField } from "./components/ui";
 import { normalizeHonduranPhone } from "./lib/validation";
 import ProfilePage from "./ProfilePage";
+import CatalogPage from "./CatalogPage";
+import TechnicianPublicProfilePage from "./TechnicianPublicProfilePage";
 import { AvailabilityToggle } from "./components/AvailabilityToggle";
 import ClientIdentityVerification from "./components/ClientIdentityVerification";
 import { useAccount } from "./lib/useAccount";
@@ -44,6 +46,20 @@ export default function App() {
       <Route path="/recuperar" element={<RecuperarContrasena />} />
       <Route path="/mi-cuenta" element={user ? <Account user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/perfil" element={user ? <ProfileRoute user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/catalogo" element={user ? <CatalogRoute user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route
+        path="/tecnicos/:id"
+        element={
+          user ? (
+            <div className="site">
+              <Header authenticated={true} email={user.email} />
+              <TechnicianPublicProfilePage user={user} />
+            </div>
+          ) : (
+            <Navigate to="/ingresar" replace />
+          )
+        }
+      />
       <Route path="/verificacion" element={user ? <VerificationRoute user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/cliente" element={user ? <Account user={user} space="CLIENTE" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <Account user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
@@ -542,9 +558,22 @@ function ProfileRoute({ user }: { user: User }) {
   return (
     <div className="site">
       <Header authenticated={true} name={name} email={user.email} />
-      {state.status === 'ready' ? <ProfilePage user={user} onName={setName} /> : (
-        <main className="account"><AccountStatus state={state} retry={retry} /></main>
+      {state.status === "ready" ? (
+        <ProfilePage user={user} onName={setName} />
+      ) : (
+        <main className="account">
+          <AccountStatus state={state} retry={retry} />
+        </main>
       )}
+    </div>
+  );
+}
+
+function CatalogRoute({ user }: { user: User }) {
+  return (
+    <div className="site">
+      <Header authenticated={true} email={user.email} />
+      <CatalogPage user={user} />
     </div>
   );
 }
@@ -553,7 +582,7 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
   const navigate = useNavigate();
   const location = useLocation();
   const { state, retry, updateProfile } = useAccount(user);
-  const profile = state.status === 'ready' ? state.profile : null;
+  const profile = state.status === "ready" ? state.profile : null;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [addingRole, setAddingRole] = useState(false);
@@ -595,16 +624,45 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
       <main className="account">
         <h1>Hola{profile ? `, ${profile.nombre_completo.split(" ")[0]}` : ""}.</h1>
         <p>{space === "TECNICO" ? "Espacio de técnico" : space === "CLIENTE" ? "Espacio de cliente" : "Elige cómo quieres continuar."}</p>
-        {profile && profile.roles.length > 1 && (
-          <nav className="logout-row" aria-label="Espacios de la cuenta">
-            <Link className="button button-outline" to="/cliente">
-              Buscar servicios
-            </Link>
-            <Link className="button button-outline" to="/tecnico">
-              Ofrecer servicios
-            </Link>
-          </nav>
-        )}
+        <nav className="logout-row" aria-label="Navegación principal" style={{ marginBottom: "2rem", gap: "1rem", flexWrap: "wrap" }}>
+          {/* 1. Pantalla de elección (cuando acaba de entrar y tiene 2 roles) */}
+          {!space && profile && profile.roles.length > 1 && (
+            <>
+              <Link className="button button-outline" to="/cliente">
+                Entrar como Cliente
+              </Link>
+              <Link className="button button-outline" to="/tecnico">
+                Entrar como Técnico
+              </Link>
+            </>
+          )}
+
+          {/* 2. Espacio de Cliente: Siempre ve 'Buscar servicios'. Si también es técnico, ve 'Cambiar a Técnico' */}
+          {space === "CLIENTE" && (
+            <>
+              <Link className="button button-outline" to="/catalogo">
+                Buscar servicios
+              </Link>
+              {profile && profile.roles.includes("TECNICO") && (
+                <Link className="button button-outline" to="/tecnico">
+                  Cambiar a Técnico
+                </Link>
+              )}
+            </>
+          )}
+
+          {/* 3. Espacio de Técnico: Siempre ve 'Ofrecer servicios'. Si también es cliente, ve 'Cambiar a Cliente' */}
+          {space === "TECNICO" && (
+            <>
+              {profile && profile.roles.includes("CLIENTE") && (
+                <Link className="button button-outline" to="/cliente">
+                  Cambiar a Cliente
+                </Link>
+              )}
+            </>
+          )}
+        </nav>
+
         {profile && location.state?.registrationSuccess && (
           <div className="success-alert" role="status">
             <CheckCircle2 size={20} />
@@ -617,7 +675,11 @@ function Account({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" })
           </div>
         )}
         <AccountStatus state={state} retry={retry} />
-        {roleNotice && <div className="success-alert" role="status">{roleNotice}</div>}
+        {roleNotice && (
+          <div className="success-alert" role="status">
+            {roleNotice}
+          </div>
+        )}
         {profile && (
           <>
             <div className="account-grid">
