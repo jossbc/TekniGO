@@ -11,6 +11,7 @@ import ClientIdentityVerification from './components/ClientIdentityVerification'
 import SpecialtySelector from './components/SpecialtySelector'
 import CoverageZoneSelector from './CoverageZoneSelector'
 import { Brand, Button } from './components/ui'
+import TechnicianVerificationForm from './components/TechnicianVerificationForm'
 
 export default function CompleteRegistration({ user }: { user: User }) {
   const { state, retry, updateProfile } = useAccount(user)
@@ -19,7 +20,7 @@ export default function CompleteRegistration({ user }: { user: User }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const profile = state.status === 'ready' ? state.profile : null
-
+  const isTechnician = profile?.roles.includes('TECNICO');
   async function finish() {
     if (!profile) return
     setBusy(true)
@@ -56,8 +57,19 @@ export default function CompleteRegistration({ user }: { user: User }) {
         <EmailVerification user={user} initialNotice={location.state?.emailVerificationNotice} />
         <section className="account-card profile-card" style={{ marginBottom: 24 }}>
           <h2>Verificación de identidad</h2>
-          <ClientIdentityVerification user={user} initialStatus={profile.estado_identidad}
-            onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
+          {isTechnician ? (
+            <TechnicianVerificationForm
+              user={user}
+              initialStatus={profile.estado_identidad}
+              onStatusChange={(estado) => updateProfile({ ...profile, estado_identidad: estado })}
+            />
+          ) : (
+            <ClientIdentityVerification
+              user={user}
+              initialStatus={profile.estado_identidad}
+              onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })}
+            />
+          )}
         </section>
         {profile.roles.includes('TECNICO') && <>
           <section className="account-card profile-card" style={{ marginBottom: 24 }}>
