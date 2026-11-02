@@ -1,19 +1,31 @@
 import uuid
-from typing import Literal, List, Optional
+from datetime import date
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select,delete,func
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, delete, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import TechnicianProfile, User, UserRole, CoverageZone, Specialty, TechnicianSpecialty, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult
+from app.models import (
+    TechnicianProfile,
+    User,
+    CoverageZone,
+    Specialty,
+    TechnicianSpecialty,
+    IdentityDocument,
+    IdentityVerificationRequest,
+    IdentityVerificationResult,
+)
 from app.security import get_current_user
 from app.storage import PrivateDocumentStorage
-from app.identity_documents import UploadedPart, _parse_multipart_parts, _require_admin
-from datetime import date, timedelta
-from app.storage import PrivateDocumentStorage
-from app.identity_documents import UploadedPart, _parse_multipart_parts, _require_admin
-from datetime import date, timedelta
+from app.identity_documents import _parse_multipart_parts, _require_admin
+from app.technician_activation import (
+    MAX_ANTIGUEDAD_ANTECEDENTES_DIAS,
+    compute_document_expiration,
+    require_operational_technician,
+    sync_technician_verification_state,
+)
 
 router = APIRouter(prefix="/technicians", tags=["Technicians"])
 
@@ -134,15 +146,22 @@ def get_my_availability(
         db.commit()
         db.refresh(tech_profile)
 
-    # CA-04 y condiciones transversales: disponible y verificado son dimensiones distintas,
-    # pero no disponible impide recibir nuevas contrataciones.
-    puede_contratar = bool(tech_profile.disponible and tech_profile.estado_verificacion == "VERIFICADO")
+    previous_state = tech_profile.estado_verificacion
+    evaluation = sync_technician_verification_state(
+        user,
+        tech_profile,
+        db,
+        proceso_responsable="CONSULTA_DISPONIBILIDAD",
+        actor_usuario_id=user.id,
+    )
+    if previous_state != evaluation["estado_verificacion"]:
+        db.commit()
 
     return AvailabilityResponse(
         usuario_id=str(tech_profile.usuario_id),
         disponible=bool(tech_profile.disponible),
         estado_verificacion=str(tech_profile.estado_verificacion),
-        puede_recibir_contrataciones=puede_contratar,
+        puede_recibir_contrataciones=bool(evaluation["puede_recibir_contrataciones"]),
     )
 
 
@@ -170,31 +189,44 @@ def update_my_availability(
     if not tech_profile:
         tech_profile = TechnicianProfile(usuario_id=user.id)
         db.add(tech_profile)
+        db.flush()
 
     tech_profile.disponible = data.disponible
+    evaluation = sync_technician_verification_state(
+        user,
+        tech_profile,
+        db,
+        proceso_responsable="CAMBIO_DISPONIBILIDAD",
+        actor_usuario_id=user.id,
+        causa_override=(
+            "El técnico cambió su disponibilidad a Disponible."
+            if data.disponible
+            else "El técnico cambió su disponibilidad a No disponible."
+        ),
+    )
     db.commit()
     db.refresh(tech_profile)
-
-    puede_contratar = bool(tech_profile.disponible and tech_profile.estado_verificacion == "VERIFICADO")
 
     return AvailabilityResponse(
         usuario_id=str(tech_profile.usuario_id),
         disponible=bool(tech_profile.disponible),
         estado_verificacion=str(tech_profile.estado_verificacion),
-        puede_recibir_contrataciones=puede_contratar,
+        puede_recibir_contrataciones=bool(evaluation["puede_recibir_contrataciones"]),
     )
 
 
-# --- ESQUEMAS Y ENDPOINTS HU-12 y HU-13: CATÁLOGO Y FILTROS ---
+# --- ESQUEMAS Y ENDPOINTS HU-12, HU-13 y HU-18 ST-03: CATÁLOGO Y FILTROS ---
 
 class CatalogTechnician(BaseModel):
     usuario_id: str
     nombre_completo: str
     especialidades: List[str]
+    tecnico_verificado: bool
     estado_verificacion: str
+    estado_certificacion: str
     tarifa_base: float
     unidad_cobro: str
-    calificacion_promedio: float
+    calificacion_promedio: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -206,13 +238,17 @@ def get_technicians_catalog(
     municipio: str = Query(None, description="Filtrar por municipio"),
     db: Session = Depends(get_db)
 ):
-    # CA-01 (HU-12): El catálogo debe mostrar técnicos verificados (y disponibles)
+    # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
+    # y sin suspensiones ni restricciones financieras.
     query = (
         select(User, TechnicianProfile)
         .join(TechnicianProfile, User.id == TechnicianProfile.usuario_id)
         .where(
             TechnicianProfile.disponible == True,
-            TechnicianProfile.estado_verificacion == "VERIFICADO"
+            TechnicianProfile.estado_verificacion == "VERIFICADO",
+            User.telefono_verificado == True,
+            TechnicianProfile.suspendido == False,
+            TechnicianProfile.restriccion_financiera == False,
         )
     )
 
@@ -232,7 +268,21 @@ def get_technicians_catalog(
     results = db.execute(query).unique().all()
 
     catalog = []
+    state_changed = False
     for user, profile in results:
+        # CA-04 y CA-06: Revalidar vigencias y requisitos obligatorios al consultar el catálogo
+        prev_state = profile.estado_verificacion
+        evaluation = sync_technician_verification_state(
+            user,
+            profile,
+            db,
+            proceso_responsable="CONSULTA_CATALOGO",
+        )
+        if prev_state != evaluation["estado_verificacion"]:
+            state_changed = True
+        if not evaluation["habilitado_operativamente"]:
+            continue
+
         # Obtener las especialidades reales del técnico (CA-02 de HU-12)
         specs_query = (
             select(Specialty.nombre)
@@ -241,19 +291,28 @@ def get_technicians_catalog(
         )
         specs = db.scalars(specs_query).all()
 
+        # CA-03: Mostrar Técnico Verificado separado de certificación y calificación, sin datos privados
         catalog.append({
             "usuario_id": str(user.id),
             "nombre_completo": user.nombre_completo,
             "especialidades": list(specs),
+            "tecnico_verificado": evaluation["tecnico_verificado"],
             "estado_verificacion": profile.estado_verificacion,
+            "estado_certificacion": profile.estado_certificacion or "NO_CERTIFICADO",
             "tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
             "unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA",
-            "calificacion_promedio": 5.0 # MOCK: Se conectará a valor real en futuros Sprints
+            "calificacion_promedio": (
+                float(profile.calificacion_promedio) if profile.calificacion_promedio is not None else None
+            ),
         })
+
+    if state_changed:
+        db.commit()
     
     return catalog
 
-    # --- ENDPOINT HU-13: VISTA DETALLADA DEL PERFIL DEL TÉCNICO ---
+
+# --- ENDPOINT HU-13 / HU-18 ST-03: VISTA DETALLADA DEL PERFIL PÚBLICO DEL TÉCNICO ---
 
 class PublicService(BaseModel):
     id: str
@@ -265,23 +324,39 @@ class TechnicianPublicProfile(BaseModel):
     nombre_completo: str
     especialidades: List[str]
     servicios: List[PublicService]
+    tecnico_verificado: bool
     estado_verificacion: str
+    estado_certificacion: str
     tarifa_base: float
     unidad_cobro: str
-    calificacion_promedio: float
+    calificacion_promedio: Optional[float] = None
     
     class Config:
         from_attributes = True
 
 @router.get("/profile/{user_id}", response_model=TechnicianPublicProfile, status_code=status.HTTP_200_OK)
-def get_technician_public_profile(user_id: str, db: Session = Depends(get_db)):
+def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_db)):
     # Buscar al usuario y su perfil de técnico
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Técnico no encontrado.")
         
     tech_profile = db.get(TechnicianProfile, user_id)
-    if not tech_profile or not tech_profile.disponible:
+    if not tech_profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El perfil no está disponible.")
+
+    prev_state = tech_profile.estado_verificacion
+    evaluation = sync_technician_verification_state(
+        user,
+        tech_profile,
+        db,
+        proceso_responsable="CONSULTA_PERFIL_PUBLICO",
+    )
+    if prev_state != evaluation["estado_verificacion"]:
+        db.commit()
+
+    # CA-02, CA-04, CA-05: Si no está habilitado operativamente, no se muestra como disponible para contratar
+    if not evaluation["habilitado_operativamente"]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El perfil no está disponible.")
 
     # 1. Obtener Especialidades
@@ -291,12 +366,11 @@ def get_technician_public_profile(user_id: str, db: Session = Depends(get_db)):
     specs = db.scalars(specs_query).all()
 
     # 2. Obtener Servicios Activos (CA-05 de HU-13)
-    # Importamos Service arriba si no lo teníamos: from app.models import Service
     from app.models import Service 
     services_query = select(Service).where(Service.usuario_id == user.id, Service.activo == True)
     services = db.scalars(services_query).all()
 
-    # 3. Formatear la respuesta
+    # 3. Formatear la respuesta (CA-03: separado de certificación y calificación, sin DNI/teléfono/documentos)
     public_services = [
         {"id": str(s.id), "nombre": s.nombre, "descripcion": s.descripcion}
         for s in services
@@ -307,13 +381,86 @@ def get_technician_public_profile(user_id: str, db: Session = Depends(get_db)):
         "nombre_completo": user.nombre_completo,
         "especialidades": list(specs),
         "servicios": public_services,
+        "tecnico_verificado": evaluation["tecnico_verificado"],
         "estado_verificacion": tech_profile.estado_verificacion,
+        "estado_certificacion": tech_profile.estado_certificacion or "NO_CERTIFICADO",
         "tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0,
         "unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
-        "calificacion_promedio": 5.0 # MOCK: Futuros Sprints
+        "calificacion_promedio": (
+            float(tech_profile.calificacion_promedio) if tech_profile.calificacion_promedio is not None else None
+        ),
     }
 
-# --- HU-16 ST-03: Verificación documental del técnico ---
+
+# --- HU-18 ST-03: PERMISOS OPERATIVOS EN SOLICITUDES Y POSTULACIONES ---
+
+class JobApplicationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    solicitud_id: uuid.UUID
+    mensaje: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/me/service-requests/{solicitud_id}/accept", status_code=status.HTTP_200_OK)
+def accept_service_request(
+    solicitud_id: uuid.UUID,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """CA-02, CA-05 y Condición transversal: revalida habilitación al aceptar una solicitud por API."""
+    user = db.scalar(
+        select(User)
+        .where(User.firebase_uid == claims["uid"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completa tu registro en TekniGO")
+
+    profile = require_operational_technician(
+        user,
+        db,
+        proceso_responsable="ACEPTAR_SOLICITUD_API",
+    )
+    return {
+        "status": "accepted",
+        "solicitud_id": str(solicitud_id),
+        "tecnico_id": str(profile.usuario_id),
+        "estado_verificacion": profile.estado_verificacion,
+        "habilitado_operativamente": True,
+    }
+
+
+@router.post("/me/job-applications", status_code=status.HTTP_201_CREATED)
+def apply_to_job_request(
+    payload: JobApplicationRequest,
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """CA-02, CA-05 y Condición transversal: revalida habilitación al postular mediante la API."""
+    user = db.scalar(
+        select(User)
+        .where(User.firebase_uid == claims["uid"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completa tu registro en TekniGO")
+
+    profile = require_operational_technician(
+        user,
+        db,
+        proceso_responsable="POSTULAR_SOLICITUD_API",
+    )
+    return {
+        "status": "applied",
+        "solicitud_id": str(payload.solicitud_id),
+        "tecnico_id": str(profile.usuario_id),
+        "estado_verificacion": profile.estado_verificacion,
+        "habilitado_operativamente": True,
+    }
+
+
+# --- HU-16 ST-03 / HU-18 ST-01: Verificación documental y activación del técnico ---
 TECHNICIAN_DOC_TYPES = {
     "dni_frontal": ("DNI_FRONTAL", "el DNI (frente)"),
     "dni_reverso": ("DNI_REVERSO", "el DNI (reverso)"),
@@ -328,6 +475,7 @@ def _serialize_verification_doc(doc: IdentityDocument) -> dict:
         "estado": doc.estado,
         "observaciones": doc.observaciones,
         "fecha_emision_declarada": doc.fecha_emision_declarada.isoformat() if doc.fecha_emision_declarada else None,
+        "fecha_vencimiento": doc.fecha_vencimiento.isoformat() if doc.fecha_vencimiento else None,
         "creado_en": doc.creado_en.isoformat() if doc.creado_en else None,
     }
 def _parse_date_field(value: str | None, label: str) -> date | None:
@@ -337,6 +485,7 @@ def _parse_date_field(value: str | None, label: str) -> date | None:
         return date.fromisoformat(value.strip())
     except ValueError:
         raise HTTPException(400, f"La fecha de emisión de {label} tiene formato inválido (usar AAAA-MM-DD)")
+
 @router.post("/me/verification-documents", status_code=201)
 async def upload_verification_documents(
     request: Request,
@@ -369,7 +518,7 @@ async def upload_verification_documents(
         parts["fecha_penales"].content.decode("utf-8", errors="replace") if "fecha_penales" in parts else None,
         "los antecedentes penales",
     )
-    # --- NUEVA VALIDACIÓN ST-04: Vigencia de antecedentes ---
+    # --- VALIDACIÓN ST-04: Vigencia de antecedentes ---
     _validar_vigencia_antecedentes(fecha_policiales, "los antecedentes policiales")
     _validar_vigencia_antecedentes(fecha_penales, "los antecedentes penales")
     version = (db.scalar(select(func.max(IdentityVerificationRequest.version)).where(
@@ -391,7 +540,7 @@ async def upload_verification_documents(
             fecha = fecha_penales
         stored_docs.append(IdentityDocument(
             usuario_id=user.id,
-            solicitud_id= request_id, 
+            solicitud_id=request_id, 
             tipo=doc_type,
             ruta_privada=saved.ruta_privada, 
             content_type=saved.content_type,
@@ -399,21 +548,30 @@ async def upload_verification_documents(
             sha256=saved.sha256,
             estado="PENDIENTE", 
             fecha_emision_declarada=fecha,
+            fecha_vencimiento=compute_document_expiration(doc_type, fecha),
         ))
     doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
     db.execute(delete(IdentityDocument).where(
         IdentityDocument.usuario_id == user.id,
         IdentityDocument.tipo.in_(doc_types_list),
     ))
-    db.add(IdentityVerificationRequest(id=request_id, usuario_id=user.id,version=version))
+    db.add(IdentityVerificationRequest(id=request_id, usuario_id=user.id, version=version))
     db.flush()
     db.add_all(stored_docs)
+    db.flush()
     db.add(IdentityVerificationResult(
-            solicitud_id=request_id, estado="EN_REVISION",
-            motivo="Documentos recibidos. Pendientes de verificación de identidad.",
-            proceso_responsable="CARGA_DOCUMENTAL", version_proceso="1",
-        ))
-    technician.estado_verificacion = "EN_REVISION"
+        solicitud_id=request_id, estado="EN_REVISION",
+        motivo="Documentos recibidos. Pendientes de verificación de identidad.",
+        proceso_responsable="CARGA_DOCUMENTAL", version_proceso="1",
+    ))
+    sync_technician_verification_state(
+        user,
+        technician,
+        db,
+        proceso_responsable="CARGA_DOCUMENTAL",
+        actor_usuario_id=user.id,
+        causa_override="Documentos recibidos. Pendientes de verificación de identidad y antecedentes.",
+    )
     db.commit()
     for doc in stored_docs:
         db.refresh(doc)
@@ -421,6 +579,7 @@ async def upload_verification_documents(
         "estado_verificacion": technician.estado_verificacion,
         "documentos": [_serialize_verification_doc(doc) for doc in stored_docs],
     }
+
 @router.get("/me/verification-documents")
 def list_verification_documents(
     claims=Depends(get_current_user),
@@ -432,6 +591,16 @@ def list_verification_documents(
     technician = db.get(TechnicianProfile, user.id)
     if technician is None:
         raise HTTPException(404, "No se encontró tu perfil de técnico")
+    previous_state = technician.estado_verificacion
+    evaluation = sync_technician_verification_state(
+        user,
+        technician,
+        db,
+        proceso_responsable="CONSULTA_DOCUMENTOS_TECNICO",
+        actor_usuario_id=user.id,
+    )
+    if previous_state != evaluation["estado_verificacion"]:
+        db.commit()
     doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
     docs = db.scalars(
         select(IdentityDocument).where(
@@ -442,15 +611,46 @@ def list_verification_documents(
     return {
         "estado_verificacion": technician.estado_verificacion,
         "observaciones": technician.observaciones_verificacion,
+        "motivo_restriccion": technician.motivo_restriccion,
+        "telefono_verificado": bool(user.telefono_verificado),
+        "puede_recibir_contrataciones": evaluation["puede_recibir_contrataciones"],
+        "requisitos": evaluation["requisitos"],
+        "requisitos_pendientes": evaluation["requisitos_pendientes"],
         "documentos": [_serialize_verification_doc(doc) for doc in docs],
     }
+
+@router.get("/me/activation-status")
+def get_my_activation_status(
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    if not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "La cuenta no tiene rol de técnico")
+    technician = db.get(TechnicianProfile, user.id)
+    if technician is None:
+        raise HTTPException(404, "No se encontró tu perfil de técnico")
+    previous_state = technician.estado_verificacion
+    evaluation = sync_technician_verification_state(
+        user,
+        technician,
+        db,
+        proceso_responsable="CONSULTA_ESTADO_ACTIVACION",
+        actor_usuario_id=user.id,
+    )
+    if previous_state != evaluation["estado_verificacion"]:
+        db.commit()
+    return evaluation
+
 @router.get("/admin/verification-documents/{document_id}/content")
 def download_verification_document_admin(
     document_id: uuid.UUID,
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-# Restringe estrictamente el acceso solo a administradores
+    # Restringe estrictamente el acceso solo a administradores
     _require_admin(claims, db)
     doc = db.get(IdentityDocument, document_id)
     if doc is None:
@@ -467,7 +667,7 @@ def download_verification_document_admin(
     )
 
 # Define el límite de antigüedad permitido (ej. 90 días o 3 meses)
-MAX_ANTIGUEDAD_DIAS = 90
+MAX_ANTIGUEDAD_DIAS = MAX_ANTIGUEDAD_ANTECEDENTES_DIAS
 
 def _validar_vigencia_antecedentes(fecha: date | None, label: str):
     if not fecha:
@@ -487,11 +687,12 @@ def _validar_vigencia_antecedentes(fecha: date | None, label: str):
 
 class DocumentReviewItem(BaseModel):
     documento_id: uuid.UUID
-    estado: str  # 'APROBADO' o 'RECHAZADO'
+    estado: str  # 'APROBADO', 'RECHAZADO', 'VENCIDO', 'INVALIDADO'
     observaciones: Optional[str] = None
+    fecha_vencimiento: Optional[date] = None
 
 class AdminVerificationReviewSchema(BaseModel):
-    estado_verificacion: str  # 'VERIFICADO' o 'RECHAZADO'
+    estado_verificacion: Optional[str] = None  # Opcional: el estado real lo determina el servicio central (CA-01)
     observaciones_verificacion: Optional[str] = None
     documentos: List[DocumentReviewItem]
 
@@ -504,28 +705,65 @@ def review_technician_verification(
     db: Session = Depends(get_db),
 ):
     # 1. Validar que quien ejecuta sea administrador
-    _require_admin(claims, db)
+    admin_user = _require_admin(claims, db)
 
-    # 2. Buscar perfil del técnico
+    # 2. Buscar usuario y perfil del técnico
+    tech_user = db.get(User, usuario_id)
     technician = db.get(TechnicianProfile, usuario_id)
-    if not technician:
+    if not tech_user or not technician:
         raise HTTPException(404, "No se encontró el perfil del técnico.")
 
-    # 3. Actualizar estado general y observaciones del perfil
-    technician.estado_verificacion = payload.estado_verificacion
+    # 3. Actualizar observaciones generales del perfil
     technician.observaciones_verificacion = payload.observaciones_verificacion
 
-    # 4. Actualizar el estado y observaciones individuales de cada documento evaluado
+    # 4. Actualizar el estado, observaciones y vigencia de cada documento evaluado
     for doc_review in payload.documentos:
         doc = db.get(IdentityDocument, doc_review.documento_id)
         if doc and doc.usuario_id == usuario_id:
             doc.estado = doc_review.estado
             doc.observaciones = doc_review.observaciones
+            if doc_review.fecha_vencimiento is not None:
+                doc.fecha_vencimiento = doc_review.fecha_vencimiento
+            elif doc.fecha_vencimiento is None and doc.fecha_emision_declarada is not None:
+                doc.fecha_vencimiento = compute_document_expiration(doc.tipo, doc.fecha_emision_declarada)
 
+    db.flush()
+
+    # 5. Evaluar y sincronizar estado según CA-01, CA-02, CA-04, CA-05 y registrar auditoría (CA-06)
+    evaluation = sync_technician_verification_state(
+        tech_user,
+        technician,
+        db,
+        proceso_responsable="REVISION_DOCUMENTAL_ADMIN",
+        actor_usuario_id=admin_user.id,
+        causa_override=payload.observaciones_verificacion,
+    )
     db.commit()
 
     return {
         "status": "success",
         "message": f"Verificación del técnico actualizada a: {technician.estado_verificacion}",
         "estado_verificacion": technician.estado_verificacion,
+        "puede_recibir_contrataciones": evaluation["puede_recibir_contrataciones"],
+        "motivo_restriccion": technician.motivo_restriccion,
+        "requisitos_pendientes": evaluation["requisitos_pendientes"],
     }
+
+
+from app.technician_activation import run_scheduled_expiration_review
+
+
+@router.post("/admin/expiration-review", status_code=status.HTTP_200_OK)
+def run_expiration_review_admin(
+    claims=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """HU-18 ST-05 (CA-04, CA-06): Ejecuta la revisión programada de vencimientos de técnicos."""
+    admin_user = _require_admin(claims, db)
+    summary = run_scheduled_expiration_review(
+        db,
+        actor_usuario_id=admin_user.id,
+        proceso_responsable="REVISION_PROGRAMADA_VENCIMIENTOS",
+    )
+    db.commit()
+    return summary

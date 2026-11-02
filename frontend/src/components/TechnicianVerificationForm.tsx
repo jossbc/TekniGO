@@ -24,9 +24,22 @@ type Props = {
   onStatusChange?: (status: string) => void
 }
 
+type RequirementItem = {
+  codigo: string
+  nombre: string
+  aprobado: boolean
+  vigente: boolean
+  estado: string
+  fecha_emision?: string | null
+  fecha_vencimiento?: string | null
+  motivo?: string | null
+}
+
 type VerificationDocsResponse = {
   estado_verificacion: string
   observaciones?: string | null
+  motivo_restriccion?: string | null
+  requisitos_pendientes?: RequirementItem[]
   documentos: { id: string; tipo: string; estado: string; observaciones?: string | null; creado_en?: string }[]
 }
 
@@ -64,6 +77,8 @@ function validateFile(file: File, label: string): string | null {
 export default function TechnicianVerificationForm({ user, initialStatus = 'NO_VERIFICADO', onStatusChange }: Props) {
   const [status, setStatus] = useState<string>(initialStatus)
   const [observacionesGenerales, setObservacionesGenerales] = useState<string | null>(null)
+  const [motivoRestriccion, setMotivoRestriccion] = useState<string | null>(null)
+  const [requisitosPendientes, setRequisitosPendientes] = useState<RequirementItem[]>([])
   const [hasUploadedDocs, setHasUploadedDocs] = useState(false)
 
   // Archivos obligatorios
@@ -101,6 +116,8 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
         setHasUploadedDocs(uploaded)
         setStatus(res.estado_verificacion || 'NO_VERIFICADO')
         setObservacionesGenerales(res.observaciones ?? null)
+        setMotivoRestriccion(res.motivo_restriccion ?? null)
+        setRequisitosPendientes(Array.isArray(res.requisitos_pendientes) ? res.requisitos_pendientes : [])
       })
       .catch(() => {
         if (!active) return
@@ -240,6 +257,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
           {status === 'VERIFICADO' && <ShieldCheck size={26} color="#16a34a" />}
           {status === 'EN_REVISION' && <Clock3 size={26} color="#2563eb" />}
           {status === 'RECHAZADO' && <ShieldAlert size={26} color="#dc2626" />}
+          {status === 'RESTRINGIDO' && <ShieldAlert size={26} color="#dc2626" />}
           {status === 'NO_VERIFICADO' && <CreditCard size={26} color="#6b7280" />}
 
           <div>
@@ -250,10 +268,27 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               {status === 'VERIFICADO' && '¡Felicidades! Tu cuenta está verificada y puedes recibir contrataciones activas.'}
               {status === 'EN_REVISION' && 'Tus documentos personales y antecedentes están siendo revisados por administración.'}
               {status === 'RECHAZADO' && (observacionesGenerales || 'Uno o más documentos fueron rechazados. Por favor súbelos nuevamente con las correcciones.')}
+              {status === 'RESTRINGIDO' && (motivoRestriccion || 'Se retiró temporalmente tu habilitación para nuevas contrataciones porque un requisito obligatorio venció o fue invalidado.')}
               {status === 'NO_VERIFICADO' && 'Para proteger la confianza de los clientes, los técnicos deben presentar DNI, selfie y constancias de antecedentes.'}
             </p>
           </div>
         </div>
+
+        {/* ST-04: Mostrar requisitos pendientes cuando aplica */}
+        {status !== 'VERIFICADO' && requisitosPendientes.length > 0 && (
+          <div style={{ marginTop: '1rem', paddingTop: '0.85rem', borderTop: '1px solid #e5e7eb' }}>
+            <div style={{ fontWeight: 600, fontSize: '0.88rem', marginBottom: 6 }}>
+              Requisitos pendientes para obtener o recuperar el estado Técnico Verificado:
+            </div>
+            <ul style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.86rem', color: '#374151' }}>
+              {requisitosPendientes.map((req) => (
+                <li key={req.codigo} style={{ marginBottom: 3 }}>
+                  <strong>{req.nombre}</strong> ({req.estado}){req.motivo ? `: ${req.motivo}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Si está en revisión o verificado, mostramos aviso informativo */}
@@ -274,6 +309,14 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
           <p style={{ color: '#15803d', maxWidth: 480, margin: '0 auto' }}>
             Tus documentos han sido aprobados satisfactoriamente. Tu perfil cuenta con insignia de seguridad para los clientes.
           </p>
+        </div>
+      )}
+
+      {status === 'RESTRINGIDO' && (
+        <div style={{ marginBottom: '1.5rem' }}>
+          <Button type="button" onClick={() => setStatus('PENDIENTE')} style={{ width: 'auto' }}>
+            Actualizar documentos vencidos o invalidados
+          </Button>
         </div>
       )}
 
