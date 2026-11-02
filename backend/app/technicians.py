@@ -224,8 +224,8 @@ class CatalogTechnician(BaseModel):
     tecnico_verificado: bool
     estado_verificacion: str
     estado_certificacion: str
-    tarifa_base: float
-    unidad_cobro: str
+    #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
+    #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
 
     class Config:
@@ -299,8 +299,8 @@ def get_technicians_catalog(
             "tecnico_verificado": evaluation["tecnico_verificado"],
             "estado_verificacion": profile.estado_verificacion,
             "estado_certificacion": profile.estado_certificacion or "NO_CERTIFICADO",
-            "tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
-            "unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA",
+            #"tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
+            #"unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA", #SE QUITARON ESTOS CAMPOS DE PERFILES TECNICOS
             "calificacion_promedio": (
                 float(profile.calificacion_promedio) if profile.calificacion_promedio is not None else None
             ),
@@ -327,8 +327,8 @@ class TechnicianPublicProfile(BaseModel):
     tecnico_verificado: bool
     estado_verificacion: str
     estado_certificacion: str
-    tarifa_base: float
-    unidad_cobro: str
+    #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE LA TABLA DE PERFILES TECNICOS
+    #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
     
     class Config:
@@ -384,8 +384,8 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         "tecnico_verificado": evaluation["tecnico_verificado"],
         "estado_verificacion": tech_profile.estado_verificacion,
         "estado_certificacion": tech_profile.estado_certificacion or "NO_CERTIFICADO",
-        "tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0,
-        "unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
+        #"tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0, #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
+        #"unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
         "calificacion_promedio": (
             float(tech_profile.calificacion_promedio) if tech_profile.calificacion_promedio is not None else None
         ),

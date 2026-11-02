@@ -498,6 +498,11 @@ function VerificationRoute({ user }: { user: User }) {
   return (
     <div className="site">
       <Header authenticated={true} name={profile?.nombre_completo} email={user.email} />
+      <p style={{ marginTop: "1.5rem" }}>
+          <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            ← Volver a mi cuenta
+          </Link>
+        </p>
       <main className="account" style={{ margin: "0 auto 90px" }}>
         <h1 style={{ marginTop: 0 }}>Verificación de identidad</h1>
         <p>Adjunta tus documentos para validar tu identidad de forma segura en TekniGO.</p>
@@ -509,11 +514,7 @@ function VerificationRoute({ user }: { user: User }) {
             <ClientIdentityVerification user={user} initialStatus={profile?.estado_identidad} onStatusChange={(estado_identidad) => updateProfile({ ...profile, estado_identidad })} />
           )}
         </section>
-        <p style={{ marginTop: "1.5rem" }}>
-          <Link to="/mi-cuenta" className="link" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            ← Volver a mi cuenta
-          </Link>
-        </p>
+        
       </main>
     </div>
   );
