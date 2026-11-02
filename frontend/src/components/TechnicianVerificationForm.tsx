@@ -81,6 +81,9 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
   const [requisitosPendientes, setRequisitosPendientes] = useState<RequirementItem[]>([])
   const [hasUploadedDocs, setHasUploadedDocs] = useState(false)
 
+  // Conjunto de tipos de documentos ya guardados en el backend (ej: DNI_FRONTAL, DNI_REVERSO, SELFIE)
+  const [existingDocTypes, setExistingDocTypes] = useState<Set<string>>(new Set())
+
   // Archivos obligatorios
   const [dniFrontal, setDniFrontal] = useState<File | null>(null)
   const [dniReverso, setDniReverso] = useState<File | null>(null)
@@ -107,12 +110,25 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
   const policialesInputRef = useRef<HTMLInputElement | null>(null)
   const penalesInputRef = useRef<HTMLInputElement | null>(null)
 
+  // Flags para verificar cuáles ya existen en el backend
+  const hasExistingDniFrontal = existingDocTypes.has('DNI_FRONTAL')
+  const hasExistingDniReverso = existingDocTypes.has('DNI_REVERSO')
+  const hasExistingSelfie = existingDocTypes.has('SELFIE')
+  const hasExistingPoliciales = existingDocTypes.has('ANTECEDENTES_POLICIALES')
+  const hasExistingPenales = existingDocTypes.has('ANTECEDENTES_PENALES')
+
   useEffect(() => {
     let active = true
     api<VerificationDocsResponse>('/technicians/me/verification-documents', user)
       .then((res) => {
         if (!active) return
-        const uploaded = Array.isArray(res.documentos) && res.documentos.length > 0
+        const docs = Array.isArray(res.documentos) ? res.documentos : []
+        const uploaded = docs.length > 0
+
+        // Guardar tipos de documentos ya cargados
+        const loadedTypes = new Set(docs.map((d) => d.tipo))
+        setExistingDocTypes(loadedTypes)
+
         setHasUploadedDocs(uploaded)
         setStatus(res.estado_verificacion || 'NO_VERIFICADO')
         setObservacionesGenerales(res.observaciones ?? null)
@@ -177,13 +193,18 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
 
     // HU-16 CA-04: Validar documentos obligatorios
     const errors: FieldErrors = {}
-    if (!dniFrontal) errors.dniFrontal = 'El DNI frontal es obligatorio.'
-    if (!dniReverso) errors.dniReverso = 'El DNI reverso es obligatorio.'
-    if (!selfie) errors.selfie = 'La selfie en vivo es obligatoria.'
-    if (!antecedentesPoliciales) errors.antecedentesPoliciales = 'La constancia de antecedentes policiales es obligatoria.'
-    if (!antecedentesPenales) errors.antecedentesPenales = 'La constancia de antecedentes penales es obligatoria.'
-    if (!fechaPoliciales) errors.fechaPoliciales = 'Indica la fecha de emisión de los antecedentes policiales.'
-    if (!fechaPenales) errors.fechaPenales = 'Indica la fecha de emisión de los antecedentes penales.'
+    if (!hasExistingDniFrontal && !dniFrontal) errors.dniFrontal = 'El DNI frontal es obligatorio.'
+    if (!hasExistingDniReverso && !dniReverso) errors.dniReverso = 'El DNI reverso es obligatorio.'
+    if (!hasExistingSelfie && !selfie) errors.selfie = 'La selfie en vivo es obligatoria.'
+    if (!hasExistingPoliciales && !antecedentesPoliciales) errors.antecedentesPoliciales = 'La constancia de antecedentes policiales es obligatoria.'
+    if (!hasExistingPenales && !antecedentesPenales) errors.antecedentesPenales = 'La constancia de antecedentes penales es obligatoria.'
+   // Validar fechas obligatorias para antecedentes si se están subiendo nuevos antecedentes
+    if ((antecedentesPoliciales || !hasExistingPoliciales) && !fechaPoliciales) {
+      errors.fechaPoliciales = 'Indica la fecha de emisión de los antecedentes policiales.'
+    }
+    if ((antecedentesPenales || !hasExistingPenales) && !fechaPenales) {
+      errors.fechaPenales = 'Indica la fecha de emisión de los antecedentes penales.'
+    }
 
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors)
@@ -194,13 +215,13 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
     setBusy(true)
     try {
       const formData = new FormData()
-      formData.append('dni_frontal', dniFrontal!)
-      formData.append('dni_reverso', dniReverso!)
-      formData.append('selfie', selfie!)
-      formData.append('antecedentes_policiales', antecedentesPoliciales!)
-      formData.append('antecedentes_penales', antecedentesPenales!)
-      formData.append('fecha_policiales', fechaPoliciales)
-      formData.append('fecha_penales', fechaPenales)
+      if (dniFrontal) formData.append('dni_frontal', dniFrontal)
+      if (dniReverso) formData.append('dni_reverso', dniReverso)
+      if (selfie) formData.append('selfie', selfie)
+      if (antecedentesPoliciales) formData.append('antecedentes_policiales', antecedentesPoliciales)
+      if (antecedentesPenales) formData.append('antecedentes_penales', antecedentesPenales)
+      if (fechaPoliciales) formData.append('fecha_policiales', fechaPoliciales)
+      if (fechaPenales) formData.append('fecha_penales', fechaPenales)  
 
       const token = await user.getIdToken()
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -336,29 +357,22 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               {/* DNI Frontal */}
               <div style={{ border: '1px solid #dce2eb', borderRadius: 12, padding: '1rem', background: '#fff' }}>
                 <span style={{ fontWeight: 600, display: 'block', marginBottom: 8 }}>DNI (Frente / Frontal) *</span>
+                {hasExistingDniFrontal && !dniFrontal ? (
+                  <div style={{ padding: '8px 10px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac', color: '#166534', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={16} /> Documento cargado previamente</span>
+                    <button type="button" onClick={() => frontalInputRef.current?.click()} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem', textDecoration: 'underline' }}>Cambiar</button>
+                  </div>
+                ) : null}
+
                 <input
                   ref={frontalInputRef}
                   type="file"
                   accept={ACCEPTED_FORMATS}
-                  style={{ display: 'none' }}
+                  style={{ display: hasExistingDniFrontal && !dniFrontal ? 'none' : 'block', width: '100%' }}
                   onChange={(e) => handleFileChange('dniFrontal', 'El DNI frontal', e)}
                 />
-                {!dniFrontal ? (
-                  <Button type="button" className="button-outline" onClick={() => frontalInputRef.current?.click()} style={{ width: '100%' }}>
-                    <Upload size={16} /> Seleccionar archivo
-                  </Button>
-                ) : (
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, overflowWrap: 'anywhere' }}>{dniFrontal.name} ({formatSize(dniFrontal.size)})</span>
-                      <button type="button" onClick={() => setDniFrontal(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#dc2626' }}>
-                        <X size={16} />
-                      </button>
-                    </div>
-                    {frontalPreview && (
-                      <img src={frontalPreview} alt="DNI Frontal" style={{ width: '100%', maxHeight: 150, objectFit: 'contain', borderRadius: 8, border: '1px solid #e5e7eb' }} />
-                    )}
-                  </div>
+                {frontalPreview && (
+                  <img src={frontalPreview} alt="DNI Frontal" style={{ width: '100%', maxHeight: 150, objectFit: 'contain', borderRadius: 8, marginTop: 8, border: '1px solid #e5e7eb' }} />
                 )}
                 {fieldErrors.dniFrontal && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '6px 0 0' }}>{fieldErrors.dniFrontal}</p>}
               </div>
@@ -366,29 +380,22 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               {/* DNI Reverso */}
               <div style={{ border: '1px solid #dce2eb', borderRadius: 12, padding: '1rem', background: '#fff' }}>
                 <span style={{ fontWeight: 600, display: 'block', marginBottom: 8 }}>DNI (Reverso / Atrás) *</span>
+                {hasExistingDniReverso && !dniReverso ? (
+                  <div style={{ padding: '8px 10px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac', color: '#166534', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={16} /> Documento cargado previamente</span>
+                    <button type="button" onClick={() => reversoInputRef.current?.click()} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '0.8rem', textDecoration: 'underline' }}>Cambiar</button>
+                  </div>
+                ) : null}
+
                 <input
                   ref={reversoInputRef}
                   type="file"
                   accept={ACCEPTED_FORMATS}
-                  style={{ display: 'none' }}
+                  style={{ display: hasExistingDniReverso && !dniReverso ? 'none' : 'block', width: '100%' }}
                   onChange={(e) => handleFileChange('dniReverso', 'El DNI reverso', e)}
                 />
-                {!dniReverso ? (
-                  <Button type="button" className="button-outline" onClick={() => reversoInputRef.current?.click()} style={{ width: '100%' }}>
-                    <Upload size={16} /> Seleccionar archivo
-                  </Button>
-                ) : (
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, overflowWrap: 'anywhere' }}>{dniReverso.name} ({formatSize(dniReverso.size)})</span>
-                      <button type="button" onClick={() => setDniReverso(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#dc2626' }}>
-                        <X size={16} />
-                      </button>
-                    </div>
-                    {reversoPreview && (
-                      <img src={reversoPreview} alt="DNI Reverso" style={{ width: '100%', maxHeight: 150, objectFit: 'contain', borderRadius: 8, border: '1px solid #e5e7eb' }} />
-                    )}
-                  </div>
+                {reversoPreview && (
+                  <img src={reversoPreview} alt="DNI Reverso" style={{ width: '100%', maxHeight: 150, objectFit: 'contain', borderRadius: 8, marginTop: 8, border: '1px solid #e5e7eb' }} />
                 )}
                 {fieldErrors.dniReverso && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '6px 0 0' }}>{fieldErrors.dniReverso}</p>}
               </div>
@@ -403,14 +410,20 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
             <p style={{ color: 'var(--muted)', fontSize: '0.9rem', margin: '0 0 1rem' }}>
               Tómate una foto en vivo desde tu cámara para comparar con tu DNI. No se admiten fotos prediseñadas o de archivo.
             </p>
-            <SelfieCameraCapture
-              value={selfie}
-              error={fieldErrors.selfie}
-              onCapture={(file, err) => {
-                setSelfie(file)
-                setFieldErrors((prev) => ({ ...prev, selfie: err }))
-              }}
-            />
+            {hasExistingSelfie && !selfie ? (
+              <div style={{ padding: '12px 16px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac', color: '#166534', fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><CheckCircle2 size={18} /> Selfie verificada/cargada previamente</span>
+              </div>
+            ) : (
+              <SelfieCameraCapture
+                value={selfie}
+                error={fieldErrors.selfie}
+                onCapture={(file, err) => {
+                  setSelfie(file)
+                  setFieldErrors((prev) => ({ ...prev, selfie: err }))
+                }}
+              />
+            )}
           </div>
 
           {/* SECCIÓN 3: ANTECEDENTES POLICIALES Y PENALES (CA-03, ST-04) */}
@@ -426,6 +439,12 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               {/* Antecedentes Policiales */}
               <div style={{ border: '1px solid #dce2eb', borderRadius: 12, padding: '1rem', background: '#fff' }}>
                 <span style={{ fontWeight: 600, display: 'block', marginBottom: 6 }}>Antecedentes Policiales (DPI) *</span>
+                {hasExistingPoliciales && !antecedentesPoliciales ? (
+                  <div style={{ padding: '8px 10px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac', color: '#166534', fontSize: '0.85rem', marginBottom: 10 }}>
+                    <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 4 }} /> Constancia policial cargada previa
+                  </div>
+                ) : null}
+
                 <input
                   ref={policialesInputRef}
                   type="file"
@@ -435,7 +454,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                 />
                 {!antecedentesPoliciales ? (
                   <Button type="button" className="button-outline" onClick={() => policialesInputRef.current?.click()} style={{ width: '100%', marginBottom: 10 }}>
-                    <Upload size={16} /> Adjuntar constancia policial
+                    <Upload size={16} /> {hasExistingPoliciales ? 'Reemplazar constancia policial' : 'Adjuntar constancia policial'}
                   </Button>
                 ) : (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: '#f8fafc', borderRadius: 8, marginBottom: 10 }}>
@@ -447,7 +466,6 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                 )}
                 {fieldErrors.antecedentesPoliciales && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '0 0 8px' }}>{fieldErrors.antecedentesPoliciales}</p>}
 
-                {/* Fecha declarada */}
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--muted)', marginBottom: 4 }}>
                   Fecha de emisión declarada *
                 </label>
@@ -456,7 +474,6 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                   value={fechaPoliciales}
                   onChange={(e) => { setFechaPoliciales(e.target.value); setFieldErrors((prev) => ({ ...prev, fechaPoliciales: undefined })) }}
                   style={{ width: '100%', minHeight: 42, padding: '6px 10px', borderRadius: 8, border: '1px solid #dce2eb', fontSize: '0.9rem' }}
-                  required
                 />
                 {fieldErrors.fechaPoliciales && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '4px 0 0' }}>{fieldErrors.fechaPoliciales}</p>}
               </div>
@@ -464,6 +481,12 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               {/* Antecedentes Penales */}
               <div style={{ border: '1px solid #dce2eb', borderRadius: 12, padding: '1rem', background: '#fff' }}>
                 <span style={{ fontWeight: 600, display: 'block', marginBottom: 6 }}>Antecedentes Penales (Poder Judicial) *</span>
+                {hasExistingPenales && !antecedentesPenales ? (
+                  <div style={{ padding: '8px 10px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #86efac', color: '#166534', fontSize: '0.85rem', marginBottom: 10 }}>
+                    <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 4 }} /> Constancia penal cargada previa
+                  </div>
+                ) : null}
+
                 <input
                   ref={penalesInputRef}
                   type="file"
@@ -473,7 +496,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                 />
                 {!antecedentesPenales ? (
                   <Button type="button" className="button-outline" onClick={() => penalesInputRef.current?.click()} style={{ width: '100%', marginBottom: 10 }}>
-                    <Upload size={16} /> Adjuntar constancia penal
+                    <Upload size={16} /> {hasExistingPenales ? 'Reemplazar constancia penal' : 'Adjuntar constancia penal'}
                   </Button>
                 ) : (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: '#f8fafc', borderRadius: 8, marginBottom: 10 }}>
@@ -485,7 +508,6 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                 )}
                 {fieldErrors.antecedentesPenales && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '0 0 8px' }}>{fieldErrors.antecedentesPenales}</p>}
 
-                {/* Fecha declarada */}
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--muted)', marginBottom: 4 }}>
                   Fecha de emisión declarada *
                 </label>
@@ -494,7 +516,6 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
                   value={fechaPenales}
                   onChange={(e) => { setFechaPenales(e.target.value); setFieldErrors((prev) => ({ ...prev, fechaPenales: undefined })) }}
                   style={{ width: '100%', minHeight: 42, padding: '6px 10px', borderRadius: 8, border: '1px solid #dce2eb', fontSize: '0.9rem' }}
-                  required
                 />
                 {fieldErrors.fechaPenales && <p style={{ color: '#dc2626', fontSize: '0.8rem', margin: '4px 0 0' }}>{fieldErrors.fechaPenales}</p>}
               </div>

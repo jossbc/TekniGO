@@ -506,64 +506,118 @@ async def upload_verification_documents(
         raise HTTPException(409, "Ya tienes una solicitud de verificación pendiente de revisión")
     body = await request.body()
     parts = _parse_multipart_parts(request.headers.get("content-type", ""), body)
-    for field_key in TECHNICIAN_DOC_TYPES:
-        if field_key not in parts or not parts[field_key].content:
-            _, label = TECHNICIAN_DOC_TYPES[field_key]
+    # 1. Consultar documentos existentes previamente para el usuario
+    existing_docs_query = db.scalars(
+        select(IdentityDocument).where(IdentityDocument.usuario_id == user.id)
+    ).all()
+    existing_docs_map = {doc.tipo: doc for doc in existing_docs_query}
+
+    # 2. Validar presencia: Exigir solo los campos que NO vienen en el request Y tampoco existen previamente
+    for field_key, (doc_type, label) in TECHNICIAN_DOC_TYPES.items():
+        has_new_file = field_key in parts and bool(parts[field_key].content)
+        has_existing_file = doc_type in existing_docs_map
+
+        if not has_new_file and not has_existing_file:
             raise HTTPException(400, f"Falta adjuntar el archivo de {label}")
+
+    # Parsear y validar fechas para antecedentes
     fecha_policiales = _parse_date_field(
-        parts["fecha_policiales"].content.decode("utf-8", errors="replace") if "fecha_policiales" in parts else None,
+        parts["fecha_policiales"].content.decode("utf-8", errors="replace") if "fecha_policiales" in parts and parts["fecha_policiales"].content else None,
         "los antecedentes policiales",
     )
     fecha_penales = _parse_date_field(
-        parts["fecha_penales"].content.decode("utf-8", errors="replace") if "fecha_penales" in parts else None,
+        parts["fecha_penales"].content.decode("utf-8", errors="replace") if "fecha_penales" in parts and parts["fecha_penales"].content else None,
         "los antecedentes penales",
     )
-    # --- VALIDACIÓN ST-04: Vigencia de antecedentes ---
-    _validar_vigencia_antecedentes(fecha_policiales, "los antecedentes policiales")
-    _validar_vigencia_antecedentes(fecha_penales, "los antecedentes penales")
+
+    # Si se sube una nueva constancia policial o no existía previamente, validar su vigencia
+    if ("antecedentes_policiales" in parts and parts["antecedentes_policiales"].content) or "ANTECEDENTES_POLICIALES" not in existing_docs_map:
+        _validar_vigencia_antecedentes(fecha_policiales, "los antecedentes policiales")
+
+    # Si se sube una nueva constancia penal o no existía previamente, validar su vigencia
+    if ("antecedentes_penales" in parts and parts["antecedentes_penales"].content) or "ANTECEDENTES_PENALES" not in existing_docs_map:
+        _validar_vigencia_antecedentes(fecha_penales, "los antecedentes penales")
+
     version = (db.scalar(select(func.max(IdentityVerificationRequest.version)).where(
         IdentityVerificationRequest.usuario_id == user.id,
     )) or 0) + 1
+
     request_id = uuid.uuid4()
     store = PrivateDocumentStorage()
     stored_docs: list[IdentityDocument] = []
+
+    # 3. Procesar o reutilizar cada documento
     for field_key, (doc_type, label) in TECHNICIAN_DOC_TYPES.items():
-        part = parts[field_key]
-        saved = store.store(
-            user_id=user.id, doc_type=doc_type,
-            content=part.content, declared_content_type=part.content_type, label=label,
-        )
-        fecha = None
-        if doc_type == "ANTECEDENTES_POLICIALES":
-            fecha = fecha_policiales
-        elif doc_type == "ANTECEDENTES_PENALES":
-            fecha = fecha_penales
-        stored_docs.append(IdentityDocument(
-            usuario_id=user.id,
-            solicitud_id=request_id, 
-            tipo=doc_type,
-            ruta_privada=saved.ruta_privada, 
-            content_type=saved.content_type,
-            tamano_bytes=saved.tamano_bytes, 
-            sha256=saved.sha256,
-            estado="PENDIENTE", 
-            fecha_emision_declarada=fecha,
-            fecha_vencimiento=compute_document_expiration(doc_type, fecha),
-        ))
+        has_new_file = field_key in parts and bool(parts[field_key].content)
+        
+        if has_new_file:
+            # Opción A: Guardar archivo recién subido
+            part = parts[field_key]
+            saved = store.store(
+                user_id=user.id, doc_type=doc_type,
+                content=part.content, declared_content_type=part.content_type, label=label,
+            )
+            fecha = None
+            if doc_type == "ANTECEDENTES_POLICIALES":
+                fecha = fecha_policiales
+            elif doc_type == "ANTECEDENTES_PENALES":
+                fecha = fecha_penales
+
+            stored_docs.append(IdentityDocument(
+                usuario_id=user.id,
+                solicitud_id=request_id, 
+                tipo=doc_type,
+                ruta_privada=saved.ruta_privada, 
+                content_type=saved.content_type,
+                tamano_bytes=saved.tamano_bytes, 
+                sha256=saved.sha256,
+                estado="PENDIENTE", 
+                fecha_emision_declarada=fecha,
+                fecha_vencimiento=compute_document_expiration(doc_type, fecha),
+            ))
+        else:
+            # Opción B: Reutilizar el documento existente en DB vinculándolo a la nueva solicitud
+            prev_doc = existing_docs_map[doc_type]
+            fecha = prev_doc.fecha_emision_declarada
+            if doc_type == "ANTECEDENTES_POLICIALES" and fecha_policiales:
+                fecha = fecha_policiales
+            elif doc_type == "ANTECEDENTES_PENALES" and fecha_penales:
+                fecha = fecha_penales
+
+            stored_docs.append(IdentityDocument(
+                usuario_id=user.id,
+                solicitud_id=request_id,
+                tipo=doc_type,
+                ruta_privada=prev_doc.ruta_privada,
+                content_type=prev_doc.content_type,
+                tamano_bytes=prev_doc.tamano_bytes,
+                sha256=prev_doc.sha256,
+                estado="PENDIENTE",
+                fecha_emision_declarada=fecha,
+                fecha_vencimiento=prev_doc.fecha_vencimiento or compute_document_expiration(doc_type, fecha),
+            ))
+
+    # Limpiar registros anteriores de estos tipos para el usuario
     doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
     db.execute(delete(IdentityDocument).where(
         IdentityDocument.usuario_id == user.id,
         IdentityDocument.tipo.in_(doc_types_list),
     ))
+
+    # Guardar nueva solicitud, documentos y actualizar estado general
     db.add(IdentityVerificationRequest(id=request_id, usuario_id=user.id, version=version))
     db.flush()
     db.add_all(stored_docs)
     db.flush()
+
     db.add(IdentityVerificationResult(
         solicitud_id=request_id, estado="EN_REVISION",
         motivo="Documentos recibidos. Pendientes de verificación de identidad.",
         proceso_responsable="CARGA_DOCUMENTAL", version_proceso="1",
     ))
+
+    # Sincronizar estado global del perfil y usuario
+    user.estado_identidad = "EN_REVISION"
     sync_technician_verification_state(
         user,
         technician,
@@ -572,9 +626,12 @@ async def upload_verification_documents(
         actor_usuario_id=user.id,
         causa_override="Documentos recibidos. Pendientes de verificación de identidad y antecedentes.",
     )
+
     db.commit()
+
     for doc in stored_docs:
         db.refresh(doc)
+
     return {
         "estado_verificacion": technician.estado_verificacion,
         "documentos": [_serialize_verification_doc(doc) for doc in stored_docs],
