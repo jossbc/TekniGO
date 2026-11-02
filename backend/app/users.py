@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import TechnicianProfile, User, UserRole
 from app.security import get_current_user
+from app.technician_activation import sync_technician_verification_state
 
 router = APIRouter()
 
@@ -182,6 +183,18 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
     try:
         if phone_changed:
             user.telefono = data.telefono
+            # Condición transversal y CA-04: cambiar de teléfono invalida su verificación previa
+            user.telefono_verificado = False
+            tech_profile = db.get(TechnicianProfile, user.id)
+            if tech_profile is not None:
+                sync_technician_verification_state(
+                    user,
+                    tech_profile,
+                    db,
+                    proceso_responsable="CAMBIO_TELEFONO",
+                    actor_usuario_id=user.id,
+                    causa_override="Cambio de número telefónico: se invalidó la verificación previa del teléfono.",
+                )
         if email_changed:
             user.correo = data.correo
         db.flush()

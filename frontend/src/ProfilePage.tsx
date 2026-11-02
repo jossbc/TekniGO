@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { signOut, type User } from 'firebase/auth'
 import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock } from 'lucide-react'
+import { Award, ShieldAlert, ShieldCheck, Star } from 'lucide-react'
 import { auth } from './lib/firebase'
 import { api, errorMessage, type Profile } from './lib/api'
 import { Button, Field } from './components/ui'
@@ -14,12 +15,55 @@ import { normalizeEmail, normalizeHonduranPhone, PHONE_HINT } from './lib/valida
 type ProfileChanges = { telefono?: string; correo?: string }
 type Errors = { telefono?: string; correo?: string }
 
+export type TechnicianRequirement = {
+  codigo: string
+  nombre: string
+  aprobado: boolean
+  vigente: boolean
+  estado: 'APROBADO' | 'PENDIENTE' | 'FALTANTE' | 'RECHAZADO' | 'VENCIDO' | 'INVALIDADO' | string
+  fecha_emision?: string | null
+  fecha_vencimiento?: string | null
+  motivo?: string | null
+}
+
+export type TechnicianActivationStatus = {
+  usuario_id: string
+  estado_verificacion: string
+  tecnico_verificado: boolean
+  telefono_verificado: boolean
+  disponible: boolean
+  suspendido: boolean
+  restriccion_financiera: boolean
+  estado_certificacion: string
+  calificacion_promedio: number | null
+  puede_recibir_contrataciones: boolean
+  habilitado_operativamente: boolean
+  motivo_restriccion?: string | null
+  observaciones_verificacion?: string | null
+  requisitos: TechnicianRequirement[]
+  requisitos_pendientes: TechnicianRequirement[]
+  motivos_bloqueo: string[]
+}
+
 const ROLE_LABELS: Record<string, string> = { CLIENTE: 'Cliente', TECNICO: 'Técnico' }
 const IDENTITY_STATUS_LABELS: Record<string, string> = {
   PENDIENTE: 'Pendiente de verificación',
   EN_REVISION: 'En revisión administrativa',
   VERIFICADO: 'Verificado',
   RECHAZADO: 'Rechazado (requiere reenvío)',
+}
+const TECH_VERIFICATION_LABELS: Record<string, string> = {
+  NO_VERIFICADO: 'Documentación pendiente',
+  PENDIENTE: 'Pendiente de completar requisitos',
+  EN_REVISION: 'En revisión administrativa',
+  VERIFICADO: 'Técnico Verificado',
+  RECHAZADO: 'Rechazado (requiere corrección)',
+  RESTRINGIDO: 'Restringido por requisito vencido o inválido',
+}
+const CERTIFICATION_LABELS: Record<string, string> = {
+  NO_CERTIFICADO: 'Sin certificación registrada',
+  EN_REVISION: 'Certificación en revisión',
+  CERTIFICADO: 'Técnico Certificado',
 }
 
 const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '2.25rem 3rem' }
@@ -76,6 +120,7 @@ function FieldError({ message }: { message?: string }) {
 export default function ProfilePage({ user, onName }: { user: User; onName?: (name: string) => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [identityStatus, setIdentityStatus] = useState<string>('PENDIENTE')
+  const [techActivation, setTechActivation] = useState<TechnicianActivationStatus | null>(null)
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -93,6 +138,11 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
         setProfile(value)
         setIdentityStatus(docsInfo ? docsInfo.estado_identidad : value.estado_identidad)
         onName?.(value.nombre_completo)
+        if (value.roles.includes('TECNICO')) {
+          api<TechnicianActivationStatus>('/technicians/me/activation-status', user)
+            .then((activation) => { if (active) setTechActivation(activation) })
+            .catch(() => {})
+        }
       })
       .catch((err) => { if (active) setError(errorMessage(err)) })
     return () => { active = false }
@@ -150,6 +200,11 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
       setEditing(false)
       setNotice('Cambios guardados correctamente')
       window.scrollTo({ top: 0, behavior: 'smooth' })
+      if (changes.telefono && updated.roles.includes('TECNICO')) {
+        api<TechnicianActivationStatus>('/technicians/me/activation-status', user)
+          .then(setTechActivation)
+          .catch(() => {})
+      }
       if (changes.correo) {
         // Firebase puede invalidar la sesión al cambiar el correo.
         try { await user.reload(); await user.getIdToken(true) }
@@ -217,6 +272,128 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
           {isTechnician && (
             <>
+              <section className="account-card profile-card">
+                <h2 style={cardTitle}>Estado de activación y verificación técnica</h2>
+
+                {/* CA-03: Mostrar Técnico Verificado separado de certificación y calificación */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
+                  <div style={{
+                    padding: '1rem',
+                    borderRadius: 12,
+                    background: techActivation?.tecnico_verificado ? '#f0fdf4' : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? '#fef2f2' : '#eff6ff',
+                    border: `1px solid ${techActivation?.tecnico_verificado ? '#86efac' : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? '#fca5a5' : '#93c5fd'}`,
+                  }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Estado del perfil</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: techActivation?.tecnico_verificado ? '#166534' : '#1e293b' }}>
+                      {techActivation?.tecnico_verificado ? <ShieldCheck size={20} color="#16a34a" /> : techActivation?.estado_verificacion === 'RESTRINGIDO' || techActivation?.estado_verificacion === 'RECHAZADO' ? <ShieldAlert size={20} color="#dc2626" /> : <Clock3 size={20} color="#2563eb" />}
+                      <span>{TECH_VERIFICATION_LABELS[techActivation?.estado_verificacion ?? 'NO_VERIFICADO'] ?? techActivation?.estado_verificacion}</span>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '1rem', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Certificación</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: '#1e293b' }}>
+                      <Award size={20} color="#2563eb" />
+                      <span>{CERTIFICATION_LABELS[techActivation?.estado_certificacion ?? 'NO_CERTIFICADO'] ?? techActivation?.estado_certificacion}</span>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '1rem', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#4b5563', marginBottom: 4 }}>Calificación</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '1.05rem', color: '#1e293b' }}>
+                      <Star size={20} color="#eab308" />
+                      <span>
+                        {techActivation?.calificacion_promedio != null
+                          ? `${techActivation.calificacion_promedio.toFixed(1)} / 5.0`
+                          : 'Sin calificaciones aún'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* CA-02, CA-04, CA-05: Estado operativo para recibir contrataciones y motivo de restricción */}
+                {techActivation && (
+                  <div style={{
+                    padding: '1rem 1.25rem',
+                    borderRadius: 12,
+                    background: techActivation.habilitado_operativamente ? '#f0fdf4' : '#fff7ed',
+                    border: `1px solid ${techActivation.habilitado_operativamente ? '#86efac' : '#fed7aa'}`,
+                    marginBottom: '1.25rem',
+                  }}>
+                    <div style={{ fontWeight: 700, color: techActivation.habilitado_operativamente ? '#166534' : '#9a3412', marginBottom: 4 }}>
+                      {techActivation.habilitado_operativamente
+                        ? 'Habilitado para recibir nuevas contrataciones y aparecer en el catálogo'
+                        : 'Restringido para nuevas contrataciones'}
+                    </div>
+                    {!techActivation.habilitado_operativamente && techActivation.motivos_bloqueo.length > 0 && (
+                      <ul style={{ margin: '6px 0 0', paddingLeft: '1.25rem', color: '#9a3412', fontSize: '0.92rem' }}>
+                        {techActivation.motivos_bloqueo.map((motivo, idx) => (
+                          <li key={idx}>{motivo}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {/* ST-04: Lista de requisitos obligatorios y pendientes */}
+                {techActivation && techActivation.requisitos.length > 0 && (
+                  <div>
+                    <h3 style={{ fontSize: '1.05rem', margin: '0 0 0.75rem' }}>
+                      Requisitos obligatorios de activación ({techActivation.requisitos.length - techActivation.requisitos_pendientes.length}/{techActivation.requisitos.length} aprobados y vigentes)
+                    </h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '0.75rem' }}>
+                      {techActivation.requisitos.map((req: TechnicianRequirement) => {
+                        const ok = req.aprobado && req.vigente
+                        return (
+                          <div
+                            key={req.codigo}
+                            style={{
+                              padding: '0.75rem 1rem',
+                              borderRadius: 10,
+                              border: `1px solid ${ok ? '#bbf7d0' : '#e5e7eb'}`,
+                              background: ok ? '#f0fdf4' : '#ffffff',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                              <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{req.nombre}</span>
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '2px 8px',
+                                borderRadius: 999,
+                                background: ok ? '#dcfce7' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#fee2e2' : '#fef3c7',
+                                color: ok ? '#166534' : req.estado === 'VENCIDO' || req.estado === 'RECHAZADO' || req.estado === 'INVALIDADO' ? '#991b1b' : '#92400e',
+                              }}>
+                                {req.estado}
+                              </span>
+                            </div>
+                            {req.motivo && (
+                              <span style={{ fontSize: '0.82rem', color: '#6b7280' }}>{req.motivo}</span>
+                            )}
+                            {req.fecha_vencimiento && (
+                              <span style={{ fontSize: '0.78rem', color: '#4b5563' }}>
+                                Vigencia hasta: {req.fecha_vencimiento}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {techActivation.estado_verificacion !== 'VERIFICADO' && (
+                      <div style={{ marginTop: '1rem' }}>
+                        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                          Gestionar documentos de verificación en Mi cuenta <ArrowUpRight size={16} />
+                        </Link>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+
               <section className="account-card profile-card">
                 <h2 style={cardTitle}>Especialidades</h2>
                 <SpecialtySelector user={user} />

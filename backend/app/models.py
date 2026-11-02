@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 
-from sqlalchemy import Boolean, CheckConstraint, Date, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -15,6 +15,7 @@ class User(Base):
     correo: Mapped[str] = mapped_column(String(254))
     dni: Mapped[str] = mapped_column(String(13), unique=True)
     telefono: Mapped[str] = mapped_column(String(16), unique=True)
+    telefono_verificado: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     estado_identidad: Mapped[str] = mapped_column(String(30), default="PENDIENTE")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     roles: Mapped[list["UserRole"]] = relationship(lazy="selectin")
@@ -29,11 +30,24 @@ class UserRole(Base):
 
 class TechnicianProfile(Base):
     __tablename__ = "perfiles_tecnicos"
+    __table_args__ = (
+        CheckConstraint(
+            "estado_verificacion IN ('NO_VERIFICADO', 'PENDIENTE', 'EN_REVISION', 'VERIFICADO', 'RECHAZADO', 'RESTRINGIDO')",
+            name="ck_perfil_tecnico_estado_verificacion",
+        ),
+    )
     usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), primary_key=True)
     disponible: Mapped[bool] = mapped_column(Boolean, default=False)
     estado_verificacion: Mapped[str] = mapped_column(String(30), default="NO_VERIFICADO")
     # HU-16 ST-02: Observaciones de la revisión documental del técnico
     observaciones_verificacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HU-18 ST-02: Vigencias, dimensiones independientes y restricciones
+    verificado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    motivo_restriccion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspendido: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    restriccion_financiera: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    estado_certificacion: Mapped[str] = mapped_column(String(30), default="NO_CERTIFICADO", server_default="NO_CERTIFICADO")
+    calificacion_promedio: Mapped[float | None] = mapped_column(Numeric(3, 2), nullable=True)
     #--Campos Para HU-09 Tarifas Base--
     tarifa_base: Mapped[float] = mapped_column(Numeric(10,2), default=0.0)
     unidad_cobro: Mapped[str] = mapped_column(String(20), default="POR HORA")
@@ -106,7 +120,7 @@ class IdentityDocument(Base):
     __tablename__ = "documentos_identidad"
     __table_args__ = (
         CheckConstraint("tipo IN ('DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE', 'ANTECEDENTES_POLICIALES', 'ANTECEDENTES_PENALES')", name="ck_documento_identidad_tipo"),
-        CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO')", name="ck_documento_identidad_estado"),
+        CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO', 'VENCIDO', 'INVALIDADO')", name="ck_documento_identidad_estado"),
         UniqueConstraint("solicitud_id", "tipo", name="uq_documento_solicitud_tipo"),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -120,7 +134,23 @@ class IdentityDocument(Base):
     estado: Mapped[str] = mapped_column(String(20), default="PENDIENTE", server_default="PENDIENTE")
     # HU-16 ST-02 / ST-04: Fecha de emisión declarada para antecedentes
     fecha_emision_declarada: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # HU-18 ST-02: Vigencia de requisitos obligatorios
+    fecha_vencimiento: Mapped[date | None] = mapped_column(Date, nullable=True)
     observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TechnicianStatusAudit(Base):
+    __tablename__ = "historial_estados_tecnico"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"), index=True)
+    estado_anterior: Mapped[str] = mapped_column(String(30))
+    estado_nuevo: Mapped[str] = mapped_column(String(30))
+    habilitado_anterior: Mapped[bool] = mapped_column(Boolean)
+    habilitado_nuevo: Mapped[bool] = mapped_column(Boolean)
+    causa: Mapped[str] = mapped_column(Text)
+    actor_usuario_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
+    proceso_responsable: Mapped[str] = mapped_column(String(100))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
