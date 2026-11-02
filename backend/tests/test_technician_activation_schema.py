@@ -135,8 +135,8 @@ class TechnicianActivationSchemaTests(unittest.TestCase):
             self.assertIsNotNone(saved.creado_en)
 
     def test_migration_013_prevents_destructive_downgrade(self):
-        migration = importlib.import_module("migrations.versions.013_vigencias_y_auditoria_tecnicos")
-        self.assertEqual(migration.revision, "013_vigencias_y_auditoria_tecnicos")
+        migration = importlib.import_module("migrations.versions.013_vigencias_auditoria_tec")
+        self.assertEqual(migration.revision, "013_vigencias_auditoria_tec")
         self.assertEqual(migration.down_revision, "012_documentos_tecnico")
         with self.assertRaises(RuntimeError):
             migration.downgrade()
