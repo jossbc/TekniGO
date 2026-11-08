@@ -1,62 +1,72 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { api, errorMessage } from '../lib/api'
-import { requestEmailVerification, refreshEmailVerification, resendWaitSeconds, type EmailVerificationStatus } from '../lib/emailVerification'
+import { errorMessage } from '../lib/api'
+import { requestEmailVerification, refreshEmailVerification, resendWaitSeconds, watchEmailVerification, type EmailVerificationStatus } from '../lib/emailVerification'
 import { Button } from './ui'
 
 export default function EmailVerification({ user, initialNotice = '' }: { user: User; initialNotice?: string }) {
   const [status, setStatus] = useState<EmailVerificationStatus | null>(null)
-  const [busy, setBusy] = useState<'send' | 'check' | null>(null)
+  const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(initialNotice)
   const [error, setError] = useState('')
+  const [checkError, setCheckError] = useState('')
   const [wait, setWait] = useState(() => resendWaitSeconds(user))
+  const generation = useRef(0)
 
   useEffect(() => {
-    let active = true
+    const current = ++generation.current
     setStatus(null)
     setError('')
-    api<EmailVerificationStatus>('/users/me/email-verification', user)
-      .then((value) => { if (active) setStatus(value) })
-      .catch((err) => { if (active) setError(errorMessage(err)) })
+    setCheckError('')
+    setBusy(false)
+    setWait(resendWaitSeconds(user))
     const timer = window.setInterval(() => setWait(resendWaitSeconds(user)), 1000)
-    return () => { active = false; window.clearInterval(timer) }
-  }, [user])
+    const stop = watchEmailVerification(user, value => {
+      setStatus(value)
+      setCheckError('')
+      if (value.email_verified) {
+        setNotice('')
+        setError('')
+        window.clearInterval(timer)
+      }
+    }, err => setCheckError(errorMessage(err)))
+    return () => {
+      if (generation.current === current) generation.current++
+      stop()
+      window.clearInterval(timer)
+    }
+  }, [user, user.email])
 
-  async function act(action: 'send' | 'check') {
+  async function resend() {
     if (busy) return
-    setBusy(action)
+    const current = generation.current
+    setBusy(true)
     setNotice('')
     setError('')
     try {
-      if (action === 'send') {
-        const sent = await requestEmailVerification(user)
-        setWait(resendWaitSeconds(user))
-        if (sent) setNotice('Enlace enviado. Revisa tu bandeja de entrada y spam. Después de abrirlo, vuelve y pulsa «Ya verifiqué mi correo».')
-        else setStatus(await refreshEmailVerification(user))
-      } else {
+      const sent = await requestEmailVerification(user)
+      if (generation.current !== current) return
+      setWait(resendWaitSeconds(user))
+      if (sent) setNotice('Enlace enviado. Revisa tu bandeja de entrada y spam. Al confirmar tu correo, esta pantalla se actualizará automáticamente.')
+      else {
         const value = await refreshEmailVerification(user)
-        setStatus(value)
-        if (!value.email_verified) setNotice('El correo sigue pendiente. Abre el enlace más reciente y vuelve a comprobarlo. Si venció, solicita uno nuevo.')
+        if (generation.current === current) setStatus(value)
       }
-    } catch (err) { setError(errorMessage(err)) }
-    finally { setBusy(null) }
+    } catch (err) { if (generation.current === current) setError(errorMessage(err)) }
+    finally { if (generation.current === current) setBusy(false) }
   }
 
   return <section className="account-card" style={{ marginBottom: 24 }} aria-label="Verificación de correo">
     <h2>Verifica tu correo</h2>
     <p className="email-value">{status?.email || user.email}</p>
     {status?.email_verified ? <p className="success-alert" role="status">Correo verificado.</p> : <>
-      <p>{!status && !error ? 'Comprobando tu correo…' : 'Confirma tu correo mediante el enlace. Esta confirmación es independiente de la revisión de tu identidad.'}</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        <Button type="button" onClick={() => act('send')} disabled={!!busy || wait > 0} style={{ width: 'auto' }}>
-          {busy === 'send' ? 'Enviando…' : wait > 0 ? `Reenviar en ${wait} s` : 'Enviar o reenviar enlace'}
-        </Button>
-        <Button type="button" className="button-outline" onClick={() => act('check')} disabled={!!busy} style={{ width: 'auto' }}>
-          {busy === 'check' ? 'Comprobando…' : 'Ya verifiqué mi correo'}
-        </Button>
-      </div>
+      <p>{!status && !error && !checkError ? 'Comprobando tu correo.' : 'Abre el enlace que enviamos a tu correo. Esta pantalla se actualizará automáticamente cuando lo confirmes.'}</p>
+      <Button type="button" onClick={resend} disabled={busy || wait > 0} style={{ width: 'auto' }}>
+        {busy ? 'Enviando.' : wait > 0 ? `Reenviar en ${wait} s` : 'Reenviar enlace'}
+      </Button>
     </>}
-    {notice && <p role="status">{notice}</p>}
-    {error && <p className="alert" role="alert">{error}</p>}
+    {notice && !status?.email_verified && <p role="status">{notice}</p>}
+    {checkError && !status?.email_verified && <p className="alert" role="alert">{checkError} Volveremos a comprobarlo automáticamente.</p>}
+    {error && !status?.email_verified && <p className="alert" role="alert">{error}</p>}
   </section>
 }

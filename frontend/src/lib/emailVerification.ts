@@ -3,6 +3,7 @@ import { api } from './api'
 
 export type EmailVerificationStatus = { email: string; email_verified: boolean }
 export const EMAIL_RESEND_SECONDS = 60
+export const EMAIL_CHECK_INTERVAL_MS = 5000
 
 function storageKey(user: User) {
   return `teknigo:verification-email:${user.uid}:${user.email?.toLowerCase()}`
@@ -31,4 +32,40 @@ export async function refreshEmailVerification(user: User): Promise<EmailVerific
   await user.reload()
   await user.getIdToken(true)
   return api<EmailVerificationStatus>('/users/me/email-verification', user)
+}
+
+export function watchEmailVerification(
+  user: User,
+  onStatus: (status: EmailVerificationStatus) => void,
+  onError: (error: unknown) => void,
+): () => void {
+  let active = true
+  let checking = false
+
+  async function check() {
+    if (!active || checking || document.visibilityState === 'hidden' || !navigator.onLine) return
+    checking = true
+    try {
+      const status = await refreshEmailVerification(user)
+      if (!active) return
+      if (status.email_verified) stop()
+      onStatus(status)
+    } catch (error) {
+      if (active) onError(error)
+    } finally { checking = false }
+  }
+
+  const timer = window.setInterval(check, EMAIL_CHECK_INTERVAL_MS)
+  window.addEventListener('focus', check)
+  window.addEventListener('online', check)
+  document.addEventListener('visibilitychange', check)
+  function stop() {
+    active = false
+    window.clearInterval(timer)
+    window.removeEventListener('focus', check)
+    window.removeEventListener('online', check)
+    document.removeEventListener('visibilitychange', check)
+  }
+  void check()
+  return stop
 }
