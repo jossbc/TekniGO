@@ -7,13 +7,13 @@ export type CatalogTechnician = {
   nombre_completo: string;
   especialidades: string[];
   estado_verificacion: string;
-  tarifa_base: number;
-  unidad_cobro: string;
-  calificacion_promedio: number;
+  tecnico_verificado: boolean;
+  estado_certificacion: string;
+  calificacion_promedio: number | null;
 };
 
 export function TechnicianCard({ technician }: { technician: CatalogTechnician }) {
-  const isVerified = technician.estado_verificacion === "VERIFICADO";
+  const isVerified = technician.tecnico_verificado;
 
   return (
     <div className="account-card" style={{ display: "flex", flexDirection: "column", gap: "1rem", padding: "1.5rem", height: "100%" }}>
@@ -26,7 +26,7 @@ export function TechnicianCard({ technician }: { technician: CatalogTechnician }
           </h3>
           <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: "#eab308", fontWeight: 600 }}>
             <Star size={16} fill="currentColor" />
-            <span>{technician.calificacion_promedio.toFixed(1)}</span>
+            <span>{technician.calificacion_promedio == null ? "Sin calificaciones" : technician.calificacion_promedio.toFixed(1)}</span>
           </div>
         </div>
       </div>
@@ -47,10 +47,7 @@ export function TechnicianCard({ technician }: { technician: CatalogTechnician }
       {/* Pie de tarjeta: Tarifa y Botón */}
       <div style={{ marginTop: "auto", paddingTop: "1.5rem", display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
         <div>
-          <p style={{ margin: 0, fontSize: "0.85rem", color: "#6b7280" }}>Tarifa desde</p>
-          <p style={{ margin: 0, fontWeight: 700, color: "#111827", fontSize: "1.1rem" }}>
-            L. {technician.tarifa_base.toFixed(2)} <span style={{ fontSize: "0.85rem", color: "#6b7280", fontWeight: 400 }}>/ {technician.unidad_cobro.replace("_", " ").toLowerCase()}</span>
-          </p>
+          <p style={{ margin: 0, fontSize: "0.85rem", color: "#6b7280" }}>Tarifas según el servicio</p>
         </div>
 
         <Link to={`/tecnicos/${technician.usuario_id}`} style={{ textDecoration: "none" }}>

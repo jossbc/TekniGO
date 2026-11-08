@@ -8,9 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    CoverageZone,
     IdentityDocument,
     IdentityVerificationRequest,
+    Specialty,
     TechnicianProfile,
+    TechnicianSpecialty,
     TechnicianStatusAudit,
     User,
     UserRole,
@@ -25,6 +28,7 @@ from app.technicians import (
     AdminVerificationReviewSchema,
     DocumentReviewItem,
     JobApplicationRequest,
+    TechnicianPublicProfile,
     accept_service_request,
     apply_to_job_request,
     get_my_activation_status,
@@ -289,6 +293,12 @@ class TechnicianActivationServiceTests(unittest.TestCase):
 
     def test_st03_catalog_and_public_profile_reflect_status_changes_and_hide_identity_data(self):
         docs = self._seed_documents(state="APROBADO")
+        coverage = {"departamento": "Francisco Morazán", "municipio": "Distrito Central", "sector": "Kennedy"}
+        self.db.add(CoverageZone(usuario_id=self.tech_user.id, **coverage))
+        specialty = Specialty(nombre="Aire acondicionado y refrigeración")
+        self.db.add(specialty)
+        self.db.flush()
+        self.db.add(TechnicianSpecialty(usuario_id=self.tech_user.id, especialidad_id=specialty.id))
         self.profile.estado_certificacion = "CERTIFICADO_TECNICO"
         self.profile.calificacion_promedio = 4.9
         sync_technician_verification_state(
@@ -312,7 +322,18 @@ class TechnicianActivationServiceTests(unittest.TestCase):
         self.assertNotIn("telefono", item)
         self.assertNotIn("documentos", item)
 
+        filtered_catalog = get_technicians_catalog(
+            nombre=None, especialidad=" aire ", municipio="Distrito",
+            departamento="Francisco Morazán", db=self.db,
+        )
+        self.assertEqual([entry["usuario_id"] for entry in filtered_catalog], [str(self.tech_user.id)])
+        self.assertEqual(get_technicians_catalog(
+            nombre=None, especialidad="aire", municipio="Distrito", departamento="Cortés", db=self.db,
+        ), [])
+
         public_profile = get_technician_public_profile(self.tech_user.id, self.db)
+        serialized_profile = TechnicianPublicProfile.model_validate(public_profile).model_dump()
+        self.assertEqual(serialized_profile["zonas_cobertura"], [coverage])
         self.assertTrue(public_profile["tecnico_verificado"])
         self.assertEqual(public_profile["estado_certificacion"], "CERTIFICADO_TECNICO")
         self.assertNotIn("dni", public_profile)

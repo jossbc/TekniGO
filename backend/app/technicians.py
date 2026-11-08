@@ -237,7 +237,8 @@ def get_technicians_catalog(
     nombre: str = Query(None, description="Filtrar por nombre del técnico"),
     especialidad: str = Query(None, description="Filtrar por nombre de especialidad"),
     municipio: str = Query(None, description="Filtrar por municipio"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    departamento: str | None = None,
 ):
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.
@@ -257,14 +258,22 @@ def get_technicians_catalog(
     if nombre:
         query = query.where(User.nombre_completo.ilike(f"%{nombre}%"))
         
-    if especialidad:
-        query = query.join(TechnicianSpecialty, User.id == TechnicianSpecialty.usuario_id)\
-                     .join(Specialty, TechnicianSpecialty.especialidad_id == Specialty.id)\
-                     .where(Specialty.nombre.ilike(f"%{especialidad}%"))
-                     
-    if municipio:
-        query = query.join(CoverageZone, User.id == CoverageZone.usuario_id)\
-                     .where(CoverageZone.municipio.ilike(f"%{municipio}%"))
+    specialty_terms = (especialidad or "").split()
+    if specialty_terms:
+        query = (
+            query.join(TechnicianSpecialty, User.id == TechnicianSpecialty.usuario_id)
+            .join(Specialty, TechnicianSpecialty.especialidad_id == Specialty.id)
+            .where(*(Specialty.nombre.icontains(term, autoescape=True) for term in specialty_terms))
+        )
+
+    departamento = (departamento or "").strip()
+    municipio = (municipio or "").strip()
+    if departamento or municipio:
+        query = query.join(CoverageZone, User.id == CoverageZone.usuario_id)
+        if departamento:
+            query = query.where(CoverageZone.departamento == departamento)
+        if municipio:
+            query = query.where(CoverageZone.municipio.icontains(municipio, autoescape=True))
 
     results = db.execute(query).unique().all()
 
@@ -325,6 +334,7 @@ class TechnicianPublicProfile(BaseModel):
     nombre_completo: str
     especialidades: List[str]
     servicios: List[PublicService]
+    zonas_cobertura: List[CoverageZoneItem]
     tecnico_verificado: bool
     estado_verificacion: str
     estado_certificacion: str
@@ -370,6 +380,11 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
     from app.models import Service 
     services_query = select(Service).where(Service.usuario_id == user.id, Service.activo == True)
     services = db.scalars(services_query).all()
+    coverage_zones = db.scalars(
+        select(CoverageZone)
+        .where(CoverageZone.usuario_id == user.id)
+        .order_by(CoverageZone.departamento, CoverageZone.municipio, CoverageZone.sector)
+    ).all()
 
     # 3. Formatear la respuesta (CA-03: separado de certificación y calificación, sin DNI/teléfono/documentos)
     public_services = [
@@ -382,6 +397,7 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         "nombre_completo": user.nombre_completo,
         "especialidades": list(specs),
         "servicios": public_services,
+        "zonas_cobertura": [CoverageZoneItem.model_validate(zone) for zone in coverage_zones],
         "tecnico_verificado": evaluation["tecnico_verificado"],
         "estado_verificacion": tech_profile.estado_verificacion,
         "estado_certificacion": tech_profile.estado_certificacion or "NO_CERTIFICADO",

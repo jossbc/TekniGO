@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { User } from "firebase/auth";
-import { ShieldCheck, Star, ArrowLeft, Briefcase, Wrench } from "lucide-react";
+import { ShieldCheck, Star, ArrowLeft, Briefcase, Wrench, MapPin } from "lucide-react";
 import { api, errorMessage } from "./lib/api";
+import type { CatalogTechnician } from "./components/TechnicianCard";
+import type { CoverageZone } from "./CoverageZoneSelector";
+import LoadingState from "./components/LoadingState";
 
 type PublicService = {
   id: string;
@@ -10,15 +13,9 @@ type PublicService = {
   descripcion: string;
 };
 
-type TechnicianProfileData = {
-  usuario_id: string;
-  nombre_completo: string;
-  especialidades: string[];
+type TechnicianProfileData = CatalogTechnician & {
   servicios: PublicService[];
-  estado_verificacion: string;
-  tarifa_base: number;
-  unidad_cobro: string;
-  calificacion_promedio: number;
+  zonas_cobertura?: CoverageZone[];
 };
 
 export default function TechnicianPublicProfilePage({ user }: { user: User }) {
@@ -48,11 +45,7 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
   }, [fetchProfile]);
 
   if (loading)
-    return (
-      <main className="account" style={{ margin: "0 auto 90px", padding: "3rem", textAlign: "center" }}>
-        Cargando perfil...
-      </main>
-    );
+    return <LoadingState variant="screen" message="Cargando perfil del técnico." />;
   if (error || !technician)
     return (
       <main className="account" style={{ margin: "0 auto 90px", padding: "3rem", color: "red", textAlign: "center" }}>
@@ -60,9 +53,11 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
       </main>
     );
 
+  const coverageZones = technician.zonas_cobertura;
+
   return (
     <main className="account" style={{ margin: "0 auto 90px", maxWidth: "900px" }}>
-      <Link to="/catalogo" style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", color: "#6b7280", textDecoration: "none", marginBottom: "2rem", fontWeight: 500 }}>
+      <Link to="/catalogo" className="public-profile-back">
         <ArrowLeft size={20} /> Volver al catálogo
       </Link>
 
@@ -72,7 +67,7 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           <div>
             <h1 style={{ margin: "0 0 0.75rem 0", display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "2.2rem" }}>
               {technician.nombre_completo}
-              {technician.estado_verificacion === "VERIFICADO" && <ShieldCheck size={32} color="#2563eb" aria-label="Verificado" />}
+              {technician.tecnico_verificado && <ShieldCheck size={32} color="#2563eb" aria-label="Verificado" />}
             </h1>
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
               {technician.especialidades.map((esp, idx) => (
@@ -86,14 +81,27 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           <div style={{ textAlign: "right", background: "#f9fafb", padding: "1.5rem", borderRadius: "1rem" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.25rem", color: "#eab308", fontWeight: 700, fontSize: "1.25rem", marginBottom: "0.5rem" }}>
               <Star size={24} fill="currentColor" />
-              <span>{technician.calificacion_promedio.toFixed(1)}</span>
+              <span>{technician.calificacion_promedio == null ? "Sin calificaciones" : technician.calificacion_promedio.toFixed(1)}</span>
             </div>
-            <p style={{ margin: "0", color: "#6b7280", fontSize: "0.9rem" }}>Tarifa base</p>
-            <p style={{ margin: 0, fontWeight: 700, fontSize: "1.5rem", color: "#111827" }}>
-              L. {technician.tarifa_base.toFixed(2)} <span style={{ fontSize: "1rem", color: "#6b7280", fontWeight: 400 }}>/ {technician.unidad_cobro.replace("_", " ").toLowerCase()}</span>
-            </p>
+            <p style={{ margin: "0", color: "#6b7280", fontSize: "0.9rem" }}>Tarifas según el servicio</p>
           </div>
         </div>
+
+        <section className="public-profile-coverage" aria-labelledby="public-profile-coverage-title">
+          <h2 id="public-profile-coverage-title"><MapPin size={24} aria-hidden="true" /> Zonas de cobertura</h2>
+          {coverageZones?.length ? (
+            <ul>
+              {coverageZones.map(({ departamento, municipio, sector }) => (
+                <li key={JSON.stringify([departamento, municipio, sector])}>
+                  <strong>{municipio}, {departamento}</strong>
+                  <span>{sector}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No hay zonas de cobertura publicadas.</p>
+          )}
+        </section>
 
         {/* Sección de Servicios Específicos */}
         <section style={{ marginBottom: "3rem" }}>
