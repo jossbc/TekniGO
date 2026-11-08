@@ -198,9 +198,11 @@ automáticamente al instalar estas dependencias.
 ### Habilitación del cliente para contratar (HU-17A ST-06)
 
 `GET /users/me/hiring-eligibility` consulta la cuenta autenticada y devuelve
-`puede_contratar`, `identidad_verificada`, `correo_verificado` y `motivos`.
+`puede_contratar`, `identidad_verificada`, `correo_verificado`, `telefono_verificado` y `motivos`.
 La regla central en `app/permissions.py` exige rol CLIENTE, identidad VERIFICADO
-en PostgreSQL y correo actual confirmado en Firebase, coincidente con el perfil.
+en PostgreSQL, correo actual confirmado y teléfono vigente verificado en Firebase,
+ambos coincidentes con el perfil. El teléfono también debe estar confirmado en la
+base de TekniGO; cambiarlo invalida esa confirmación.
 Los errores del proveedor no habilitan la contratación. Cambiar de correo exige
 confirmar la nueva dirección antes de poder contratar.
 
@@ -208,7 +210,7 @@ Los futuros endpoints de creación y confirmación de contrataciones deben usar
 `client: User = Depends(get_enabled_client)` importado desde `app.permissions`,
 compartir `db: Session = Depends(get_db)` y guardar la operación en esa sesión.
 La dependencia vuelve a consultar la identidad con bloqueo de fila y comprueba
-el correo en ese momento. Consultar antes el estado o habilitar un botón no
+el correo y el teléfono en ese momento. Consultar antes el estado o habilitar un botón no
 autoriza una escritura posterior. Para llamadas internas, reutilizar
 `require_enabled_client` sobre la cuenta obtenida del servidor.
 
@@ -218,6 +220,51 @@ de HU-20; la creación de servicios del catálogo del técnico no es una contrat
 Esta regla no requiere nuevas migraciones.
 
 ## Comprobar los cambios
+
+El panel de revisión de expedientes está en `/admin` y requiere el rol `ADMIN`.
+El rol se concede mediante una operación administrativa sobre `usuarios_roles`
+a una cuenta ya registrada; el SQL no crea credenciales de Firebase. No existe
+registro público con rol administrador. El acceso al panel no exige verificar
+el DNI ni el teléfono del administrador. Si una cuenta tiene `ADMIN`, entra
+directamente al panel incluso si conserva roles de cliente o técnico.
+Antes de usarlo, aplicar la migración `014_decisiones_documentales` en el entorno
+correspondiente. Los archivos privados admiten DNI, selfie y antecedentes en
+los formatos admitidos por la carga, incluidos PDF.
+
+Si falta actualizar la base, detener el backend y ejecutar desde `backend/`,
+con la configuración del entorno que se está probando:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic current
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Reiniciar el backend después. Los fallos de base de datos devuelven un error HTTP
+sin SQL ni credenciales y conservan las cabeceras CORS para que el frontend muestre
+el mensaje en lugar de confundirlo con un problema de conexión del navegador.
+
+La carga del técnico inicia la evaluación de DNI y selfie con el procesador
+configurado para el cliente. Conserva resultado, versiones y observaciones;
+una coincidencia automática no aprueba los documentos técnicos ni los
+antecedentes. La decisión sigue siendo administrativa y pasa por HU-18.
+Los errores y resultados inciertos se guardan y permiten un reintento limitado.
+Si el procesador no puede interpretar un PDF, no lo aprueba automáticamente;
+el administrador puede abrirlo y revisarlo.
+
+El técnico consulta su evaluación en `/verificacion`. También existen
+`POST /technicians/me/identity-verification` y, para administradores,
+`POST /admin/technicians/{usuario_id}/identity-verification`. Ambos reciben
+`solicitud_id` y rechazan una versión sustituida. Un expediente con decisiones
+administrativas no se vuelve a procesar sobre la misma versión. Los reenvíos
+conservan los archivos anteriores y las decisiones privadas.
+
+Las pruebas de integración usan almacenamiento local cifrado real para
+lectura de PDF, rechazo, reenvío y control de versiones. Los modelos y Firebase
+se simulan; no validan por sí solos los servicios externos ni la precisión de OCR.
+
+`frontend/src/App.tsx` concentra las rutas y la sesión; las pantallas de acceso,
+cuenta, recuperación, verificación y administración se encuentran en
+`frontend/src/pages/`. La cabecera compartida está en `components/Header.tsx`.
 
 Desde `backend/`, ejecutar las pruebas:
 
@@ -234,6 +281,11 @@ npm run build
 
 Estas comprobaciones ayudan a detectar errores, pero también hay que probar los recorridos completos en el navegador: iniciar sesión, editar el perfil, agregar el otro rol y usar las funciones del técnico. Las pruebas automáticas no confirman por sí solas que Firebase, Supabase y la web publicada estén conectados correctamente.
 
+El workflow `Checks` ejecuta las pruebas del frontend (`npm run test:ci`) y
+backend (`python run_tests.py`), comprueba TypeScript, compila el frontend y
+genera el SQL de Alembic. Guarda reportes como artefactos y publica un resumen
+de las pruebas del backend. Un fallo de pruebas hace fallar el job.
+
 ## Si algo no funciona
 
 - **No inicia sesión:** comprueba la configuración de Firebase y que ambos servidores estén encendidos.
@@ -242,7 +294,9 @@ Estas comprobaciones ayudan a detectar errores, pero también hay que probar los
 - **Aparece un error de sesión justo al entrar:** comprueba que la fecha y hora del equipo estén sincronizadas. El servidor admite una diferencia pequeña de reloj de hasta 5 segundos.
 - **No conecta con Supabase:** ejecuta `app.check_database` y revisa la conexión con el equipo.
 
-El botón **Cerrar sesión** cierra las sesiones de esa cuenta en todos los dispositivos.
+La opción **Cerrar sesión**, dentro del menú del avatar de la cabecera, cierra
+las sesiones de esa cuenta en todos los dispositivos. El mismo menú se utiliza
+en las pantallas autenticadas y en la portada con sesión iniciada.
 
 ## Trabajo en equipo y publicación
 
@@ -253,3 +307,20 @@ Para publicar las pantallas en Vercel, usa `frontend` como carpeta del proyecto,
 El servidor tiene una configuración inicial para Render en [render.yaml](render.yaml). Antes de publicar, configura Firebase, la conexión a Supabase y `CORS_ORIGINS` con la dirección de la web autorizada. Aplica también las actualizaciones pendientes de la base de datos y revisa el almacenamiento privado de documentos.
 
 La referencia de colores y tipografías está en [la guía de diseño](docs/linea-grafica.md).
+
+La bandeja administrativa distingue clientes (azul) y técnicos (naranja), con filtros por tipo de cuenta.
+`GET /admin/dossiers?tipo=TODOS|CLIENTE|TECNICO` pagina la bandeja sin duplicar cuentas con ambos roles.
+Los clientes aparecen automáticamente si el procesamiento de su versión actual termina en ERROR,
+INCIERTO o RECHAZADO y su identidad todavía no está verificada; las versiones anteriores no activan
+la revisión de una nueva carga. Los técnicos mantienen la revisión documental administrativa.
+La revisión del cliente exige solo DNI frontal, reverso y selfie; no exige antecedentes ni valida su
+número de teléfono. La aprobación de los tres documentos vigentes verifica su identidad y conserva
+las decisiones y resultados anteriores. Una discrepancia automática exige confirmar la coincidencia y justificar por documento la aprobación
+manual; el resultado original y la justificación se conservan. Si persiste, se solicitan documentos corregidos. Las rutas compartidas de detalle, decisiones y
+reprocesamiento usan `/admin/dossiers/{usuario_id}/...`, siempre con permiso ADMIN.
+
+Al agregar el rol técnico a un cliente con identidad aprobada, la pantalla toma en cuenta la revisión
+administrativa posterior al procesamiento automático. Si únicamente se cargan antecedentes, el DNI
+y la selfie aprobados se conservan con sus observaciones, referencias a la versión de origen y
+comprobación de integridad; los antecedentes nuevos permanecen pendientes. Reemplazar cualquier
+archivo de identidad inicia una nueva revisión de DNI y selfie.
