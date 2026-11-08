@@ -5,3 +5,6 @@ frontend/.env.local
 frontend/test-results/
 frontend/playwright-report/
 .vscode/
+test-results.txt
+test-results.xml
+.test-temp/
