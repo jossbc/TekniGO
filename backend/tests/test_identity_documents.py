@@ -257,7 +257,8 @@ class IdentityDocumentsTests(unittest.TestCase):
         self.assertTrue(any(result['estado'] == 'RECHAZADO' for result in history[1]['resultados']))
         self.assertTrue(any(result['estado'] == 'VERIFICADO' for result in history[0]['resultados']))
         user = self.db.scalar(select(User).where(User.firebase_uid == self.client_claims['uid']))
-        firebase_user = SimpleNamespace(email=user.correo, email_verified=False, disabled=False)
+        user.telefono_verificado = True
+        firebase_user = SimpleNamespace(email=user.correo, email_verified=False, disabled=False, phone_number=user.telefono)
         with patch('app.email_verification.auth.get_user', return_value=firebase_user):
             self.assertEqual(self._status_of(lambda: require_enabled_client(user)), 403)
             firebase_user.email_verified = True

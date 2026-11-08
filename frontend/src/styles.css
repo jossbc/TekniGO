@@ -312,3 +312,67 @@ img, video, canvas { max-width: 100%; }
   .access-story__card strong { font-size: 11px; }
   .access-story__trust li { font-size: 9px; }
 }
+/* Administrative controls keep their natural width on desktop and mobile. */
+.admin-panel .button { width: auto; display: inline-flex; min-height: 40px; gap: 8px; }
+.admin-panel .button > svg { margin-left: 0; }
+.admin-page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px 24px; margin-bottom: 24px; }
+.admin-page-heading h1 { flex: 1 1 500px; margin: 0; }
+.admin-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.admin-pagination { padding-top: 8px; margin-bottom: 0; }
+.admin-document-form { display: grid; gap: 18px; margin-top: 24px; }
+.admin-document-form > .field { margin-bottom: 0; }
+.admin-document-form > .button { justify-self: start; }
+.admin-table-wrap { overflow-x: auto; margin: 16px 0; }
+.admin-dossier-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.admin-dossier-table th, .admin-dossier-table td { padding: 12px 10px; border-bottom: 1px solid var(--line); }
+.admin-dossier-table th { color: var(--muted); font-size: 11px; }
+.admin-dossier-table td:first-child { overflow-wrap: anywhere; }
+.admin-dossier-table th:last-child, .admin-dossier-table td:last-child { width: 116px; min-width: 116px; white-space: nowrap; }
+.admin-dossier-table .button { min-width: 88px; white-space: nowrap; overflow-wrap: normal; flex-shrink: 0; }
+.admin-dossier-selected { background: var(--surface); }
+
+.header--authenticated { height: auto; min-height: 80px; padding-block: 16px; flex-wrap: wrap; gap: 16px; }
+.session-control { display: inline-flex; position: relative; }
+.session-control .session-logout { display: inline-flex; width: auto; min-height: 40px; gap: 8px; white-space: nowrap; flex-shrink: 0; }
+.session-logout > svg { margin-left: 0; }
+.session-error { position: absolute; z-index: 20; right: 0; top: calc(100% + 8px); width: min(300px, 85vw); white-space: normal; }
+@media (max-width: 600px) {
+  .session-control .session-logout { padding: 10px 12px; font-size: 11px; }
+}
+
+.account-menu { position: relative; flex-shrink: 0; }
+.account-menu-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 4px; border: 1px solid transparent; border-radius: 28px; background: transparent; color: var(--muted); min-height: 44px; }
+.account-menu-trigger:hover, .account-menu-trigger[aria-expanded="true"] { border-color: var(--line); background: var(--surface); }
+.account-menu-avatar { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: #fff1e6; color: var(--orange); font-size: 13px; font-weight: 750; }
+.account-menu-panel { position: absolute; right: 0; top: calc(100% + 10px); z-index: 100; width: min(264px, calc(100vw - 32px)); padding: 8px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 12px 36px #18263b24; text-align: left; }
+.account-menu-identity { display: grid; gap: 4px; padding: 10px 12px 14px; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
+.account-menu-identity strong { font-size: 13px; color: var(--ink); }
+.account-menu-identity span { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.account-menu .account-menu-item { display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; padding: 11px 12px; min-height: 42px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 12px; font-weight: 550; text-align: left; text-decoration: none; }
+.account-menu .account-menu-item:hover, .account-menu .account-menu-item:focus-visible { background: var(--surface); color: var(--blue); }
+.account-menu-item > svg { margin-left: 0; flex-shrink: 0; }
+.account-menu-divider { height: 1px; background: var(--line); margin: 6px 4px; }
+.account-menu .session-control { display: flex; flex-direction: column; width: 100%; }
+.account-menu .session-error { position: static; width: auto; margin: 8px 4px 4px; }
+.account-menu-logout > svg { color: var(--orange); }
+
+.dossier-modal { width: min(1080px, calc(100vw - 40px)); max-width: none; max-height: calc(100dvh - 40px); padding: 0; border: 1px solid var(--line); border-radius: 20px; background: #fff; color: var(--ink); box-shadow: 0 24px 80px #18263b40; overflow: hidden; }
+.dossier-modal::backdrop { background: #18263b99; backdrop-filter: blur(3px); }
+.dossier-modal-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 28px; border-bottom: 1px solid var(--line); }
+.dossier-modal-heading h2 { margin: 0; font-size: 21px; }
+.dossier-modal-close { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); flex-shrink: 0; }
+.dossier-modal-close:hover { color: var(--blue); border-color: var(--blue); }
+.dossier-modal-body { padding: 28px; max-height: calc(100dvh - 122px); overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+.dossier-modal-body > section > h2 { margin-top: 0; font-size: clamp(21px, 4vw, 28px); }
+@media (max-width: 600px) {
+  .dossier-modal { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); border-radius: 16px; }
+  .dossier-modal-heading { padding: 16px; }
+  .dossier-modal-heading h2 { font-size: 18px; }
+  .dossier-modal-body { padding: 16px; max-height: calc(100dvh - 96px); }
+}
+
+.dossier-role-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.dossier-role { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.dossier-role-cliente { color: var(--blue); background: #eff6ff; border: 1px solid #bfdbfe; }
+.dossier-role-tecnico { color: #b64700; background: #fff2e8; border: 1px solid #ffd4b5; }
+.dossier-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-right: auto; }

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
     IdentityDocument,
+    IdentityVerificationRequest,
     TechnicianProfile,
     TechnicianStatusAudit,
     User,
@@ -63,15 +64,13 @@ def compute_document_expiration(doc_type: str, fecha_emision: date | None) -> da
 
 
 def _latest_documents_by_type(db: Session, usuario_id: uuid.UUID) -> dict[str, IdentityDocument]:
-    required_types = [doc_type for doc_type, _ in REQUIRED_TECHNICIAN_DOCS]
-    docs = db.scalars(
-        select(IdentityDocument)
-        .where(
-            IdentityDocument.usuario_id == usuario_id,
-            IdentityDocument.tipo.in_(required_types),
-        )
-        .order_by(IdentityDocument.creado_en.asc(), IdentityDocument.id.asc())
-    ).all()
+    current_id = select(IdentityVerificationRequest.id).where(
+        IdentityVerificationRequest.usuario_id == usuario_id,
+    ).order_by(IdentityVerificationRequest.version.desc()).limit(1).scalar_subquery()
+    docs = db.scalars(select(IdentityDocument).where(
+        IdentityDocument.usuario_id == usuario_id,
+        IdentityDocument.solicitud_id == current_id,
+    )).all()
     latest: dict[str, IdentityDocument] = {}
     for doc in docs:
         latest[doc.tipo] = doc
@@ -252,6 +251,8 @@ def evaluate_technician_requirements(
         user.estado_identidad = "VERIFICADO"
     elif any(r.estado == "RECHAZADO" for r in basic_reqs):
         user.estado_identidad = "RECHAZADO"
+    else:
+        user.estado_identidad = "EN_REVISION"
 
     # Determinar nuevo estado_verificacion según CA-01, CA-02, CA-04
     pending_reasons = [r.motivo for r in requirements if r.motivo]

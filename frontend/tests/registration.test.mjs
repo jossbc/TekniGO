@@ -78,7 +78,7 @@ test('cellular numbers accept formatting and reject invalid lengths, prefixes an
 
 test('HU-01 requests registration fields and password confirmation with or without an existing session', async () => {
   const result = await build({
-    entryPoints: ['src/App.tsx'], bundle: true, write: false,
+    stdin: { contents: "export { default } from './src/App'; export { default as AccessPage } from './src/pages/AccessPage'; export { accountPath } from './src/lib/accountPath';", resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false,
     platform: 'node', format: 'cjs', packages: 'external', loader: { '.png': 'dataurl', '.jpg': 'dataurl', '.css': 'empty' },
     define: { 'import.meta.env': '{}' },
   })
@@ -139,7 +139,7 @@ test('HU-15 validates identity document image formats and size limits before upl
   const React = require('react')
   let harness
   const result = await build({
-    entryPoints: ['src/App.tsx'], bundle: true, write: false, platform: 'node', format: 'cjs',
+    stdin: { contents: "export { default } from './src/App'; export { default as AccessPage } from './src/pages/AccessPage'; export { accountPath } from './src/lib/accountPath';", resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, platform: 'node', format: 'cjs',
     packages: 'external', loader: { '.png': 'dataurl', '.jpg': 'dataurl', '.css': 'empty' }, define: { 'import.meta.env': '{}' },
     plugins: [{ name: 'registration-dependencies', setup(build) {
       build.onResolve({ filter: /(?:^|\/)firebase$/ }, () => ({ path: 'test:auth', external: true }))

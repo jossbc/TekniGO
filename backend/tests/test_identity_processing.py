@@ -187,7 +187,7 @@ class IdentityProcessingTests(unittest.TestCase):
         self.assertEqual(response['procesamiento']['estado'], 'INCIERTO')
         self.assertNotIn('evidencia', response['procesamiento'])
 
-    def test_unknown_account_and_technician_are_not_processed(self):
+    def test_unknown_account_and_missing_technician_profile_are_rejected(self):
         with self.assertRaises(HTTPException) as error:
             process_current_identity({'uid': 'missing'}, self.db)
         self.assertEqual(error.exception.status_code, 404)
@@ -197,7 +197,7 @@ class IdentityProcessingTests(unittest.TestCase):
         self.db.expire_all()
         with self.assertRaises(HTTPException) as error:
             process_current_identity(self.claims, self.db)
-        self.assertEqual(error.exception.status_code, 403)
+        self.assertEqual(error.exception.status_code, 404)
 
 
 if __name__ == '__main__':

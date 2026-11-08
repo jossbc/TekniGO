@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,8 +18,9 @@ from app.models import (
     IdentityVerificationResult,
 )
 from app.security import get_current_user
-from app.storage import PrivateDocumentStorage
-from app.identity_documents import _parse_multipart_parts, _require_admin
+from app.storage import PrivateDocumentStorage, validate_document_bytes
+from app.identity_processing import IdentityProcessingRetry, identity_processing_status, process_current_identity
+from app.identity_documents import _parse_multipart_parts, _require_admin, get_document_content_for_admin
 from app.technician_activation import (
     MAX_ANTIGUEDAD_ANTECEDENTES_DIAS,
     compute_document_expiration,
@@ -492,7 +493,7 @@ async def upload_verification_documents(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update().execution_options(populate_existing=True))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
     if not any(role.rol == "TECNICO" for role in user.roles):
@@ -502,21 +503,39 @@ async def upload_verification_documents(
         raise HTTPException(404, "No se encontró tu perfil de técnico")
     if technician.estado_verificacion == "VERIFICADO":
         raise HTTPException(409, "Tu perfil de técnico ya fue verificado")
-    if technician.estado_verificacion == "EN_REVISION":
-        raise HTTPException(409, "Ya tienes una solicitud de verificación pendiente de revisión")
     body = await request.body()
     parts = _parse_multipart_parts(request.headers.get("content-type", ""), body)
     # 1. Consultar documentos existentes previamente para el usuario
-    existing_docs_query = db.scalars(
-        select(IdentityDocument).where(IdentityDocument.usuario_id == user.id)
-    ).all()
+    latest_request_id = select(IdentityVerificationRequest.id).where(
+        IdentityVerificationRequest.usuario_id == user.id,
+    ).order_by(IdentityVerificationRequest.version.desc()).limit(1).scalar_subquery()
+    existing_docs_query = db.scalars(select(IdentityDocument).where(
+        IdentityDocument.usuario_id == user.id,
+        IdentityDocument.solicitud_id == latest_request_id,
+    )).all()
     existing_docs_map = {doc.tipo: doc for doc in existing_docs_query}
+    all_required_present = all(kind in existing_docs_map for kind, _ in TECHNICIAN_DOC_TYPES.values())
+    if technician.estado_verificacion == "EN_REVISION" and all_required_present:
+        raise HTTPException(409, "Tus documentos ya fueron recibidos y están pendientes de revisión administrativa. Actualiza su estado.")
+    identity_types = {"DNI_FRONTAL", "DNI_REVERSO", "SELFIE"}
+    identity_fields = {"dni_frontal", "dni_reverso", "selfie"}
+    preserve_identity = (
+        user.estado_identidad == "VERIFICADO"
+        and not any(field in parts and parts[field].content for field in identity_fields)
+        and all(kind in existing_docs_map and existing_docs_map[kind].estado == "APROBADO"
+                and (not existing_docs_map[kind].fecha_vencimiento or existing_docs_map[kind].fecha_vencimiento >= date.today())
+                for kind in identity_types)
+        and len({existing_docs_map[kind].solicitud_id for kind in identity_types if kind in existing_docs_map}) == 1
+    )
+
 
     # 2. Validar presencia: Exigir solo los campos que NO vienen en el request Y tampoco existen previamente
     for field_key, (doc_type, label) in TECHNICIAN_DOC_TYPES.items():
         has_new_file = field_key in parts and bool(parts[field_key].content)
         has_existing_file = doc_type in existing_docs_map
 
+        if not has_new_file and has_existing_file and existing_docs_map[doc_type].estado in ("RECHAZADO", "VENCIDO", "INVALIDADO"):
+            raise HTTPException(400, f"Reemplaza el documento rechazado, vencido o invalidado de {label}")
         if not has_new_file and not has_existing_file:
             raise HTTPException(400, f"Falta adjuntar el archivo de {label}")
 
@@ -543,6 +562,10 @@ async def upload_verification_documents(
     )) or 0) + 1
 
     request_id = uuid.uuid4()
+    # Validate every replacement before writing any file to private storage.
+    for field_key, (_, label) in TECHNICIAN_DOC_TYPES.items():
+        if field_key in parts and parts[field_key].content:
+            validate_document_bytes(parts[field_key].content, parts[field_key].content_type, label)
     store = PrivateDocumentStorage()
     stored_docs: list[IdentityDocument] = []
 
@@ -579,30 +602,30 @@ async def upload_verification_documents(
             # Opción B: Reutilizar el documento existente en DB vinculándolo a la nueva solicitud
             prev_doc = existing_docs_map[doc_type]
             fecha = prev_doc.fecha_emision_declarada
-            if doc_type == "ANTECEDENTES_POLICIALES" and fecha_policiales:
-                fecha = fecha_policiales
-            elif doc_type == "ANTECEDENTES_PENALES" and fecha_penales:
-                fecha = fecha_penales
+            # Dates are part of the file version; a form value cannot renew an old file.
+            saved = store.store(
+                user_id=user.id, doc_type=doc_type,
+                content=store.read_private(prev_doc.ruta_privada),
+                declared_content_type=prev_doc.content_type, label=label,
+            )
 
+            if preserve_identity and doc_type in identity_types and saved.sha256 != prev_doc.sha256:
+                raise HTTPException(409, "La copia del documento no coincide con el archivo aprobado")
             stored_docs.append(IdentityDocument(
                 usuario_id=user.id,
                 solicitud_id=request_id,
                 tipo=doc_type,
-                ruta_privada=prev_doc.ruta_privada,
+                ruta_privada=saved.ruta_privada,
                 content_type=prev_doc.content_type,
                 tamano_bytes=prev_doc.tamano_bytes,
                 sha256=prev_doc.sha256,
-                estado="PENDIENTE",
+                estado="APROBADO" if preserve_identity and doc_type in identity_types else "PENDIENTE",
+                observaciones=prev_doc.observaciones if preserve_identity and doc_type in identity_types else None,
                 fecha_emision_declarada=fecha,
                 fecha_vencimiento=prev_doc.fecha_vencimiento or compute_document_expiration(doc_type, fecha),
             ))
 
-    # Limpiar registros anteriores de estos tipos para el usuario
-    doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
-    db.execute(delete(IdentityDocument).where(
-        IdentityDocument.usuario_id == user.id,
-        IdentityDocument.tipo.in_(doc_types_list),
-    ))
+    # Versiones y decisiones anteriores se conservan privadas.
 
     # Guardar nueva solicitud, documentos y actualizar estado general
     db.add(IdentityVerificationRequest(id=request_id, usuario_id=user.id, version=version))
@@ -615,6 +638,15 @@ async def upload_verification_documents(
         motivo="Documentos recibidos. Pendientes de verificación de identidad.",
         proceso_responsable="CARGA_DOCUMENTAL", version_proceso="1",
     ))
+
+    if preserve_identity:
+        db.add(IdentityVerificationResult(
+            solicitud_id=request_id, estado="VERIFICADO", creado_en=datetime.now(timezone.utc),
+            motivo="Identidad previamente verificada. Se conservan el DNI y la selfie aprobados; los antecedentes requieren revisión administrativa.",
+            proceso_responsable="IDENTIDAD_REUTILIZADA", version_proceso="1",
+            evidencia={"documentos_origen": [str(existing_docs_map[kind].id) for kind in sorted(identity_types)],
+                       "solicitud_origen": str(existing_docs_map["SELFIE"].solicitud_id)},
+        ))
 
     # Sincronizar estado global del perfil y usuario
     user.estado_identidad = "EN_REVISION"
@@ -631,11 +663,9 @@ async def upload_verification_documents(
 
     for doc in stored_docs:
         db.refresh(doc)
-
-    return {
-        "estado_verificacion": technician.estado_verificacion,
-        "documentos": [_serialize_verification_doc(doc) for doc in stored_docs],
-    }
+    if not preserve_identity:
+        process_current_identity(claims, db, storage=store, request_id=request_id)
+    return list_verification_documents(claims, db)
 
 @router.get("/me/verification-documents")
 def list_verification_documents(
@@ -648,7 +678,6 @@ def list_verification_documents(
     technician = db.get(TechnicianProfile, user.id)
     if technician is None:
         raise HTTPException(404, "No se encontró tu perfil de técnico")
-    previous_state = technician.estado_verificacion
     evaluation = sync_technician_verification_state(
         user,
         technician,
@@ -656,17 +685,19 @@ def list_verification_documents(
         proceso_responsable="CONSULTA_DOCUMENTOS_TECNICO",
         actor_usuario_id=user.id,
     )
-    if previous_state != evaluation["estado_verificacion"]:
-        db.commit()
-    doc_types_list = [dt for dt, _ in TECHNICIAN_DOC_TYPES.values()]
-    docs = db.scalars(
-        select(IdentityDocument).where(
-            IdentityDocument.usuario_id == user.id,
-            IdentityDocument.tipo.in_(doc_types_list),
-        ).order_by(IdentityDocument.creado_en.asc())
-    ).all()
+    db.commit()
+    from app.admin_verification import current_request
+    current = current_request(db, user.id)
+    docs = db.scalars(select(IdentityDocument).where(
+        IdentityDocument.usuario_id == user.id,
+        IdentityDocument.solicitud_id == current.id if current else False,
+    ).order_by(IdentityDocument.creado_en, IdentityDocument.id)).all()
     return {
         "estado_verificacion": technician.estado_verificacion,
+        "estado_identidad": user.estado_identidad,
+        "solicitud_id": str(current.id) if current else None,
+        "version": current.version if current else None,
+        "procesamiento": identity_processing_status(db, current.id if current else None),
         "observaciones": technician.observaciones_verificacion,
         "motivo_restriccion": technician.motivo_restriccion,
         "telefono_verificado": bool(user.telefono_verificado),
@@ -675,6 +706,19 @@ def list_verification_documents(
         "requisitos_pendientes": evaluation["requisitos_pendientes"],
         "documentos": [_serialize_verification_doc(doc) for doc in docs],
     }
+
+
+@router.post("/me/identity-verification")
+def process_technician_identity_endpoint(
+    payload: IdentityProcessingRetry,
+    claims=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    from app.identity_documents import _get_user
+    user = _get_user(claims, db, lock=True)
+    if not any(role.rol == 'TECNICO' for role in user.roles):
+        raise HTTPException(403, 'La cuenta no tiene rol de técnico')
+    process_current_identity(claims, db, request_id=payload.solicitud_id)
+    return list_verification_documents(claims, db)
 
 @router.get("/me/activation-status")
 def get_my_activation_status(
@@ -707,19 +751,10 @@ def download_verification_document_admin(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Restringe estrictamente el acceso solo a administradores
-    _require_admin(claims, db)
-    doc = db.get(IdentityDocument, document_id)
-    if doc is None:
-        raise HTTPException(404, "No se encontró el documento")
-    store = PrivateDocumentStorage()
-    try:
-        raw_bytes = store.read_private(doc.ruta_privada)
-    except FileNotFoundError:
-        raise HTTPException(404, "Archivo privado no encontrado") from None
+    raw_bytes, media_type = get_document_content_for_admin(document_id, claims, db)
     return Response(
         content=raw_bytes, 
-        media_type=doc.content_type,
+        media_type=media_type,
         headers={"Cache-Control": "no-store, private"},
     )
 
@@ -742,16 +777,8 @@ def _validar_vigencia_antecedentes(fecha: date | None, label: str):
             f"La constancia de {label} ha expirado (emitida hace {antiguedad} días). El límite máximo de vigencia es de {MAX_ANTIGUEDAD_DIAS} días."
         )
 
-class DocumentReviewItem(BaseModel):
-    documento_id: uuid.UUID
-    estado: str  # 'APROBADO', 'RECHAZADO', 'VENCIDO', 'INVALIDADO'
-    observaciones: Optional[str] = None
-    fecha_vencimiento: Optional[date] = None
-
-class AdminVerificationReviewSchema(BaseModel):
-    estado_verificacion: Optional[str] = None  # Opcional: el estado real lo determina el servicio central (CA-01)
-    observaciones_verificacion: Optional[str] = None
-    documentos: List[DocumentReviewItem]
+# Compatibility route: the same version and audit rules apply to older clients.
+from app.admin_verification import AdminVerificationReviewSchema, DocumentReviewItem, apply_technician_review
 
 
 @router.patch("/admin/technicians/{usuario_id}/verification-review")
@@ -761,50 +788,7 @@ def review_technician_verification(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # 1. Validar que quien ejecuta sea administrador
-    admin_user = _require_admin(claims, db)
-
-    # 2. Buscar usuario y perfil del técnico
-    tech_user = db.get(User, usuario_id)
-    technician = db.get(TechnicianProfile, usuario_id)
-    if not tech_user or not technician:
-        raise HTTPException(404, "No se encontró el perfil del técnico.")
-
-    # 3. Actualizar observaciones generales del perfil
-    technician.observaciones_verificacion = payload.observaciones_verificacion
-
-    # 4. Actualizar el estado, observaciones y vigencia de cada documento evaluado
-    for doc_review in payload.documentos:
-        doc = db.get(IdentityDocument, doc_review.documento_id)
-        if doc and doc.usuario_id == usuario_id:
-            doc.estado = doc_review.estado
-            doc.observaciones = doc_review.observaciones
-            if doc_review.fecha_vencimiento is not None:
-                doc.fecha_vencimiento = doc_review.fecha_vencimiento
-            elif doc.fecha_vencimiento is None and doc.fecha_emision_declarada is not None:
-                doc.fecha_vencimiento = compute_document_expiration(doc.tipo, doc.fecha_emision_declarada)
-
-    db.flush()
-
-    # 5. Evaluar y sincronizar estado según CA-01, CA-02, CA-04, CA-05 y registrar auditoría (CA-06)
-    evaluation = sync_technician_verification_state(
-        tech_user,
-        technician,
-        db,
-        proceso_responsable="REVISION_DOCUMENTAL_ADMIN",
-        actor_usuario_id=admin_user.id,
-        causa_override=payload.observaciones_verificacion,
-    )
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Verificación del técnico actualizada a: {technician.estado_verificacion}",
-        "estado_verificacion": technician.estado_verificacion,
-        "puede_recibir_contrataciones": evaluation["puede_recibir_contrataciones"],
-        "motivo_restriccion": technician.motivo_restriccion,
-        "requisitos_pendientes": evaluation["requisitos_pendientes"],
-    }
+    return apply_technician_review(usuario_id, payload, claims, db)
 
 
 from app.technician_activation import run_scheduled_expiration_review

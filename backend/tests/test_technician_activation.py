@@ -117,7 +117,7 @@ class TechnicianActivationServiceTests(unittest.TestCase):
     def test_ca01_transitions_from_en_revision_to_verificado_only_when_all_docs_and_phone_valid(self):
         docs = self._seed_documents(state="PENDIENTE")
         review_items = [
-            DocumentReviewItem(documento_id=doc.id, estado="APROBADO")
+            DocumentReviewItem(documento_id=doc.id, estado="APROBADO", legible=True, identidad_coincide=True)
             for doc in docs.values()
         ]
         res = review_technician_verification(

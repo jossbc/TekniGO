@@ -117,6 +117,33 @@ class PrivateStorageTests(unittest.TestCase):
                                 declared_content_type='image/jpeg', label='DNI')
             self.assertEqual(store.read_private(saved.ruta_privada), IMAGE)
 
+    def test_all_supported_document_types_round_trip_encrypted_images_and_pdfs(self):
+        from pathlib import Path
+        from app.storage import PRIVATE_DOCUMENT_TYPES
+        samples = [('image/jpeg', IMAGE), ('image/png', b'\x89PNG\r\n\x1a\nfixture'),
+                   ('image/webp', b'RIFF0000WEBPfixture'), ('application/pdf', b'%PDF-1.7 fixture')]
+        with tempfile.TemporaryDirectory() as directory:
+            store = PrivateDocumentStorage(base_dir=Path(directory))
+            for kind in PRIVATE_DOCUMENT_TYPES:
+                for mime, content in samples:
+                    with self.subTest(kind=kind, mime=mime):
+                        saved = store.store(user_id=uuid.uuid4(), doc_type=kind, content=content,
+                                            declared_content_type=mime, label=kind)
+                        self.assertEqual(store.read_private(saved.ruta_privada), content)
+                        encrypted = (Path(directory) / saved.ruta_privada.split('documentos-identidad/')[1]).read_bytes()
+                        self.assertNotIn(content, encrypted)
+
+    @patch('app.storage._private_urlopen')
+    def test_unknown_types_and_malicious_paths_never_reach_storage(self, open_url):
+        store = PrivateDocumentStorage()
+        for kind in ['../secret', 'UNKNOWN', 'selfie/../../']:
+            with self.assertRaises(HTTPException):
+                store.store(user_id=uuid.uuid4(), doc_type=kind, content=IMAGE, declared_content_type='image/jpeg', label=kind)
+        for kind in ['antecedentes_penales/../../secret', 'unknown']:
+            with self.assertRaises(ValueError):
+                store.read_private(f'private://documentos-identidad/identidad/{uuid.uuid4()}/{kind}_{uuid.uuid4().hex}.pdf.enc')
+        open_url.assert_not_called()
+
     @patch('app.storage._private_urlopen')
     def test_corrupted_or_oversized_remote_file_never_returns_content(self, open_url):
         from app.storage import MAX_DOCUMENT_BYTES

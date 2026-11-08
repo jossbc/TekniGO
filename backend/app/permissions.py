@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.email_verification import email_verification_status
+from app.phone_verification import phone_verification_status
 from app.models import TechnicianProfile, User
 from app.security import get_current_user
 
@@ -12,20 +13,24 @@ router = APIRouter()
 
 
 def client_hiring_eligibility(user: User) -> dict:
-    """Current DB identity + live Firebase email ownership, independent of token claims."""
+    """Recheck identity, email and current phone ownership before every hiring write."""
     if not any(role.rol == 'CLIENTE' for role in user.roles):
         raise HTTPException(403, 'La cuenta no tiene rol de cliente')
     identity_verified = user.estado_identidad == 'VERIFICADO'
     email_verified = email_verification_status(user)['email_verified']
+    phone_verified = bool(user.telefono_verificado) and phone_verification_status(user)['telefono_verificado']
     reasons = []
     if not identity_verified:
         reasons.append('Completa la verificación de identidad para contratar')
     if not email_verified:
         reasons.append('Verifica tu correo electrónico para contratar')
+    if not phone_verified:
+        reasons.append('Verifica tu teléfono para contratar')
     return {
-        'puede_contratar': identity_verified and email_verified,
+        'puede_contratar': identity_verified and email_verified and phone_verified,
         'identidad_verificada': identity_verified,
         'correo_verificado': email_verified,
+        'telefono_verificado': phone_verified,
         'motivos': reasons,
     }
 

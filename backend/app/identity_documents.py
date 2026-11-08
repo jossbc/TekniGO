@@ -158,7 +158,7 @@ def get_my_identity_documents(claims: dict, db: Session) -> dict:
     effective_status = user.estado_identidad if docs else "PENDIENTE"
     processing = db.scalar(select(IdentityVerificationResult).where(
         IdentityVerificationResult.solicitud_id == current.id,
-        IdentityVerificationResult.proceso_responsable == 'PROCESAMIENTO_IDENTIDAD',
+        IdentityVerificationResult.proceso_responsable.in_(['PROCESAMIENTO_IDENTIDAD', 'REVISION_ADMINISTRATIVA_IDENTIDAD', 'IDENTIDAD_REUTILIZADA']),
     ).order_by(IdentityVerificationResult.creado_en.desc()).limit(1)) if current else None
     return {
         "estado_identidad": effective_status,
@@ -167,6 +167,7 @@ def get_my_identity_documents(claims: dict, db: Session) -> dict:
         "documentos": [_serialize_doc(doc) for doc in docs],
         "procesamiento": {
             "estado": processing.estado, "observacion": processing.motivo,
+            "proceso_responsable": processing.proceso_responsable,
             "fecha": processing.creado_en.isoformat(),
         } if processing else None,
     }
@@ -211,6 +212,8 @@ def get_document_content_for_admin(
         raw_bytes = store.read_private(doc.ruta_privada)
     except FileNotFoundError:
         raise HTTPException(404, "Archivo privado no encontrado") from None
+    except ValueError:
+        raise HTTPException(502, "No se pudo recuperar este archivo privado. Revisa su carga.") from None
     return raw_bytes, doc.content_type
 
 

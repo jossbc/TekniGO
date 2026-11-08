@@ -4,14 +4,16 @@ from datetime import datetime, timezone
 import hashlib
 import logging
 import os
+import uuid
 from typing import Protocol
 
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.identity_documents import _get_user
-from app.models import IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult
+from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile
 from app.storage import PrivateDocumentStorage, validate_document_bytes
 
 PROCESS = 'PROCESAMIENTO_IDENTIDAD'
@@ -19,6 +21,22 @@ PROCESS_VERSION = '2'
 REQUIRED_CHECKS = ('documento_legible', 'datos_coinciden', 'rostro_coincide')
 RETRY_SECONDS = 60
 logger = logging.getLogger('uvicorn.error')
+
+
+class IdentityProcessingRetry(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    solicitud_id: uuid.UUID
+
+
+def identity_processing_status(db: Session, request_id: uuid.UUID | None) -> dict | None:
+    if request_id is None:
+        return None
+    result = db.scalar(select(IdentityVerificationResult).where(
+        IdentityVerificationResult.solicitud_id == request_id,
+        IdentityVerificationResult.proceso_responsable.in_([PROCESS, "REVISION_ADMINISTRATIVA_IDENTIDAD", "IDENTIDAD_REUTILIZADA"]),
+    ).order_by(IdentityVerificationResult.creado_en.desc()).limit(1))
+    return {'estado': result.estado, 'observacion': result.motivo,
+            'fecha': result.creado_en.isoformat(), 'proceso_responsable': result.proceso_responsable} if result else None
 
 
 @dataclass(frozen=True)
@@ -71,15 +89,30 @@ def _decision(checks: IdentityChecks) -> tuple[str, str]:
 def process_current_identity(
     claims: dict, db: Session, *, storage: PrivateDocumentStorage | None = None,
     processor: IdentityProcessor | None = None,
+    request_id: uuid.UUID | None = None,
 ) -> IdentityVerificationResult:
     user = _get_user(claims, db, lock=True)
-    if not any(role.rol == 'CLIENTE' for role in user.roles):
-        raise HTTPException(403, 'Este proceso corresponde a la verificación del cliente')
+    roles = {role.rol for role in user.roles}
+    if not roles.intersection({'CLIENTE', 'TECNICO'}):
+        raise HTTPException(403, 'La cuenta no tiene un rol habilitado para verificar identidad')
+    technician = db.get(TechnicianProfile, user.id) if 'TECNICO' in roles else None
+    if 'TECNICO' in roles and technician is None:
+        raise HTTPException(404, 'No se encontró tu perfil de técnico')
     request = db.scalar(select(IdentityVerificationRequest).where(
         IdentityVerificationRequest.usuario_id == user.id,
     ).order_by(IdentityVerificationRequest.version.desc()).limit(1))
     if request is None:
         raise HTTPException(409, 'Primero envía tu DNI por ambos lados y tu selfie')
+    if request_id is not None and request.id != request_id:
+        raise HTTPException(409, 'El expediente fue sustituido. Actualiza su estado antes de evaluar otra versión.')
+    if db.scalar(select(DocumentReviewDecision.id).where(DocumentReviewDecision.solicitud_id == request.id).limit(1)):
+        raise HTTPException(409, 'Este expediente ya tiene decisiones administrativas. Consulta tus observaciones o envía documentos corregidos.')
+    reused = db.scalar(select(IdentityVerificationResult).where(
+        IdentityVerificationResult.solicitud_id == request.id,
+        IdentityVerificationResult.proceso_responsable == "IDENTIDAD_REUTILIZADA",
+    ).limit(1))
+    if reused is not None:
+        return reused
     adapter = processor if processor is not None else configured_processor()
     provider = {'nombre': adapter.name, 'version': adapter.version} if adapter else None
     previous = db.scalar(select(IdentityVerificationResult).where(
@@ -99,25 +132,27 @@ def process_current_identity(
     docs = db.scalars(select(IdentityDocument).where(
         IdentityDocument.solicitud_id == request.id, IdentityDocument.usuario_id == user.id,
     )).all()
+    expected = {'DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE'}
+    identity_docs = [doc for doc in docs if doc.tipo in expected]
     evidence = {
         'proveedor': provider,
-        'documentos': [{'id': str(doc.id), 'tipo': doc.tipo, 'sha256': doc.sha256} for doc in docs],
+        'documentos': [{'id': str(doc.id), 'tipo': doc.tipo, 'sha256': doc.sha256} for doc in identity_docs],
         'version_solicitud': request.version,
         'datos_registrados_sha256': hashlib.sha256(f'{user.dni}\n{user.nombre_completo}'.encode()).hexdigest(),
         'controles': asdict(IdentityChecks()),
         'controles_requeridos': list(REQUIRED_CHECKS),
         'alcance': 'VERIFICACION_BASICA_CA04',
+        'requiere_revision_administrativa': technician is not None,
     }
-    expected = {'DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE'}
     state, reason = 'INCIERTO', 'Los controles automáticos de identidad no están disponibles. Tu expediente sigue pendiente de verificación.'
-    if {doc.tipo for doc in docs} != expected or len(docs) != 3:
+    if {doc.tipo for doc in identity_docs} != expected or len(identity_docs) != 3:
         state, reason = 'INCIERTO', 'Faltan documentos requeridos. Es necesario enviar el DNI por ambos lados y la selfie.'
     elif adapter is not None:
         stage = 'lectura_privada'
         try:
             store = storage or PrivateDocumentStorage()
             content = {}
-            for doc in docs:
+            for doc in identity_docs:
                 raw = store.read_private(doc.ruta_privada)
                 if len(raw) != doc.tamano_bytes or hashlib.sha256(raw).hexdigest() != doc.sha256:
                     raise ValueError('Document fingerprint mismatch')
@@ -137,6 +172,11 @@ def process_current_identity(
             # Provider/storage messages may contain sensitive data; never persist them.
             logger.warning('Identidad: fallo en %s (%s)', stage, type(error).__name__)
             state, reason = 'ERROR', 'No pudimos completar la evaluación. Tus documentos se conservan y tu identidad sigue pendiente. Intenta nuevamente más tarde.'
+    if state == 'VERIFICADO':
+        reason = ('Los datos del DNI y el rostro coinciden. El expediente técnico sigue pendiente de revisión administrativa.'
+                  if technician is not None else
+                  'Verificación básica completada: los datos del DNI y el rostro coinciden. Para contratar también necesitas el correo y el teléfono confirmados.')
+    evidence['requiere_revision_administrativa'] = technician is not None or state != 'VERIFICADO'
     result = IdentityVerificationResult(
         solicitud_id=request.id, estado=state, motivo=reason,
         proceso_responsable=PROCESS, version_proceso=PROCESS_VERSION, evidencia=evidence,
@@ -144,9 +184,16 @@ def process_current_identity(
     )
     db.add(result)
     user.estado_identidad = state if state in ('VERIFICADO', 'RECHAZADO') else 'EN_REVISION'
-    for doc in docs:
-        doc.estado = 'APROBADO' if state == 'VERIFICADO' else 'RECHAZADO' if state == 'RECHAZADO' else 'PENDIENTE'
+    for doc in identity_docs:
+        # A technical identity check never approves background certificates or
+        # replaces an administrator's document decision.
+        doc.estado = 'APROBADO' if state == 'VERIFICADO' and technician is None else 'RECHAZADO' if state == 'RECHAZADO' else 'PENDIENTE'
         doc.observaciones = reason
+    if technician is not None:
+        from app.technician_activation import sync_technician_verification_state
+        db.flush()
+        sync_technician_verification_state(user, technician, db,
+            proceso_responsable=PROCESS, causa_override=reason)
     db.commit()
     db.refresh(result)
     return result

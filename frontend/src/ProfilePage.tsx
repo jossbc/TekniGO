@@ -260,7 +260,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
               <Item label="Teléfono">{formatPhone(profile.telefono)}</Item>
               <Item label="Rol">{profile.roles.map((r) => ROLE_LABELS[r] ?? r).join(' y ')}</Item>
               <Item label="Verificación de identidad">
-                <span className="status-pill" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.95rem' }}>
+                <span className={`status-pill${identityStatus === 'VERIFICADO' ? ' status-pill-verified' : ''}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.95rem' }}>
                   {identityStatus === 'VERIFICADO' ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}
                   {IDENTITY_STATUS_LABELS[identityStatus] ?? identityStatus}
                 </span>
@@ -375,8 +375,8 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
                     {techActivation.estado_verificacion !== 'VERIFICADO' && (
                       <div style={{ marginTop: '1rem', fontSize: '0.95rem' }}>
-                        <Link to="/mi-cuenta" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          Revisar documentos en Mi cuenta <ArrowUpRight size={15} />
+                        <Link to="/verificacion" className="link" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          Completar documentos y antecedentes <ArrowUpRight size={15} />
                         </Link>
                       </div>
                     )}

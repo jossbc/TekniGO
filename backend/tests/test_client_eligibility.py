@@ -13,28 +13,47 @@ from app.permissions import (
 class ClientEligibilityTests(unittest.TestCase):
     def setUp(self):
         self.user = SimpleNamespace(firebase_uid='client-1', correo='ana@example.com',
-                                    estado_identidad='VERIFICADO', roles=[SimpleNamespace(rol='CLIENTE')])
-        self.identity = SimpleNamespace(email='ana@example.com', email_verified=True, disabled=False)
+                                    telefono='+50498765432', telefono_verificado=True, estado_identidad='VERIFICADO', roles=[SimpleNamespace(rol='CLIENTE')])
+        self.identity = SimpleNamespace(email='ana@example.com', email_verified=True, disabled=False, phone_number='+50498765432')
         provider = patch('app.email_verification.auth.get_user', return_value=self.identity)
         self.get_user = provider.start()
         self.addCleanup(provider.stop)
 
-    def test_only_both_confirmed_conditions_enable_hiring(self):
+    def test_identity_email_and_phone_are_all_required_for_hiring(self):
         for state in ('PENDIENTE', 'EN_REVISION', 'RECHAZADO', 'INCIERTO', 'ERROR', 'VERIFICADO'):
             for email in (False, True):
-                with self.subTest(state=state, email=email):
-                    self.user.estado_identidad = state
-                    self.identity.email_verified = email
-                    status = client_hiring_eligibility(self.user)
-                    enabled = state == 'VERIFICADO' and email
-                    self.assertEqual(status['puede_contratar'], enabled)
-                    self.assertEqual(len(status['motivos']), int(state != 'VERIFICADO') + int(not email))
-                    if enabled:
-                        self.assertIs(require_enabled_client(self.user), self.user)
-                    else:
-                        with self.assertRaises(HTTPException) as error:
-                            require_enabled_client(self.user)
-                        self.assertEqual(error.exception.status_code, 403)
+                for phone in (False, True):
+                    with self.subTest(state=state, email=email, phone=phone):
+                        self.user.estado_identidad = state
+                        self.identity.email_verified = email
+                        self.user.telefono_verificado = phone
+                        status = client_hiring_eligibility(self.user)
+                        enabled = state == 'VERIFICADO' and email and phone
+                        self.assertEqual(status['puede_contratar'], enabled)
+                        self.assertEqual(status['telefono_verificado'], phone)
+                        self.assertEqual(len(status['motivos']), int(state != 'VERIFICADO') + int(not email) + int(not phone))
+                        if enabled:
+                            self.assertIs(require_enabled_client(self.user), self.user)
+                        else:
+                            with self.assertRaises(HTTPException) as error: require_enabled_client(self.user)
+                            self.assertEqual(error.exception.status_code, 403)
+
+    def test_a_previously_verified_phone_must_still_match_firebase(self):
+        self.assertTrue(client_hiring_eligibility(self.user)['puede_contratar'])
+        self.identity.phone_number = '+50499999999'
+        self.assertFalse(client_hiring_eligibility(self.user)['puede_contratar'])
+        self.identity.phone_number = None
+        with self.assertRaises(HTTPException): require_enabled_client(self.user)
+
+    def test_changing_phone_between_status_read_and_write_blocks_hiring(self):
+        db = Mock(); db.scalar.return_value = self.user
+        self.assertTrue(get_my_hiring_eligibility({'uid':'client-1'}, db)['puede_contratar'])
+        self.user.telefono = '+50499999999'
+        self.user.telefono_verificado = False
+        with self.assertRaises(HTTPException) as error:
+            get_enabled_client({'uid':'client-1', 'telefono_verificado':True}, db)
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertIn('teléfono', error.exception.detail)
 
     def test_current_email_is_checked_again_after_previous_approval(self):
         self.assertTrue(client_hiring_eligibility(self.user)['puede_contratar'])

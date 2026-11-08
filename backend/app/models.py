@@ -137,6 +137,20 @@ class IdentityDocument(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class DocumentReviewDecision(Base):
+    __tablename__ = "decisiones_documentales"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    documento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documentos_identidad.id"), index=True)
+    solicitud_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("solicitudes_verificacion_identidad.id"), index=True)
+    administrador_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"))
+    version_evaluada: Mapped[int] = mapped_column(Integer)
+    estado: Mapped[str] = mapped_column(String(20))
+    observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
+    legible: Mapped[bool] = mapped_column(Boolean)
+    identidad_coincide: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class TechnicianStatusAudit(Base):
     __tablename__ = "historial_estados_tecnico"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

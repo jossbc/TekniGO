@@ -22,6 +22,10 @@ ALLOWED_CONTENT_TYPES = {
 }
 
 PRIVATE_BUCKET = "documentos-identidad"
+PRIVATE_DOCUMENT_TYPES = frozenset({
+    "DNI_FRONTAL", "DNI_REVERSO", "SELFIE",
+    "ANTECEDENTES_POLICIALES", "ANTECEDENTES_PENALES",
+})
 DEFAULT_LOCAL_DIR = Path(__file__).resolve().parent.parent / ".private_storage"
 
 
@@ -149,6 +153,8 @@ class PrivateDocumentStorage:
         declared_content_type: str | None,
         label: str,
     ) -> StoredDocument:
+        if doc_type not in PRIVATE_DOCUMENT_TYPES:
+            raise HTTPException(400, "Tipo de documento privado inválido")
         real_mime = validate_document_bytes(content, declared_content_type, label)
         ext = ALLOWED_CONTENT_TYPES[real_mime]
         digest = hashlib.sha256(content).hexdigest()
@@ -175,7 +181,8 @@ class PrivateDocumentStorage:
         if not ruta_privada.startswith(prefix):
             raise ValueError("Ruta privada desconocida")
         object_key = ruta_privada[len(prefix) :]
-        if not re.fullmatch(r"identidad/[0-9a-f-]{36}/(?:dni_frontal|dni_reverso|selfie)_[0-9a-f]{32}\.(?:jpg|png|webp)\.enc", object_key):
+        types = "|".join(sorted(kind.lower() for kind in PRIVATE_DOCUMENT_TYPES))
+        if not re.fullmatch(rf"identidad/[0-9a-f-]{{36}}/(?:{types})_[0-9a-f]{{32}}\.(?:jpg|png|webp|pdf)\.enc", object_key):
             raise ValueError("Ruta privada inválida")
         config = self._supabase_config()
         if config:

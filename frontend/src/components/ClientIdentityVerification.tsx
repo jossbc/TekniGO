@@ -16,7 +16,7 @@ type Props = {
 type IdentityDocsResponse = {
   estado_identidad: string
   documentos: { id: string; tipo: string; estado: string; observaciones?: string | null }[]
-  procesamiento?: { estado: string; observacion: string; fecha: string } | null
+  procesamiento?: { estado: string; observacion: string; fecha: string; proceso_responsable?: string } | null
 }
 
 type FieldErrors = {
@@ -246,11 +246,12 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
           <Clock3 size={15} /> Identidad pendiente de verificación
         </span>
         <p style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+          {processing && processing.proceso_responsable !== 'REVISION_ADMINISTRATIVA_IDENTIDAD' && ['ERROR', 'INCIERTO', 'RECHAZADO'].includes(processing.estado) && <span>Tu expediente está disponible para revisión administrativa. </span>}
           {processing?.observacion || 'Ya recibimos tu DNI por ambos lados y tu selfie. Tu identidad sigue pendiente de verificación.'}
         </p>
         <Button type="button" disabled={busy || refreshing} className="button-outline" style={{ width: 'auto', marginTop: 16, marginRight: 12 }} onClick={() => setAttempt((value) => value + 1)}>{refreshing ? 'Actualizando...' : 'Actualizar estado'}</Button>
         {busy && <LoadingState variant="inline" message="Evaluando tu identidad." detail="El resultado aparecerá aquí al terminar." />}
-        {(!processing || processing.estado === 'ERROR' || processing.estado === 'INCIERTO') && <Button type="button" disabled={busy || refreshing} style={{ width: 'auto', marginTop: 16 }} onClick={retryProcessing}>
+        {processing?.proceso_responsable !== 'REVISION_ADMINISTRATIVA_IDENTIDAD' && (!processing || processing.estado === 'ERROR' || processing.estado === 'INCIERTO') && <Button type="button" disabled={busy || refreshing} style={{ width: 'auto', marginTop: 16 }} onClick={retryProcessing}>
           {busy ? 'Comprobando…' : 'Reintentar evaluación'}
         </Button>}
         {formError && <p className="alert" role="alert">{formError}</p>}
@@ -360,7 +361,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {status === 'RECHAZADO' && processing?.observacion && <p className="alert" role="alert">{processing.observacion}</p>}
+      {status === 'RECHAZADO' && processing?.observacion && <p className="alert" role="alert">{processing.observacion} {processing.proceso_responsable !== 'REVISION_ADMINISTRATIVA_IDENTIDAD' && 'Tu expediente está disponible para revisión administrativa.'} Puedes enviar documentos corregidos si corresponde.</p>}
       <p style={{ margin: '0 0 0.9rem' }}>
         Adjunta una fotografía clara de tu DNI por ambos lados y tómate una selfie en tiempo real para verificar tu identidad.
       </p>

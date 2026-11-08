@@ -3,6 +3,8 @@ import { useState } from 'react'
 import type { User } from 'firebase/auth'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import EmailVerification from './components/EmailVerification'
+import Header from './components/Header'
+import PhoneVerification from './components/PhoneVerification'
 import { useAccount } from './lib/useAccount'
 import { errorMessage } from './lib/api'
 import { registrationComplete, registrationRequirements } from './lib/registration'
@@ -10,7 +12,7 @@ import { AccountStatus } from './components/AccountStatus'
 import ClientIdentityVerification from './components/ClientIdentityVerification'
 import SpecialtySelector from './components/SpecialtySelector'
 import CoverageZoneSelector from './CoverageZoneSelector'
-import { Brand, Button } from './components/ui'
+import { Button } from './components/ui'
 import TechnicianVerificationForm from './components/TechnicianVerificationForm'
 
 export default function CompleteRegistration({ user }: { user: User }) {
@@ -47,7 +49,7 @@ export default function CompleteRegistration({ user }: { user: User }) {
   if (state.status === 'loading') return <LoadingState variant="screen" message="Cargando tu cuenta." />
 
   return <div className="site">
-    <header className="header"><Brand /><Link to="/perfil" className="link">Mi perfil</Link></header>
+    <Header authenticated email={user.email} />
     <main className="account" style={{ margin: '0 auto 60px' }}>
       {!profile ? <AccountStatus state={state} retry={retry} /> : <>
       <p className="mini-label">PASO 2 DE 2</p>
@@ -55,6 +57,7 @@ export default function CompleteRegistration({ user }: { user: User }) {
       <p>Tu cuenta ya está creada. Envía tus documentos{profile?.roles.includes('TECNICO') ? ' y guarda los datos de tu perfil técnico' : ''} para finalizar. Tu identidad quedará pendiente de revisión.</p>
       {profile && <>
         <EmailVerification user={user} initialNotice={location.state?.emailVerificationNotice} />
+        <PhoneVerification user={user} />
         <section className="account-card profile-card" style={{ marginBottom: 24 }}>
           <h2>Verificación de identidad</h2>
           {isTechnician ? (

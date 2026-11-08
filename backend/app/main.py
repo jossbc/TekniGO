@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.firebase import initialize_firebase
+from app.database_errors import database_error_response
 from app.cors import configure_cors
 from app.users import router
 from app.specialties import router as specialties_router
@@ -11,6 +13,8 @@ from app.services import router as services_router
 from app.identity_documents import router as identity_documents_router
 from app.email_verification import router as email_verification_router
 from app.permissions import router as permissions_router
+from app.phone_verification import router as phone_verification_router
+from app.admin_verification import router as admin_verification_router
 
 
 @asynccontextmanager
@@ -25,6 +29,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 configure_cors(app)
+app.add_exception_handler(SQLAlchemyError, database_error_response)
 app.include_router(router)
 app.include_router(specialties_router)
 app.include_router(technicians_router)
@@ -32,6 +37,8 @@ app.include_router(services_router)
 app.include_router(identity_documents_router)
 app.include_router(email_verification_router)
 app.include_router(permissions_router)
+app.include_router(phone_verification_router)
+app.include_router(admin_verification_router)
 
 
 @app.get("/health")

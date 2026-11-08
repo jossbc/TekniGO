@@ -17,6 +17,7 @@ import { api, errorMessage } from '../lib/api'
 import { ALLOWED_IMAGE_TYPES, IMAGE_RULES_HINT, validateIdentityImage } from '../lib/validation'
 import SelfieCameraCapture from './SelfieCameraCapture'
 import { Button } from './ui'
+import LoadingState from './LoadingState'
 
 type Props = {
   user: User
@@ -36,6 +37,9 @@ type RequirementItem = {
 }
 
 type VerificationDocsResponse = {
+  estado_identidad?: string
+  solicitud_id?: string | null
+  procesamiento?: { estado: string; observacion: string; fecha: string; proceso_responsable?: string } | null
   estado_verificacion: string
   observaciones?: string | null
   motivo_restriccion?: string | null
@@ -76,10 +80,16 @@ function validateFile(file: File, label: string): string | null {
 
 export default function TechnicianVerificationForm({ user, initialStatus = 'NO_VERIFICADO', onStatusChange }: Props) {
   const [status, setStatus] = useState<string>(initialStatus)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  const [requestId, setRequestId] = useState<string | null>(null)
+  const [processing, setProcessing] = useState<VerificationDocsResponse['procesamiento']>(null)
   const [observacionesGenerales, setObservacionesGenerales] = useState<string | null>(null)
   const [motivoRestriccion, setMotivoRestriccion] = useState<string | null>(null)
   const [requisitosPendientes, setRequisitosPendientes] = useState<RequirementItem[]>([])
   const [hasUploadedDocs, setHasUploadedDocs] = useState(false)
+  const [documents, setDocuments] = useState<VerificationDocsResponse['documentos']>([])
 
   // Conjunto de tipos de documentos ya guardados en el backend (ej: DNI_FRONTAL, DNI_REVERSO, SELFIE)
   const [existingDocTypes, setExistingDocTypes] = useState<Set<string>>(new Set())
@@ -117,31 +127,41 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
   const hasExistingPoliciales = existingDocTypes.has('ANTECEDENTES_POLICIALES')
   const hasExistingPenales = existingDocTypes.has('ANTECEDENTES_PENALES')
 
+  function applyResponse(res: VerificationDocsResponse, notify = false) {
+    const docs = Array.isArray(res.documentos) ? res.documentos : []
+    setLoadError('')
+    setDocuments(docs)
+    setHasUploadedDocs(docs.length > 0)
+    setExistingDocTypes(new Set(docs.filter(doc => !['RECHAZADO', 'VENCIDO', 'INVALIDADO'].includes(doc.estado)).map(doc => doc.tipo)))
+    setStatus(res.estado_verificacion || 'NO_VERIFICADO')
+    setRequestId(res.solicitud_id ?? null)
+    setProcessing(res.procesamiento ?? null)
+    setObservacionesGenerales(res.observaciones ?? null)
+    setMotivoRestriccion(res.motivo_restriccion ?? null)
+    setRequisitosPendientes(Array.isArray(res.requisitos_pendientes) ? res.requisitos_pendientes : [])
+    if (notify) onStatusChange?.(res.estado_identidad || 'EN_REVISION')
+  }
+
   useEffect(() => {
     let active = true
+    setLoading(true)
     api<VerificationDocsResponse>('/technicians/me/verification-documents', user)
-      .then((res) => {
-        if (!active) return
-        const docs = Array.isArray(res.documentos) ? res.documentos : []
-        const uploaded = docs.length > 0
-
-        // Guardar tipos de documentos ya cargados
-        const loadedTypes = new Set(docs.map((d) => d.tipo))
-        setExistingDocTypes(loadedTypes)
-
-        setHasUploadedDocs(uploaded)
-        setStatus(res.estado_verificacion || 'NO_VERIFICADO')
-        setObservacionesGenerales(res.observaciones ?? null)
-        setMotivoRestriccion(res.motivo_restriccion ?? null)
-        setRequisitosPendientes(Array.isArray(res.requisitos_pendientes) ? res.requisitos_pendientes : [])
-      })
-      .catch(() => {
-        if (!active) return
-        setHasUploadedDocs(false)
-        setStatus(initialStatus)
-      })
+      .then(res => { if (active) applyResponse(res) })
+      .catch(err => { if (active) setLoadError(errorMessage(err)) })
+      .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [user, initialStatus])
+  }, [user, initialStatus, attempt])
+
+  async function retryIdentity() {
+    if (busy || !requestId) return
+    setBusy(true)
+    setFormError('')
+    try {
+      const result = await api<VerificationDocsResponse>('/technicians/me/identity-verification', user, { solicitud_id: requestId })
+      applyResponse(result, true)
+    } catch (err) { setFormError(errorMessage(err)) }
+    finally { setBusy(false) }
+  }
 
   // Manejo de previews para imágenes de DNI
   useEffect(() => {
@@ -188,6 +208,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (busy) return
     setFormError('')
     setNotice('')
 
@@ -236,11 +257,12 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
         throw new Error(errorData.detail || 'Error al enviar la solicitud de verificación.')
       }
 
-      const data = await response.json()
-      setStatus(data.estado_verificacion || 'EN_REVISION')
-      setHasUploadedDocs(true)
-      onStatusChange?.(data.estado_verificacion || 'EN_REVISION')
-      setNotice('Documentos enviados correctamente. Tu solicitud ha pasado a estado En revisión.')
+      const data: VerificationDocsResponse = await response.json()
+      applyResponse(data, true)
+      setDniFrontal(null); setDniReverso(null); setSelfie(null)
+      setAntecedentesPoliciales(null); setAntecedentesPenales(null)
+      setFechaPoliciales(''); setFechaPenales(''); setFieldErrors({})
+      setNotice('Documentos enviados correctamente. Consulta el resultado de identidad y las observaciones de tu expediente.')
     } catch (err) {
       setFormError(errorMessage(err))
     } finally {
@@ -248,8 +270,15 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
     }
   }
 
+  if (loading) return <LoadingState variant="inline" message="Consultando tu expediente técnico." />
+
+  if (loadError) return <div><p className="alert" role="alert">No pudimos consultar tus documentos: {loadError}</p><Button type="button" className="button-outline" style={{ width: 'auto' }} onClick={() => setAttempt(value => value + 1)}>Reintentar carga del expediente</Button></div>
+  const identityApproved = ['DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE'].every(type => documents.some(doc => doc.tipo === type && doc.estado === 'APROBADO'))
+  const incompleteDossier = ['DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE', 'ANTECEDENTES_POLICIALES', 'ANTECEDENTES_PENALES'].some(type => !documents.some(doc => doc.tipo === type))
+  const awaitingReview = status === 'EN_REVISION' && !incompleteDossier
   return (
     <div>
+      <Button type="button" className="button-outline" style={{ width: 'auto', marginBottom: 16 }} disabled={busy} onClick={() => setAttempt(value => value + 1)}>Actualizar estado de documentos</Button>
       {/* Alerta de éxito */}
       {notice && (
         <div className="success-alert" role="status" style={{ marginBottom: '1.5rem' }}>
@@ -265,6 +294,14 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
           {formError}
         </div>
       )}
+
+      {documents.length > 0 && <section className="account-card" style={{ marginBottom: 24 }} aria-label="Resultado de identidad">
+        <h3>Evaluación de DNI y selfie</h3>
+        <p>{processing ? `${processing.estado}: ${processing.observacion}` : 'Todavía no hay un resultado de evaluación de identidad para esta versión.'}</p>
+        <p>{processing?.proceso_responsable === 'REVISION_ADMINISTRATIVA_IDENTIDAD' ? 'Este es el resultado de la revisión administrativa de tu identidad.' : processing?.proceso_responsable === 'IDENTIDAD_REUTILIZADA' ? 'Tu identidad aprobada se conserva al completar los antecedentes del perfil técnico.' : 'La evaluación automática acompaña la revisión administrativa de tus documentos y antecedentes.'}</p>
+        {requestId && (!processing || ['ERROR', 'INCIERTO'].includes(processing.estado)) && documents.every(doc => doc.estado === 'PENDIENTE') &&
+          <Button type="button" disabled={busy} onClick={retryIdentity} style={{ width: 'auto' }}>{busy ? 'Evaluando identidad…' : 'Reintentar evaluación'}</Button>}
+      </section>}
 
       {/* Tarjeta de estado de revisión */}
       <div style={{
@@ -286,7 +323,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
               Estado: {status === 'VERIFICADO' ? 'Verificado' : status === 'EN_REVISION' ? 'En revisión administrativa' : status === 'RECHAZADO' ? 'Rechazado (requiere reenvío)' : 'Documentación pendiente'}
             </div>
             <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: '0.9rem' }}>
-              {status === 'VERIFICADO' && '¡Felicidades! Tu cuenta está verificada y puedes recibir contrataciones activas.'}
+              {status === 'VERIFICADO' && 'Tu documentación y teléfono están verificados. Recibir contrataciones también depende de tu disponibilidad y de las restricciones de tu cuenta.'}
               {status === 'EN_REVISION' && 'Tus documentos personales y antecedentes están siendo revisados por administración.'}
               {status === 'RECHAZADO' && (observacionesGenerales || 'Uno o más documentos fueron rechazados. Por favor súbelos nuevamente con las correcciones.')}
               {status === 'RESTRINGIDO' && (motivoRestriccion || 'Se retiró temporalmente tu habilitación para nuevas contrataciones porque un requisito obligatorio venció o fue invalidado.')}
@@ -312,8 +349,16 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
         )}
       </div>
 
+      {documents.length > 0 && <section aria-label="Estados documentales" style={{ marginBottom: 24 }}>
+        <h3>Estado de tus documentos</h3>
+        <ul>{documents.map(doc => <li key={doc.id}>
+          <strong>{doc.tipo.replaceAll('_', ' ')}</strong>: {doc.estado}
+          {doc.observaciones && <p>{doc.observaciones}</p>}
+        </li>)}</ul>
+      </section>}
+
       {/* Si está en revisión o verificado, mostramos aviso informativo */}
-      {status === 'EN_REVISION' && (
+      {awaitingReview && (
         <div style={{ textAlign: 'center', padding: '2rem 1rem', border: '2px dashed #bfdbfe', borderRadius: 12, background: '#f8fafc' }}>
           <Clock3 size={38} color="#2563eb" style={{ margin: '0 auto 12px' }} />
           <h3 style={{ margin: '0 0 8px' }}>Solicitud en proceso de revisión</h3>
@@ -342,8 +387,10 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
       )}
 
       {/* Formulario activo (si está pendiente, no verificado o rechazado) */}
-      {(status === 'NO_VERIFICADO' || status === 'PENDIENTE' || status === 'RECHAZADO') && (
+      {(status === 'NO_VERIFICADO' || status === 'PENDIENTE' || status === 'RECHAZADO' || (status === 'EN_REVISION' && incompleteDossier)) && (
         <form onSubmit={handleSubmit} noValidate>
+          {identityApproved && <p className="success-alert" role="status">Tu DNI y selfie ya están aprobados. Se conservarán; completa únicamente los antecedentes pendientes.</p>}
+          {!identityApproved && <>
           {/* SECCIÓN 1: DNI (CA-01) */}
           <div style={{ marginBottom: '2rem' }}>
             <h3 style={{ fontSize: '1.2rem', margin: '0 0 0.5rem', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -426,6 +473,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
             )}
           </div>
 
+          </>}
           {/* SECCIÓN 3: ANTECEDENTES POLICIALES Y PENALES (CA-03, ST-04) */}
           <div style={{ marginBottom: '2.5rem' }}>
             <h3 style={{ fontSize: '1.2rem', margin: '0 0 0.5rem', display: 'flex', alignItems: 'center', gap: 8 }}>

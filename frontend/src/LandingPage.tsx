@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, Banknote, Check, ChevronDown, Hammer, House, MapPin, PaintRoller, ShieldCheck, Snowflake, Users, Wrench, Zap, Droplets } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Brand } from './components/ui'
+import AccountMenu from './components/AccountMenu'
 import technicianPhoto from './assets/technician.jpg'
 import './landing.css'
 
@@ -30,8 +31,8 @@ export default function LandingPage({ authenticated = false }: { authenticated?:
       </nav>
       <Brand />
       <div className="landing-header-actions">
-        <Link className="landing-login" to={authenticated ? '/mi-cuenta' : '/ingresar'}>{authenticated ? 'Mi cuenta' : 'Iniciar sesión'}</Link>
-        <Link className="landing-button landing-button--small" to={clientPath}>{authenticated ? 'Ir a mi espacio' : 'Crear cuenta'}<ArrowUpRight size={16} aria-hidden="true" /></Link>
+        {!authenticated && <Link className="landing-login" to="/ingresar">Iniciar sesión</Link>}
+        {authenticated ? <AccountMenu accountHref="/mi-cuenta" accountLabel="Mi cuenta" /> : <Link className="landing-button landing-button--small" to={clientPath}>{authenticated ? 'Ir a mi espacio' : 'Crear cuenta'}<ArrowUpRight size={16} aria-hidden="true" /></Link>}
       </div>
     </header>
 
