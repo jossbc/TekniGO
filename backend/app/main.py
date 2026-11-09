@@ -16,6 +16,7 @@ from app.permissions import router as permissions_router
 from app.phone_verification import router as phone_verification_router
 from app.admin_verification import router as admin_verification_router
 from app.direct_requests_router import router as direct_requests_router
+from app.client_requests import router as client_requests_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,6 +41,7 @@ app.include_router(permissions_router)
 app.include_router(phone_verification_router)
 app.include_router(admin_verification_router)
 app.include_router(direct_requests_router)
+app.include_router(client_requests_router)
 
 @app.get("/health")
 def health():
