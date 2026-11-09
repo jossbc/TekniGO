@@ -6,6 +6,7 @@ import { api, errorMessage } from "./lib/api";
 import type { CatalogTechnician } from "./components/TechnicianCard";
 import type { CoverageZone } from "./CoverageZoneSelector";
 import LoadingState from "./components/LoadingState";
+import { DirectRequestForm } from "./components/DirectRequestForm";
 
 type PublicService = {
   id: string;
@@ -24,9 +25,12 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // Estados para controlar la visibilidad del formulario (HU-20)
+  const [showForm, setShowForm] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>("");
+
   const fetchProfile = useCallback(() => {
     setLoading(true);
-    // ST-04: Conectando con el endpoint específico del perfil
     api<TechnicianProfileData>(`/technicians/profile/${id}`, user)
       .then((data) => {
         setTechnician(data);
@@ -44,8 +48,7 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
     fetchProfile();
   }, [fetchProfile]);
 
-  if (loading)
-    return <LoadingState variant="screen" message="Cargando perfil del técnico." />;
+  if (loading) return <LoadingState variant="screen" message="Cargando perfil del técnico." />;
   if (error || !technician)
     return (
       <main className="account" style={{ margin: "0 auto 90px", padding: "3rem", color: "red", textAlign: "center" }}>
@@ -61,7 +64,7 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
         <ArrowLeft size={20} /> Volver al catálogo
       </Link>
 
-      <div className="account-card" style={{ padding: "2.5rem" }}>
+      <div className="account-card" style={{ padding: "2.5rem", position: "relative" }}>
         {/* Encabezado Principal */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "2.5rem", borderBottom: "1px solid #f3f4f6", paddingBottom: "2rem" }}>
           <div>
@@ -88,12 +91,16 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
         </div>
 
         <section className="public-profile-coverage" aria-labelledby="public-profile-coverage-title">
-          <h2 id="public-profile-coverage-title"><MapPin size={24} aria-hidden="true" /> Zonas de cobertura</h2>
+          <h2 id="public-profile-coverage-title">
+            <MapPin size={24} aria-hidden="true" /> Zonas de cobertura
+          </h2>
           {coverageZones?.length ? (
             <ul>
               {coverageZones.map(({ departamento, municipio, sector }) => (
                 <li key={JSON.stringify([departamento, municipio, sector])}>
-                  <strong>{municipio}, {departamento}</strong>
+                  <strong>
+                    {municipio}, {departamento}
+                  </strong>
                   <span>{sector}</span>
                 </li>
               ))}
@@ -111,9 +118,22 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           {technician.servicios.length > 0 ? (
             <div style={{ display: "grid", gap: "1rem" }}>
               {technician.servicios.map((servicio) => (
-                <div key={servicio.id} style={{ padding: "1.5rem", border: "1px solid #e5e7eb", borderRadius: "0.75rem", background: "#fff" }}>
-                  <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem" }}>{servicio.nombre}</h3>
-                  <p style={{ margin: 0, color: "#4b5563", lineHeight: 1.5 }}>{servicio.descripcion}</p>
+                <div key={servicio.id} style={{ padding: "1.5rem", border: "1px solid #e5e7eb", borderRadius: "0.75rem", background: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <h3 style={{ margin: "0 0 0.5rem 0", fontSize: "1.1rem" }}>{servicio.nombre}</h3>
+                    <p style={{ margin: 0, color: "#4b5563", lineHeight: 1.5 }}>{servicio.descripcion}</p>
+                  </div>
+                  {/* Botón Solicitar Servicio (HU-20) */}
+                  <button
+                    onClick={() => {
+                      setSelectedServiceId(servicio.id);
+                      setShowForm(true);
+                    }}
+                    className="button"
+                    style={{ padding: "0.5rem 1.5rem", fontSize: "0.95rem", marginLeft: "1rem" }}
+                  >
+                    Solicitar
+                  </button>
                 </div>
               ))}
             </div>
@@ -132,12 +152,36 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           </div>
         </section>
 
-        {/* Botón de Contratación */}
-        <div style={{ marginTop: "3rem", textAlign: "center" }}>
-          <button className="button" style={{ padding: "1.2rem 4rem", fontSize: "1.2rem" }}>
-            Solicitar Contratación
-          </button>
-        </div>
+        {/* Modal de Solicitud Directa superpuesto */}
+        {showForm && id && (
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: "rgba(0,0,0,0.5)",
+              zIndex: 1000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "1rem",
+            }}
+          >
+            <div style={{ maxHeight: "90vh", overflowY: "auto", width: "100%", maxWidth: "500px", background: "white", borderRadius: "0.5rem" }}>
+              <DirectRequestForm
+                tecnicoId={id}
+                servicioId={selectedServiceId}
+                onSuccess={() => {
+                  setShowForm(false);
+                  alert("¡Solicitud enviada exitosamente al técnico!");
+                }}
+                onCancel={() => setShowForm(false)}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON, Column, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -172,3 +172,34 @@ class CoverageZone(Base):
     departamento: Mapped[str] = mapped_column(String(50), nullable=False)
     municipio: Mapped[str] = mapped_column(String(50),nullable=False)
     sector: Mapped[str] = mapped_column(String(100),nullable=False)
+
+
+class DirectRequest(Base):
+    __tablename__ = 'solicitudes_directas'
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    cliente_id = Column(String, ForeignKey('usuarios.firebase_uid'), nullable=False)
+    tecnico_id = Column(String, ForeignKey('usuarios.firebase_uid'), nullable=False)
+    servicio_id = Column(String, ForeignKey('servicios.id'), nullable=False)
+
+    # Ubicación y Detalles
+    municipio = Column(String, nullable=False)
+    sector = Column(String, nullable=False)
+    direccion_exacta = Column(String, nullable=False)
+    fecha_hora = Column(DateTime(timezone=True), nullable=False)
+    descripcion = Column(Text, nullable=False)
+
+    # Presupuesto (HU-21 y HU-20)
+    cantidad = Column(Numeric(10, 2), nullable=False)
+    tarifa_aplicada = Column(Numeric(10, 2), nullable=False)
+    unidad_cobro = Column(String, nullable=False)
+    monto_base = Column(Numeric(10, 2), nullable=False)
+    metodo_pago = Column(String, nullable=False) # 'efectivo' o 'tarjeta'
+
+    estado = Column(String, nullable=False, default="Pendiente") # Pendiente, Aceptada, Rechazada, Cancelada, Completada
+    creada_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # Relaciones para facilitar consultas en SQLAlchemy
+    cliente = relationship("User", foreign_keys=[cliente_id])
+    tecnico = relationship("User", foreign_keys=[tecnico_id])
+    servicio = relationship("Service", foreign_keys=[servicio_id])
