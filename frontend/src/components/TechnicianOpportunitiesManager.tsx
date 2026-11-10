@@ -18,6 +18,7 @@ import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
 import { formatLempiras } from "../lib/clientRequests";
 import {
+  acceptPublishedBudgetApi,
   discardOpportunityApi,
   fetchMyTechnicianCoverageZones,
   fetchMyTechnicianSpecialties,
@@ -161,6 +162,7 @@ export default function TechnicianOpportunitiesManager({
   const [detail, setDetail] = useState<TechnicianOpportunityItem | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [acceptingBudgetId, setAcceptingBudgetId] = useState("");
 
   useEffect(() => {
     setSelectedId(initialRequestId);
@@ -274,7 +276,7 @@ export default function TechnicianOpportunitiesManager({
   }
 
   async function handleDiscard(solicitudId: string, fromModal = false) {
-    if (discardingId) return;
+    if (discardingId || acceptingBudgetId) return;
     setDiscardingId(solicitudId);
     setListError("");
     setDetailError("");
@@ -294,6 +296,33 @@ export default function TechnicianOpportunitiesManager({
       }
     } finally {
       setDiscardingId("");
+    }
+  }
+
+  async function handleAcceptBudget(solicitudId: string, fromModal = false) {
+    if (acceptingBudgetId || discardingId) return;
+    setAcceptingBudgetId(solicitudId);
+    setListError("");
+    setDetailError("");
+    setListNotice("");
+    try {
+      const response = await acceptPublishedBudgetApi(user, solicitudId);
+      setListNotice(
+        response.mensaje ||
+          "Propuesta enviada por el monto publicado. Queda pendiente de decisión del cliente.",
+      );
+      if (response.solicitud && selectedId === solicitudId) {
+        setDetail(response.solicitud);
+      }
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      if (fromModal) {
+        setDetailError(errorMessage(err));
+      } else {
+        setListError(errorMessage(err));
+      }
+    } finally {
+      setAcceptingBudgetId("");
     }
   }
 
@@ -446,6 +475,11 @@ export default function TechnicianOpportunitiesManager({
                       {item.especialidad?.nombre || "Especialidad"}
                     </span>
                     <OpportunityStateBadge estado={item.estado} />
+                    {item.mi_propuesta && (
+                      <span className="request-status-badge request-status-pendiente">
+                        Propuesta enviada · Pendiente de decisión
+                      </span>
+                    )}
                   </div>
 
                   <h3>{item.especialidad?.nombre || "Solicitud abierta"}</h3>
@@ -472,6 +506,22 @@ export default function TechnicianOpportunitiesManager({
                   </div>
 
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {!item.mi_propuesta ? (
+                      <Button
+                        type="button"
+                        disabled={acceptingBudgetId === item.id || discardingId === item.id}
+                        aria-label={`Aceptar presupuesto de ${item.especialidad?.nombre || "oportunidad"}`}
+                        onClick={() => handleAcceptBudget(item.id, false)}
+                      >
+                        <CheckCircle2 size={15} />
+                        {acceptingBudgetId === item.id ? "Enviando…" : "Aceptar presupuesto"}
+                      </Button>
+                    ) : (
+                      <Button type="button" className="button-outline" disabled>
+                        <CheckCircle2 size={15} />
+                        Propuesta enviada (Pendiente)
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       className="button-outline"
@@ -484,7 +534,7 @@ export default function TechnicianOpportunitiesManager({
                     <Button
                       type="button"
                       className="button-outline"
-                      disabled={discardingId === item.id}
+                      disabled={discardingId === item.id || acceptingBudgetId === item.id}
                       aria-label={`Descartar publicación de ${item.especialidad?.nombre || "oportunidad"}`}
                       onClick={() => handleDiscard(item.id, false)}
                     >
@@ -599,25 +649,64 @@ export default function TechnicianOpportunitiesManager({
               </section>
 
               <section className="client-request-box" aria-label="Acciones sobre la oportunidad">
-                <h3>Acciones sobre esta publicación</h3>
-                <div className="client-request-action-row">
-                  <div>
-                    <strong>Descartar de mi listado</strong>
-                    <p>
-                      Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
-                      técnicos.
-                    </p>
+                <h3>Postulación y acciones sobre esta publicación</h3>
+                <div className="client-request-actions">
+                  {detail.mi_propuesta ? (
+                    <div className="client-request-action-row" role="status">
+                      <div>
+                        <strong>Propuesta enviada · Pendiente de decisión del cliente</strong>
+                        <p>
+                          Te postulaste aceptando el monto de{" "}
+                          <strong>{formatLempiras(detail.mi_propuesta.monto)}</strong> el{" "}
+                          {formatDateTime(detail.mi_propuesta.creada_en)}. El trabajo no se adjudica
+                          automáticamente hasta que el cliente tome una decisión.
+                        </p>
+                      </div>
+                      <Button type="button" className="button-outline" style={{ width: "auto" }} disabled>
+                        <CheckCircle2 size={15} />
+                        Propuesta activa ({detail.mi_propuesta.estado})
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="client-request-action-row">
+                      <div>
+                        <strong>Aceptar monto publicado ({formatLempiras(detail.presupuesto)})</strong>
+                        <p>
+                          Envía tu propuesta por el presupuesto del cliente. Tu postulación quedará en estado
+                          pendiente de decisión sin adjudicar el trabajo automáticamente.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        style={{ width: "auto" }}
+                        disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
+                        onClick={() => handleAcceptBudget(detail.id, true)}
+                      >
+                        <CheckCircle2 size={15} />
+                        {acceptingBudgetId === detail.id ? "Enviando propuesta…" : "Aceptar monto publicado"}
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="client-request-action-row">
+                    <div>
+                      <strong>Descartar de mi listado</strong>
+                      <p>
+                        Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
+                        técnicos.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      className="button-outline"
+                      style={{ width: "auto" }}
+                      disabled={discardingId === detail.id || acceptingBudgetId === detail.id}
+                      onClick={() => handleDiscard(detail.id, true)}
+                    >
+                      <EyeOff size={15} />
+                      {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    className="button-outline"
-                    style={{ width: "auto" }}
-                    disabled={discardingId === detail.id}
-                    onClick={() => handleDiscard(detail.id, true)}
-                  >
-                    <EyeOff size={15} />
-                    {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
-                  </Button>
                 </div>
               </section>
             </section>

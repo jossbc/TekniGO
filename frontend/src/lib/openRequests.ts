@@ -95,6 +95,14 @@ export type TechnicianCoverageZoneItem = {
   sector: string;
 };
 
+export type TechnicianProposalSummary = {
+  id: string;
+  tipo: string;
+  monto: number;
+  estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | "CANCELADA" | "RETIRADA" | string;
+  creada_en: string | null;
+};
+
 export type TechnicianOpportunityItem = {
   id: string;
   solicitud_id: string;
@@ -116,6 +124,7 @@ export type TechnicianOpportunityItem = {
     telefono?: string | null;
   };
   ubicacion_exacta_protegida: boolean;
+  mi_propuesta?: TechnicianProposalSummary | null;
 };
 
 export type AvailableOpportunitiesQuery = {
@@ -184,6 +193,37 @@ export async function discardOpportunityApi(
 ): Promise<DiscardOpportunityResponse> {
   return api<DiscardOpportunityResponse>(
     `/open-requests/${encodeURIComponent(solicitudId)}/discard`,
+    user,
+    {},
+    "POST",
+  );
+}
+
+export type AcceptPublishedBudgetResponse = {
+  propuesta: {
+    id: string;
+    propuesta_id: string;
+    solicitud_id: string;
+    usuario_id: string;
+    tecnico_id: string;
+    tipo: string;
+    monto: number;
+    estado: string;
+    activa: boolean;
+    creada_en: string | null;
+  };
+  solicitud: TechnicianOpportunityItem;
+  estado_solicitud: string;
+  reintento_idempotente: boolean;
+  mensaje: string;
+};
+
+export async function acceptPublishedBudgetApi(
+  user: User,
+  solicitudId: string,
+): Promise<AcceptPublishedBudgetResponse> {
+  return api<AcceptPublishedBudgetResponse>(
+    `/open-requests/${encodeURIComponent(solicitudId)}/accept-budget`,
     user,
     {},
     "POST",

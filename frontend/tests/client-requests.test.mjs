@@ -238,3 +238,101 @@ test('ST-05: pending request shows only allowed cancel action and foreign reques
   assert.ok(foreignHtml.includes('No tienes permiso para consultar esta solicitud'))
   assert.ok(!foreignHtml.includes('Propuesta pactada'))
 })
+
+test('HU-28 ST-04 & ST-05 (CA-05): open request in CON OFERTAS state renders received technician proposals', () => {
+  mockPage = {
+    total: 1,
+    offset: 0,
+    limit: 10,
+    modalidad: 'ABIERTA',
+    estado: 'CON OFERTAS',
+    solicitudes: [
+      {
+        id: 'open-req-offers',
+        modalidad: 'ABIERTA',
+        estado: 'CON OFERTAS',
+        fecha_hora: '2026-11-18T15:00:00Z',
+        creada_en: '2026-11-10T10:00:00Z',
+        presupuesto: 1050,
+        monto_base: 1050,
+        cantidad: null,
+        tarifa_aplicada: null,
+        unidad_cobro: null,
+        metodo_pago: 'efectivo',
+        municipio: 'Distrito Central',
+        sector: 'Col. Palmira',
+        direccion_exacta: 'Casa 14',
+        descripcion: 'Reparación general de tubería',
+        servicio: null,
+        tecnico: null,
+      },
+    ],
+  }
+  mockSelectedId = 'open-req-offers'
+  mockDetailError = ''
+  mockDetail = {
+    ...mockPage.solicitudes[0],
+    propuesta: {
+      servicio_id: null,
+      servicio_nombre: 'Plomería',
+      cantidad: null,
+      tarifa_aplicada: null,
+      unidad_cobro: null,
+      monto_pactado: 1050,
+      metodo_pago: 'efectivo',
+    },
+    propuestas_recibidas: [
+      {
+        id: 'prop-a',
+        propuesta_id: 'prop-a',
+        solicitud_id: 'open-req-offers',
+        usuario_id: 'tech-uuid-a',
+        tecnico_id: 'tech-uid-a',
+        tipo: 'ACEPTACION_PRESUPUESTO',
+        monto: 1050,
+        justificacion: null,
+        estado: 'PENDIENTE',
+        activa: true,
+        creada_en: '2026-11-10T10:15:00Z',
+        tecnico: {
+          usuario_id: 'tech-uuid-a',
+          firebase_uid: 'tech-uid-a',
+          nombre_completo: 'Técnico Concurrente 1',
+          estado_verificacion: 'VERIFICADO',
+          calificacion_promedio: 4.9,
+        },
+      },
+      {
+        id: 'prop-b',
+        propuesta_id: 'prop-b',
+        solicitud_id: 'open-req-offers',
+        usuario_id: 'tech-uuid-b',
+        tecnico_id: 'tech-uid-b',
+        tipo: 'ACEPTACION_PRESUPUESTO',
+        monto: 1050,
+        justificacion: null,
+        estado: 'PENDIENTE',
+        activa: true,
+        creada_en: '2026-11-10T10:18:00Z',
+        tecnico: {
+          usuario_id: 'tech-uuid-b',
+          firebase_uid: 'tech-uid-b',
+          nombre_completo: 'Técnico Concurrente 2',
+          estado_verificacion: 'VERIFICADO',
+          calificacion_promedio: 4.7,
+        },
+      },
+    ],
+    linea_tiempo: [
+      { estado: 'PUBLICADA', descripcion: 'Solicitud publicada.', fecha: '2026-11-10T10:00:00Z' },
+      { estado: 'CON OFERTAS', descripcion: 'Propuestas recibidas.', fecha: '2026-11-10T10:15:00Z' },
+    ],
+    acciones_permitidas: ['CANCELAR'],
+  }
+
+  const html = renderManager()
+  assert.ok(html.includes('Propuestas recibidas (2)'))
+  assert.ok(html.includes('Técnico Concurrente 1'))
+  assert.ok(html.includes('Técnico Concurrente 2'))
+  assert.ok(html.includes('Con ofertas'))
+})
