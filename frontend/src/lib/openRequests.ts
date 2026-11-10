@@ -86,3 +86,106 @@ export async function fetchSuggestedRangeForSpecialty(
     return null;
   }
 }
+
+export type OpportunityStateFilter = "TODOS" | "PUBLICADA" | "CON_OFERTAS";
+
+export type TechnicianCoverageZoneItem = {
+  departamento: string;
+  municipio: string;
+  sector: string;
+};
+
+export type TechnicianOpportunityItem = {
+  id: string;
+  solicitud_id: string;
+  modalidad: "ABIERTA";
+  estado: string;
+  especialidad_id: string;
+  especialidad: { id: string; nombre: string | null };
+  descripcion: string;
+  municipio: string;
+  sector: string;
+  direccion_exacta?: string;
+  fecha_hora: string | null;
+  metodo_pago: string;
+  presupuesto: number;
+  monto_base: number;
+  creada_en: string | null;
+  cliente: {
+    nombre_completo: string | null;
+    telefono?: string | null;
+  };
+  ubicacion_exacta_protegida: boolean;
+};
+
+export type AvailableOpportunitiesQuery = {
+  especialidad_id?: string;
+  municipio?: string;
+  sector?: string;
+  estado?: OpportunityStateFilter;
+  offset?: number;
+  limit?: number;
+};
+
+export type AvailableOpportunitiesResponse = {
+  total: number;
+  offset: number;
+  limit: number;
+  filtros_aplicados?: {
+    especialidad_id: string | null;
+    municipio: string | null;
+    sector: string | null;
+    estado: string;
+  };
+  mensaje?: string | null;
+  solicitudes: TechnicianOpportunityItem[];
+};
+
+export type DiscardOpportunityResponse = {
+  solicitud_id: string;
+  descartada: boolean;
+  descartada_en: string | null;
+  estado_solicitud: string;
+  mensaje: string;
+};
+
+export async function fetchMyTechnicianSpecialties(user: User): Promise<SpecialtyOption[]> {
+  return api<SpecialtyOption[]>("/technicians/me/specialties", user);
+}
+
+export async function fetchMyTechnicianCoverageZones(user: User): Promise<TechnicianCoverageZoneItem[]> {
+  return api<TechnicianCoverageZoneItem[]>("/technicians/me/coverage-zones", user);
+}
+
+export async function listAvailableOpportunitiesApi(
+  user: User,
+  query: AvailableOpportunitiesQuery = {},
+): Promise<AvailableOpportunitiesResponse> {
+  const params = new URLSearchParams();
+  if (query.especialidad_id) params.set("especialidad_id", query.especialidad_id);
+  if (query.municipio) params.set("municipio", query.municipio);
+  if (query.sector) params.set("sector", query.sector);
+  if (query.estado) params.set("estado", query.estado);
+  params.set("offset", String(query.offset ?? 0));
+  params.set("limit", String(query.limit ?? 10));
+  return api<AvailableOpportunitiesResponse>(`/open-requests/available?${params.toString()}`, user);
+}
+
+export async function getOpportunityDetailApi(
+  user: User,
+  solicitudId: string,
+): Promise<TechnicianOpportunityItem> {
+  return api<TechnicianOpportunityItem>(`/open-requests/${encodeURIComponent(solicitudId)}`, user);
+}
+
+export async function discardOpportunityApi(
+  user: User,
+  solicitudId: string,
+): Promise<DiscardOpportunityResponse> {
+  return api<DiscardOpportunityResponse>(
+    `/open-requests/${encodeURIComponent(solicitudId)}/discard`,
+    user,
+    {},
+    "POST",
+  );
+}

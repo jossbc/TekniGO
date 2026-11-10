@@ -231,3 +231,38 @@ class OpenRequest(Base):
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
     especialidad = relationship("Specialty", foreign_keys=[especialidad_id])
+
+
+class DiscardedOpenRequest(Base):
+    __tablename__ = "solicitudes_abiertas_descartadas"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "solicitud_id", name="uq_solicitud_abierta_descartada_tecnico"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("perfiles_tecnicos.usuario_id"),
+        nullable=False,
+        index=True,
+    )
+    tecnico_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("usuarios.firebase_uid"),
+        nullable=False,
+        index=True,
+    )
+    solicitud_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("solicitudes_abiertas.id"),
+        nullable=False,
+        index=True,
+    )
+    descartada_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    solicitud = relationship("OpenRequest", foreign_keys=[solicitud_id])
+    tecnico = relationship("User", foreign_keys=[tecnico_id])

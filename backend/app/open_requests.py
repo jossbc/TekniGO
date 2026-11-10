@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import (
     CoverageZone,
+    DiscardedOpenRequest,
     IdentityDocument,
     OpenRequest,
     Service,
@@ -378,12 +379,50 @@ def _normalize_place(value: str | None) -> str:
     return " ".join((value or "").split()).lower()
 
 
-def require_eligible_technician_for_bidding(user: User, db: Session) -> TechnicianProfile:
-    """CA-04: Valida que el técnico esté activo, verificado, disponible y sin restricción operativa."""
-    if not any(role.rol == "TECNICO" for role in user.roles):
-        raise HTTPException(403, "Solo cuentas de técnico pueden consultar ofertas abiertas para postular")
+AVAILABLE_OPPORTUNITY_STATE_KEYS = {"PUBLICADA", "CON_OFERTAS"}
 
-    profile = db.get(TechnicianProfile, user.id)
+
+def _canonical_state_key(raw_estado: str | None) -> str:
+    tokens = (raw_estado or "").strip().upper().replace("-", " ").replace("_", " ").split()
+    return "_".join(tokens)
+
+
+def is_open_request_available_for_bidding(record: OpenRequest) -> bool:
+    """CA-01 y CA-02: Solo solicitudes Publicadas o Con ofertas y sin técnico adjudicado son oportunidades."""
+    if record.tecnico_id is not None:
+        return False
+    return _canonical_state_key(record.estado) in AVAILABLE_OPPORTUNITY_STATE_KEYS
+
+
+def _normalize_opportunity_state_filter(estado: str | None) -> str:
+    if estado is None or not estado.strip():
+        return "TODOS"
+    key = _canonical_state_key(estado)
+    if key == "TODOS":
+        return "TODOS"
+    if key in AVAILABLE_OPPORTUNITY_STATE_KEYS:
+        return key
+    raise HTTPException(
+        400,
+        "Estado de filtro inválido. Solo puedes consultar oportunidades en estado TODOS, PUBLICADA o CON_OFERTAS.",
+    )
+
+
+def require_eligible_technician_for_bidding(
+    user: User,
+    db: Session,
+    *,
+    proceso_responsable: str = "CONSULTA_LICITACIONES_ABIERTAS",
+) -> TechnicianProfile:
+    """CA-04 y Condición transversal: Re-evalúa en tiempo real que el técnico esté verificado, disponible, no suspendido y sin restricción de saldo."""
+    if not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "Solo cuentas de técnico pueden consultar ofertas abiertas o postular")
+
+    profile = db.scalar(
+        select(TechnicianProfile)
+        .where(TechnicianProfile.usuario_id == user.id)
+        .execution_options(populate_existing=True)
+    )
     if profile is None:
         raise HTTPException(404, "No se encontró tu perfil de técnico")
 
@@ -391,21 +430,72 @@ def require_eligible_technician_for_bidding(user: User, db: Session) -> Technici
         select(IdentityDocument.id).where(IdentityDocument.usuario_id == user.id).limit(1)
     )
     if has_docs is not None:
-        return require_operational_technician(user, db, proceso_responsable="CONSULTA_LICITACIONES_ABIERTAS")
+        return require_operational_technician(
+            user,
+            db,
+            proceso_responsable=proceso_responsable,
+        )
 
-    if user.estado_identidad != "VERIFICADO" or profile.estado_verificacion != "VERIFICADO":
-        raise HTTPException(403, "El técnico debe estar verificado para consultar ofertas abiertas")
-    if not user.telefono_verificado:
-        raise HTTPException(403, "Debes verificar tu número de teléfono para consultar ofertas abiertas")
-    if not profile.disponible:
-        raise HTTPException(403, "Debes estar en estado Disponible para ver ofertas abiertas")
-    if profile.suspendido:
-        raise HTTPException(403, "Tu perfil técnico presenta una suspensión activa")
+    if getattr(user, "suspendido", False) or profile.suspendido:
+        raise HTTPException(403, "Tu perfil técnico presenta una suspensión activa y no puede postular")
     if profile.restriccion_financiera:
-        raise HTTPException(403, "Tu perfil técnico presenta una restricción financiera activa")
+        raise HTTPException(403, "Tu perfil técnico presenta una restricción financiera activa por saldo")
+    if user.estado_identidad != "VERIFICADO" or profile.estado_verificacion != "VERIFICADO":
+        raise HTTPException(403, "El técnico debe estar verificado para consultar ofertas abiertas o postular")
+    if not user.telefono_verificado:
+        raise HTTPException(403, "Debes verificar tu número de teléfono para consultar ofertas abiertas o postular")
+    if not profile.disponible:
+        raise HTTPException(403, "Debes estar en estado Disponible para consultar ofertas o postular")
     if not is_operationally_enabled(user, profile):
         raise HTTPException(403, "Tu perfil técnico no está habilitado operativamente")
     return profile
+
+
+def require_eligible_technician_for_open_request_action(
+    solicitud_id: str,
+    claims: dict,
+    db: Session,
+    *,
+    proceso_responsable: str = "POSTULACION_LICITACION_ABIERTA",
+) -> tuple[User, TechnicianProfile, OpenRequest]:
+    """HU-27 ST-04 (CA-04): Validación operativa compartida que se repite al ejecutar cualquier acción o postulación."""
+    uid = claims.get("uid") if isinstance(claims, dict) else None
+    if not uid:
+        raise HTTPException(401, "Sesión inválida o expirada")
+
+    user = db.scalar(
+        select(User)
+        .where(User.firebase_uid == uid)
+        .execution_options(populate_existing=True)
+    )
+    if user is None:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+
+    profile = require_eligible_technician_for_bidding(
+        user,
+        db,
+        proceso_responsable=proceso_responsable,
+    )
+
+    clean_id = (solicitud_id or "").strip()
+    record = db.scalar(
+        select(OpenRequest)
+        .where(OpenRequest.id == clean_id)
+        .execution_options(populate_existing=True)
+    )
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta")
+
+    if (
+        not is_open_request_available_for_bidding(record)
+        or not is_technician_compatible_with_open_request(user.id, record, db)
+    ):
+        raise HTTPException(
+            403,
+            "Esta solicitud abierta no está disponible para tu especialidad o zona de cobertura",
+        )
+
+    return user, profile, record
 
 
 def _technician_compatible_specialty_ids(db: Session, usuario_id: uuid.UUID) -> set[str]:
@@ -420,6 +510,14 @@ def _technician_coverage_pairs(db: Session, usuario_id: uuid.UUID) -> set[tuple[
         select(CoverageZone).where(CoverageZone.usuario_id == usuario_id)
     ).all()
     return {(_normalize_place(z.municipio), _normalize_place(z.sector)) for z in zones}
+
+
+def _technician_discarded_request_ids(db: Session, usuario_id: uuid.UUID) -> set[str]:
+    """HU-27 ST-02 (CA-05): Obtiene los IDs de licitaciones descartadas personalmente por este técnico."""
+    rows = db.scalars(
+        select(DiscardedOpenRequest.solicitud_id).where(DiscardedOpenRequest.usuario_id == usuario_id)
+    ).all()
+    return {str(req_id) for req_id in rows}
 
 
 def is_technician_compatible_with_open_request(
@@ -496,10 +594,14 @@ def list_available_open_requests_for_technician(
     claims: dict,
     db: Session,
     *,
+    especialidad_id: uuid.UUID | str | None = None,
+    municipio: str | None = None,
+    sector: str | None = None,
+    estado: str | None = None,
     offset: int = 0,
     limit: int = 20,
 ) -> dict:
-    """HU-26 ST-04 (CA-03, CA-04): Lista solicitudes abiertas compatibles solo para técnicos elegibles."""
+    """HU-26 ST-04 y HU-27 ST-01 (CA-01 a CA-04, CA-06): Consulta oportunidades por cobertura, oficio y estado."""
     if offset < 0:
         raise HTTPException(400, "El parámetro offset no puede ser negativo")
     if limit < 1 or limit > 100:
@@ -515,30 +617,95 @@ def list_available_open_requests_for_technician(
 
     require_eligible_technician_for_bidding(user, db)
 
+    state_filter = _normalize_opportunity_state_filter(estado)
+    spec_filter_str: str | None = None
+    if especialidad_id is not None and str(especialidad_id).strip():
+        try:
+            spec_filter_str = str(uuid.UUID(str(especialidad_id).strip()))
+        except ValueError:
+            raise HTTPException(400, "El filtro especialidad_id no es un UUID válido") from None
+
+    municipio_clean = " ".join((municipio or "").split()) if municipio and municipio.strip() else None
+    sector_clean = " ".join((sector or "").split()) if sector and sector.strip() else None
+    norm_municipio = _normalize_place(municipio_clean) if municipio_clean else None
+    norm_sector = _normalize_place(sector_clean) if sector_clean else None
+
+    applied_filters = {
+        "especialidad_id": spec_filter_str,
+        "municipio": municipio_clean,
+        "sector": sector_clean,
+        "estado": state_filter,
+    }
+
     compatible_specs = _technician_compatible_specialty_ids(db, user.id)
     coverage_pairs = _technician_coverage_pairs(db, user.id)
     if not compatible_specs or not coverage_pairs:
-        return {"total": 0, "offset": offset, "limit": limit, "solicitudes": []}
+        return {
+            "total": 0,
+            "offset": offset,
+            "limit": limit,
+            "filtros_aplicados": applied_filters,
+            "mensaje": "No se encontraron oportunidades disponibles para tu especialidad o zona. Revisa tus filtros o cobertura.",
+            "solicitudes": [],
+        }
 
-    published_rows = db.scalars(
+    # CA-02: Solo se puede consultar dentro de las especialidades compatibles del técnico
+    target_specs = compatible_specs
+    if spec_filter_str is not None:
+        if spec_filter_str not in compatible_specs:
+            return {
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "filtros_aplicados": applied_filters,
+                "mensaje": "No se encontraron oportunidades disponibles con los filtros seleccionados. Revisa o ajusta los filtros.",
+                "solicitudes": [],
+            }
+        target_specs = {spec_filter_str}
+
+    candidate_rows = db.scalars(
         select(OpenRequest)
-        .where(OpenRequest.Speciality_filter if hasattr(OpenRequest, "Speciality_filter") else OpenRequest.especialidad_id.in_(compatible_specs))
+        .where(OpenRequest.especialidad_id.in_(target_specs))
         .order_by(OpenRequest.creada_en.desc(), OpenRequest.id.desc())
     ).all()
 
-    matching = [
-        row
-        for row in published_rows
-        if (row.estado or "").strip().upper() == "PUBLICADA"
-        and row.tecnico_id is None
-        and (_normalize_place(row.municipio), _normalize_place(row.sector)) in coverage_pairs
-    ]
+    discarded_ids = _technician_discarded_request_ids(db, user.id)
+
+    matching: list[OpenRequest] = []
+    for row in candidate_rows:
+        # CA-05: Ocultar las solicitudes descartadas personalmente por este técnico
+        if str(row.id) in discarded_ids:
+            continue
+        # CA-01 y CA-02: Solo Publicada o Con ofertas y sin técnico adjudicado
+        if not is_open_request_available_for_bidding(row):
+            continue
+        row_state_key = _canonical_state_key(row.estado)
+        if state_filter != "TODOS" and row_state_key != state_filter:
+            continue
+
+        row_muni = _normalize_place(row.municipio)
+        row_sector = _normalize_place(row.sector)
+        if (row_muni, row_sector) not in coverage_pairs:
+            continue
+        if norm_municipio is not None and row_muni != norm_municipio:
+            continue
+        if norm_sector is not None and row_sector != norm_sector:
+            continue
+
+        matching.append(row)
+
     total = len(matching)
     page_slice = matching[offset : offset + limit]
     return {
         "total": total,
         "offset": offset,
         "limit": limit,
+        "filtros_aplicados": applied_filters,
+        "mensaje": (
+            "No se encontraron oportunidades disponibles con los filtros seleccionados. Revisa o ajusta los filtros."
+            if total == 0
+            else None
+        ),
         "solicitudes": [
             serialize_open_request_for_technician(row, user, db)
             for row in page_slice
@@ -551,7 +718,7 @@ def get_open_request_for_viewer(
     claims: dict,
     db: Session,
 ) -> dict:
-    """HU-26 ST-04 (CA-03, CA-04): Detalle de solicitud abierta con control de elegibilidad y privacidad."""
+    """HU-26 ST-04 y HU-27 ST-01 (CA-01 a CA-04): Detalle de solicitud abierta con control de elegibilidad y privacidad."""
     uid = claims.get("uid") if isinstance(claims, dict) else None
     if not uid:
         raise HTTPException(401, "Sesión inválida o expirada")
@@ -585,9 +752,12 @@ def get_open_request_for_viewer(
     if record.tecnico_id == user.firebase_uid and estado_norm in {"ACEPTADA", "COMPLETADA"}:
         return serialize_open_request_for_technician(record, user, db)
 
-    # 4. Técnico postulante: solo puede ver solicitudes en estado PUBLICADA si es elegible y compatible
+    # 4. Técnico postulante: solo puede ver solicitudes en estado PUBLICADA o CON OFERTAS sin adjudicar si es elegible y compatible
     require_eligible_technician_for_bidding(user, db)
-    if estado_norm != "PUBLICADA" or not is_technician_compatible_with_open_request(user.id, record, db):
+    if (
+        not is_open_request_available_for_bidding(record)
+        or not is_technician_compatible_with_open_request(user.id, record, db)
+    ):
         raise HTTPException(
             403,
             "Esta solicitud abierta no está disponible para tu especialidad o zona de cobertura",
@@ -599,13 +769,26 @@ def get_open_request_for_viewer(
 @router.get("/available")
 def list_available_open_requests_endpoint(
     response: Response,
+    especialidad_id: uuid.UUID | None = Query(None, description="Filtrar por oficio/especialidad compatible"),
+    municipio: str | None = Query(None, description="Filtrar por municipio dentro de tu cobertura"),
+    sector: str | None = Query(None, description="Filtrar por sector dentro de tu cobertura"),
+    estado: str | None = Query("TODOS", description="Filtrar por estado: TODOS, PUBLICADA o CON_OFERTAS"),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return list_available_open_requests_for_technician(claims, db, offset=offset, limit=limit)
+    return list_available_open_requests_for_technician(
+        claims,
+        db,
+        especialidad_id=especialidad_id,
+        municipio=municipio,
+        sector=sector,
+        estado=estado,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/{solicitud_id}")
@@ -617,3 +800,91 @@ def get_open_request_detail_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return get_open_request_for_viewer(solicitud_id, claims, db)
+
+
+def discard_open_request_for_technician(
+    solicitud_id: str,
+    claims: dict,
+    db: Session,
+) -> dict:
+    """HU-27 ST-02 y ST-04 (CA-04, CA-05): Descarta una publicación del listado personal del técnico repitiendo la validación operativa."""
+    user, _, record = require_eligible_technician_for_open_request_action(
+        solicitud_id,
+        claims,
+        db,
+        proceso_responsable="DESCARTE_LICITACION_ABIERTA",
+    )
+
+    existing = db.scalar(
+        select(DiscardedOpenRequest).where(
+            DiscardedOpenRequest.usuario_id == user.id,
+            DiscardedOpenRequest.solicitud_id == str(record.id),
+        )
+    )
+    if existing is None:
+        existing = DiscardedOpenRequest(
+            id=str(uuid.uuid4()),
+            usuario_id=user.id,
+            tecnico_id=user.firebase_uid,
+            solicitud_id=str(record.id),
+            descartada_en=datetime.now(timezone.utc),
+        )
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+
+    return {
+        "solicitud_id": str(record.id),
+        "descartada": True,
+        "descartada_en": existing.descartada_en.isoformat() if existing.descartada_en else None,
+        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "mensaje": "Publicación descartada de tu listado personal",
+    }
+
+
+@router.post("/{solicitud_id}/discard")
+def discard_open_request_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return discard_open_request_for_technician(solicitud_id, claims, db)
+
+
+def validate_technician_can_bid_on_open_request(
+    solicitud_id: str,
+    claims: dict,
+    db: Session,
+) -> dict:
+    """HU-27 ST-04 (CA-04): Valida en tiempo real si el técnico puede postular a la solicitud abierta."""
+    user, profile, record = require_eligible_technician_for_open_request_action(
+        solicitud_id,
+        claims,
+        db,
+        proceso_responsable="POSTULACION_LICITACION_ABIERTA",
+    )
+    return {
+        "solicitud_id": str(record.id),
+        "tecnico_id": user.firebase_uid,
+        "usuario_id": str(user.id),
+        "elegible_para_postular": True,
+        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "disponible": bool(profile.disponible),
+        "estado_verificacion": profile.estado_verificacion,
+        "suspendido": bool(profile.suspendido),
+        "restriccion_financiera": bool(profile.restriccion_financiera),
+    }
+
+
+@router.get("/{solicitud_id}/bidding-eligibility")
+@router.post("/{solicitud_id}/bids/validate")
+def validate_bidding_eligibility_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return validate_technician_can_bid_on_open_request(solicitud_id, claims, db)
