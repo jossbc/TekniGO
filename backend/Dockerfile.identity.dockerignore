@@ -1,0 +1,8 @@
+*
+!requirements-identity-docker.txt
+!app/
+app/*
+!app/identity_service.py
+!app/python_identity.py
+!app/identity_worker.py
+!app/identity_text.py

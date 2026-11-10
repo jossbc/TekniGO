@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.env
+.env.*
+*.log.
+venv-*/
+.identity_models/
+.test-temp/

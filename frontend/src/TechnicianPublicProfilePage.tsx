@@ -152,35 +152,17 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           </div>
         </section>
 
-        {/* Modal de Solicitud Directa superpuesto */}
         {showForm && id && (
-          <div
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: "rgba(0,0,0,0.5)",
-              zIndex: 1000,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "1rem",
+          <DirectRequestForm
+            tecnicoId={technician.usuario_id}
+            coverageZones={coverageZones ?? []}
+            servicioId={selectedServiceId}
+            onSuccess={() => {
+              setShowForm(false);
+              alert("¡Solicitud enviada exitosamente al técnico!");
             }}
-          >
-            <div style={{ maxHeight: "90vh", overflowY: "auto", width: "100%", maxWidth: "500px", background: "white", borderRadius: "0.5rem" }}>
-              <DirectRequestForm
-                tecnicoId={id}
-                servicioId={selectedServiceId}
-                onSuccess={() => {
-                  setShowForm(false);
-                  alert("¡Solicitud enviada exitosamente al técnico!");
-                }}
-                onCancel={() => setShowForm(false)}
-              />
-            </div>
-          </div>
+            onCancel={() => setShowForm(false)}
+          />
         )}
       </div>
     </main>

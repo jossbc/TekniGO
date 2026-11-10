@@ -1,0 +1,20 @@
+FROM python:3.13-slim-bookworm
+
+WORKDIR /app
+ENV IDENTITY_PYTHON=/usr/local/bin/python \
+    PYTHONDONTWRITEBYTECODE=1 \
+    OPENCV_IO_MAX_IMAGE_PIXELS=25000000
+
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home identity \
+    && mkdir /app/.identity_models && chown identity:identity /app/.identity_models
+
+COPY requirements-identity-docker.txt .
+RUN pip install --no-cache-dir -r requirements-identity-docker.txt && pip check
+
+COPY app/identity_service.py app/python_identity.py app/identity_worker.py app/identity_text.py ./app/
+USER identity
+RUN python -m app.identity_worker --prepare --debug
+
+CMD ["uvicorn", "app.identity_service:app", "--host", "0.0.0.0", "--port", "8001", "--limit-concurrency", "4", "--no-access-log"]
