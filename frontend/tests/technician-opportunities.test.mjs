@@ -163,3 +163,58 @@ test('HU-27 ST-04 & ST-05 (CA-04, CA-05): discard notice and operational restric
   assert.ok(html.includes('Publicación descartada de tu listado personal'))
   assert.ok(html.includes('Debes estar en estado Disponible para consultar ofertas o postular'))
 })
+
+test('HU-28 ST-03 (CA-01, CA-02, CA-04): renders accept budget action and transitions to pending proposal response state without duplicate active bid action', () => {
+  const withoutProposal = {
+    id: 'opp-208',
+    solicitud_id: 'opp-208',
+    modalidad: 'ABIERTA',
+    estado: 'PUBLICADA',
+    especialidad_id: 'spec-plomeria',
+    especialidad: { id: 'spec-plomeria', nombre: 'Plomería' },
+    descripcion: 'Cambio de llave mezcladora',
+    municipio: 'Distrito Central',
+    sector: 'Col. Palmira',
+    fecha_hora: '2026-11-20T15:00:00Z',
+    metodo_pago: 'efectivo',
+    presupuesto: 650,
+    monto_base: 650,
+    creada_en: '2026-11-10T09:00:00Z',
+    cliente: { nombre_completo: 'Ana Cliente' },
+    ubicacion_exacta_protegida: true,
+    mi_propuesta: null,
+  }
+
+  mockEspecialidadId = ''
+  mockEstado = 'TODOS'
+  mockListError = ''
+  mockListNotice = ''
+  mockPage = { total: 1, offset: 0, limit: 10, solicitudes: [withoutProposal] }
+  mockSelectedId = 'opp-208'
+  mockDetail = withoutProposal
+  mockDetailError = ''
+
+  const beforeHtml = renderOpportunities()
+  assert.ok(beforeHtml.includes('Aceptar presupuesto'))
+  assert.ok(beforeHtml.includes('Aceptar monto publicado'))
+
+  const withProposal = {
+    ...withoutProposal,
+    estado: 'CON OFERTAS',
+    mi_propuesta: {
+      id: 'prop-1',
+      tipo: 'ACEPTACION_PRESUPUESTO',
+      monto: 650,
+      estado: 'PENDIENTE',
+      creada_en: '2026-11-10T10:00:00Z',
+    },
+  }
+  mockPage = { total: 1, offset: 0, limit: 10, solicitudes: [withProposal] }
+  mockDetail = withProposal
+
+  const afterHtml = renderOpportunities()
+  assert.ok(afterHtml.includes('Propuesta enviada · Pendiente de decisión'))
+  assert.ok(afterHtml.includes('Propuesta enviada (Pendiente)'))
+  assert.ok(afterHtml.includes('Propuesta activa (PENDIENTE)'))
+  assert.ok(afterHtml.includes('El trabajo no se adjudica automáticamente'))
+})

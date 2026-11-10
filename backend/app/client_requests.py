@@ -20,6 +20,8 @@ ALLOWED_MODALIDADES = {"TODOS", "DIRECTA", "ABIERTA"}
 ALLOWED_ESTADOS = {
     "TODOS",
     "PUBLICADA",
+    "CON OFERTAS",
+    "CON_OFERTAS",
     "PENDIENTE",
     "ACEPTADA",
     "RECHAZADA",
@@ -29,6 +31,8 @@ ALLOWED_ESTADOS = {
 
 STATE_TIMELINE_DESCRIPTIONS = {
     "PUBLICADA": "Solicitud abierta publicada y disponible para recibir propuestas.",
+    "CON OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
+    "CON_OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
     "PENDIENTE": "Solicitud registrada y pendiente de respuesta.",
     "ACEPTADA": "Propuesta aceptada y trabajo programado con el técnico.",
     "RECHAZADA": "Solicitud rechazada por el técnico.",
@@ -38,6 +42,8 @@ STATE_TIMELINE_DESCRIPTIONS = {
 
 ALLOWED_ACTIONS_BY_STATE: dict[str, list[str]] = {
     "PUBLICADA": ["CANCELAR"],
+    "CON OFERTAS": ["CANCELAR"],
+    "CON_OFERTAS": ["CANCELAR"],
     "PENDIENTE": ["CANCELAR"],
     "ACEPTADA": ["CANCELAR", "COMPLETAR"],
     "RECHAZADA": [],
@@ -432,6 +438,22 @@ def get_client_request_detail(
     }
     summary["linea_tiempo"] = _build_request_timeline(record, estado_normalizado)
     summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
+
+    proposal_model = getattr(models, "OpenRequestProposal", None)
+    if modalidad == "ABIERTA" and proposal_model is not None:
+        from app.open_requests import get_open_request_events, serialize_open_request_proposal
+
+        proposals = db.scalars(
+            select(proposal_model)
+            .where(proposal_model.solicitud_id == str(record.id))
+            .order_by(proposal_model.creada_en.desc(), proposal_model.id.desc())
+        ).all()
+        summary["propuestas_recibidas"] = [serialize_open_request_proposal(p, db) for p in proposals]
+        summary["eventos"] = get_open_request_events(str(record.id))
+    else:
+        summary["propuestas_recibidas"] = []
+        summary["eventos"] = []
+
     return summary
 
 

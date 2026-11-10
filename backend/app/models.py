@@ -266,3 +266,65 @@ class DiscardedOpenRequest(Base):
 
     solicitud = relationship("OpenRequest", foreign_keys=[solicitud_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
+
+
+class OpenRequestProposal(Base):
+    __tablename__ = "propuestas_solicitudes_abiertas"
+    __table_args__ = (
+        UniqueConstraint("solicitud_id", "usuario_id", name="uq_propuesta_activa_por_tecnico_y_licitacion"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE', 'ACEPTADA', 'RECHAZADA', 'CANCELADA', 'RETIRADA')",
+            name="ck_propuesta_solicitud_abierta_estado",
+        ),
+        CheckConstraint("monto > 0", name="ck_propuesta_solicitud_abierta_monto"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    solicitud_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("solicitudes_abiertas.id"),
+        nullable=False,
+        index=True,
+    )
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("perfiles_tecnicos.usuario_id"),
+        nullable=False,
+        index=True,
+    )
+    tecnico_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("usuarios.firebase_uid"),
+        nullable=False,
+        index=True,
+    )
+    tipo: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="ACEPTACION_PRESUPUESTO",
+        server_default="ACEPTACION_PRESUPUESTO",
+    )
+    monto: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    justificacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estado: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="PENDIENTE",
+        server_default="PENDIENTE",
+    )
+    activa: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    actualizada_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    solicitud = relationship("OpenRequest", foreign_keys=[solicitud_id])
+    tecnico = relationship("User", foreign_keys=[tecnico_id])

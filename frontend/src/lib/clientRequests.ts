@@ -5,6 +5,7 @@ export type ModalidadFiltro = "TODOS" | "DIRECTA" | "ABIERTA";
 export type EstadoFiltro =
   | "TODOS"
   | "PUBLICADA"
+  | "CON OFERTAS"
   | "PENDIENTE"
   | "ACEPTADA"
   | "RECHAZADA"
@@ -61,10 +62,32 @@ export type ClientRequestTimelineItem = {
   fecha: string | null;
 };
 
+export type ReceivedOpenRequestProposal = {
+  id: string;
+  propuesta_id: string;
+  solicitud_id: string;
+  usuario_id: string;
+  tecnico_id: string;
+  tipo: string;
+  monto: number;
+  justificacion: string | null;
+  estado: string;
+  activa: boolean;
+  creada_en: string | null;
+  tecnico: {
+    usuario_id: string;
+    firebase_uid: string;
+    nombre_completo: string | null;
+    estado_verificacion: string | null;
+    calificacion_promedio: number | null;
+  };
+};
+
 export type ClientRequestDetail = ClientRequestSummary & {
   propuesta: ClientRequestProposal;
   linea_tiempo: ClientRequestTimelineItem[];
   acciones_permitidas: string[];
+  propuestas_recibidas?: ReceivedOpenRequestProposal[];
 };
 
 export type ClientRequestsPageResponse = {
@@ -85,6 +108,7 @@ export const MODALIDAD_OPTIONS: { value: ModalidadFiltro; label: string }[] = [
 export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
   { value: "TODOS", label: "Todos los estados" },
   { value: "PUBLICADA", label: "Publicada" },
+  { value: "CON OFERTAS", label: "Con ofertas" },
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "ACEPTADA", label: "Aceptada" },
   { value: "COMPLETADA", label: "Completada" },
@@ -95,6 +119,8 @@ export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
 export function formatRequestStateLabel(estado: string): string {
   const map: Record<string, string> = {
     PUBLICADA: "Publicada",
+    "CON OFERTAS": "Con ofertas",
+    CON_OFERTAS: "Con ofertas",
     PENDIENTE: "Pendiente",
     ACEPTADA: "Aceptada",
     RECHAZADA: "Rechazada",

@@ -524,6 +524,39 @@ export default function ClientRequestsManager({
                 )}
               </section>
 
+              {/* HU-28 CA-05: Propuestas recibidas en solicitudes abiertas */}
+              {detail.modalidad === "ABIERTA" && (
+                <section className="client-request-box" aria-label="Propuestas recibidas">
+                  <h3>Propuestas recibidas ({detail.propuestas_recibidas?.length || 0})</h3>
+                  {!detail.propuestas_recibidas || detail.propuestas_recibidas.length === 0 ? (
+                    <p>Aún no has recibido propuestas de técnicos para esta licitación.</p>
+                  ) : (
+                    <div className="client-requests-list">
+                      {detail.propuestas_recibidas.map((prop) => (
+                        <div key={prop.id} className="client-request-action-row">
+                          <div>
+                            <strong>{prop.tecnico?.nombre_completo || "Técnico verificado"}</strong>
+                            <p>
+                              Monto propuesto: <strong>{formatLempiras(prop.monto)}</strong> · Estado:{" "}
+                              <strong>{formatRequestStateLabel(prop.estado)}</strong> · Enviada:{" "}
+                              {formatDateTime(prop.creada_en)}
+                            </p>
+                          </div>
+                          {prop.tecnico?.usuario_id && (
+                            <Link
+                              className="client-request-tech-link"
+                              to={`/tecnicos/${prop.tecnico.usuario_id}`}
+                            >
+                              Ver perfil <ArrowUpRight size={14} />
+                            </Link>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+
               {/* CA-03: Línea de tiempo de cambios */}
               <section className="client-request-box" aria-label="Línea de tiempo de cambios">
                 <h3>Línea de tiempo de cambios</h3>
