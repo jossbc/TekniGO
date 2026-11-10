@@ -61,7 +61,11 @@ class IdentityProcessor(Protocol):
 
 
 def configured_processor() -> IdentityProcessor | None:
-    if os.getenv('IDENTITY_PROCESSOR', '').strip().lower() == 'python':
+    mode = os.getenv('IDENTITY_PROCESSOR', '').strip().lower()
+    if mode == 'http':
+        from app.python_identity import HttpIdentityProcessor
+        return HttpIdentityProcessor()
+    if mode == 'python':
         from app.python_identity import PythonIdentityProcessor
         return PythonIdentityProcessor()
     return None

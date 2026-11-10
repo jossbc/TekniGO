@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.direct_requests_repository import DirectRequestRepository
 from app.direct_requests_schemas import EstimateRequest, EstimateResponse
-from app.models import User
+from app.models import CoverageZone, User
+from app.technician_activation import require_operational_technician
 from app.direct_requests_schemas import CreateDirectRequest
 from datetime import datetime, timezone
 
@@ -52,12 +53,23 @@ class DirectRequestService:
                 detail="Servicio inválido o inactivo."
             )
 
-        # 3. Validar técnico destino (Aquí idealmente checamos que esté activo/verificado)
-        tecnico = db.scalar(select(User).where(User.firebase_uid == request.tecnico_id))
-        if not tecnico:
+        # El perfil público usa el UUID; las solicitudes se guardan con el UID de Firebase.
+        tecnico = db.get(User, servicio.usuario_id)
+        if not tecnico or request.tecnico_id not in (str(tecnico.id), tecnico.firebase_uid):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="El técnico seleccionado no existe."
+            )
+
+        require_operational_technician(tecnico, db)
+        covered_municipality = db.scalar(select(CoverageZone.id).where(
+            CoverageZone.usuario_id == tecnico.id,
+            CoverageZone.municipio == request.municipio,
+        ).limit(1))
+        if covered_municipality is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El municipio seleccionado no está en la cobertura del técnico.",
             )
 
         # 4. Calcular el presupuesto exacto desde el backend (no confiamos en el front) (CA-04)
@@ -67,6 +79,7 @@ class DirectRequestService:
         request_dict = request.model_dump()
         request_dict.update({
             "cliente_id": current_user["uid"],
+            "tecnico_id": tecnico.firebase_uid,
             "tarifa_aplicada": servicio.tarifa_base,
             "unidad_cobro": servicio.unidad_cobro,
             "monto_base": total_calculado,
