@@ -1,14 +1,35 @@
-import React, { useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
+import { Calculator, ClipboardList, X } from "lucide-react";
+import type { CoverageZone } from "../CoverageZoneSelector";
 import { createDirectRequest, estimateBudget } from "../lib/directRequests";
 
 interface DirectRequestFormProps {
   tecnicoId: string;
+  coverageZones: CoverageZone[];
   servicioId: string;
   onSuccess: () => void;
   onCancel: () => void;
 }
 
-export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId, servicioId, onSuccess, onCancel }) => {
+export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId, coverageZones, servicioId, onSuccess, onCancel }) => {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    element.showModal();
+    document.body.style.overflow = "hidden";
+    return () => {
+      element.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  const municipalities = [...new Set(coverageZones.map((zone) => zone.municipio))];
   const [municipio, setMunicipio] = useState("");
   const [sector, setSector] = useState("");
   const [direccion, setDireccion] = useState("");
@@ -23,7 +44,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
   const [error, setError] = useState<string | null>(null);
 
   const handleCalculate = async () => {
-    if (!cantidad || cantidad < 1) return;
+    if (!Number.isInteger(cantidad) || cantidad < 1 || loadingEstimate) return;
     setLoadingEstimate(true);
     setError(null);
     try {
@@ -35,8 +56,8 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
       } else {
         throw new Error("El servidor no devolvió un cálculo válido.");
       }
-    } catch (err: any) {
-      setError(err.message || "Error al calcular el presupuesto");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error al calcular el presupuesto");
       setTotalEstimado(null);
     } finally {
       setLoadingEstimate(false);
@@ -45,6 +66,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)) return;
     setLoadingSubmit(true);
     setError(null);
 
@@ -61,179 +83,110 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
         metodo_pago: metodoPago,
       };
 
-      console.log("Enviando payload al backend:", requestData);
       await createDirectRequest(requestData);
-      alert("¡Solicitud enviada exitosamente!");
       onSuccess();
-    } catch (err: any) {
-      console.error("Rechazo del backend:", err);
-      setError(err.message || "Error al crear la solicitud");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error al crear la solicitud");
     } finally {
       setLoadingSubmit(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-6">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden max-h-[95vh] border border-gray-200">
-        {/* Cabecera Azul TekniGO */}
-        <div className="bg-blue-600 px-6 py-4 flex justify-between items-center text-white shadow-sm">
+    <dialog ref={dialog} className="direct-request-modal" aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!loadingSubmit) onCancel();
+      }}
+    >
+      <form className="direct-request-form" onSubmit={handleSubmit}>
+        <header className="direct-request-heading">
+          <span className="step-icon"><ClipboardList size={20} aria-hidden="true" /></span>
           <div>
-            <h2 className="text-xl font-bold tracking-wide">Solicitar Servicio</h2>
-            <p className="text-blue-100 text-sm mt-0.5">Completa los detalles de tu solicitud</p>
+            <h2 id={titleId}>Solicitar servicio</h2>
+            <p>Indica dónde y cuándo necesitas al técnico.</p>
           </div>
-          <button onClick={onCancel} className="text-white hover:text-gray-200 bg-blue-700 hover:bg-blue-800 rounded-full p-2 transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
-            </svg>
+          <button type="button" className="dossier-modal-close" aria-label="Cerrar solicitud"
+            onClick={onCancel} disabled={loadingSubmit}>
+            <X size={20} aria-hidden="true" />
           </button>
+        </header>
+
+        <div className="direct-request-body">
+          {error && <div className="alert" role="alert">{error}</div>}
+
+          <div className="field-row">
+            <label className="field">
+              Municipio
+              <select required autoFocus value={municipio} onChange={(e) => setMunicipio(e.target.value)}
+                disabled={!municipalities.length}>
+                <option value="" disabled>Selecciona un municipio</option>
+                {municipalities.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+              {!municipalities.length && <small>Este técnico no tiene municipios de cobertura publicados.</small>}
+            </label>
+            <label className="field">
+              Sector
+              <input type="text" required value={sector} onChange={(e) => setSector(e.target.value)}
+                placeholder="Ej. Colonia Kennedy" />
+            </label>
+          </div>
+          <label className="field">
+            Dirección exacta
+            <input type="text" required value={direccion} onChange={(e) => setDireccion(e.target.value)}
+              placeholder="Casa, bloque o punto de referencia" />
+          </label>
+          <div className="field-row">
+            <label className="field">
+              Fecha y hora
+              <input type="datetime-local" required value={fechaHora} onChange={(e) => setFechaHora(e.target.value)} />
+            </label>
+            <label className="field">
+              Método de pago
+              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
+                <option value="Efectivo">Efectivo</option>
+                <option value="Transferencia">Transferencia</option>
+              </select>
+            </label>
+          </div>
+          <label className="field">
+            Descripción del problema
+            <textarea required rows={3} value={descripcion} onChange={(e) => setDescripcion(e.target.value)}
+              placeholder="Describe qué necesitas que revise o repare el técnico." />
+          </label>
+
+          <section className="direct-request-budget">
+            <h3><Calculator size={17} aria-hidden="true" /> Presupuesto estimado</h3>
+            <div className="direct-request-budget-row">
+              <label className="field">
+                Cantidad
+                <input type="number" min="1" required value={cantidad || ""} disabled={loadingEstimate || loadingSubmit}
+                  onChange={(e) => {
+                    setCantidad(Number(e.target.value));
+                    setTotalEstimado(null);
+                  }}
+                />
+              </label>
+              <button type="button" className="button button-outline" onClick={handleCalculate}
+                disabled={loadingEstimate || loadingSubmit || !Number.isInteger(cantidad) || cantidad < 1}>
+                {loadingEstimate ? "Calculando…" : "Calcular"}
+              </button>
+            </div>
+            <div className="direct-request-total" role="status">
+              {totalEstimado === null
+                ? <span>Calcula el estimado antes de enviar la solicitud.</span>
+                : <><span>Total estimado</span><strong>L. {totalEstimado.toFixed(2)}</strong></>}
+            </div>
+          </section>
         </div>
 
-        {/* Cuerpo scrolleable */}
-        <div className="p-6 overflow-y-auto">
-          {error && (
-            <div className="mb-5 p-4 bg-red-50 border-l-4 border-red-500 rounded-r-lg flex items-start">
-              <svg className="w-5 h-5 text-red-500 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <span className="text-sm text-red-800 font-medium">{error}</span>
-            </div>
-          )}
-
-          <form id="requestForm" onSubmit={handleSubmit} className="space-y-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Municipio</label>
-                <input
-                  type="text"
-                  required
-                  value={municipio}
-                  onChange={(e) => setMunicipio(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm"
-                  placeholder="Ej. Distrito Central"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Sector</label>
-                <input
-                  type="text"
-                  required
-                  value={sector}
-                  onChange={(e) => setSector(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm"
-                  placeholder="Ej. Colonia Kennedy"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Dirección Exacta</label>
-              <input
-                type="text"
-                required
-                value={direccion}
-                onChange={(e) => setDireccion(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm"
-                placeholder="Casa, bloque, referencias..."
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Fecha y Hora</label>
-                <input
-                  type="datetime-local"
-                  required
-                  value={fechaHora}
-                  onChange={(e) => setFechaHora(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Método de Pago</label>
-                <select
-                  value={metodoPago}
-                  onChange={(e) => setMetodoPago(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm cursor-pointer"
-                >
-                  <option value="Efectivo">Efectivo</option>
-                  <option value="Transferencia">Transferencia</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Descripción del problema</label>
-              <textarea
-                required
-                rows={3}
-                value={descripcion}
-                onChange={(e) => setDescripcion(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-800 bg-gray-50 focus:bg-white transition-all shadow-sm resize-none"
-                placeholder="Describe detalladamente qué necesitas que el técnico repare..."
-              ></textarea>
-            </div>
-
-            {/* Caja de Presupuesto Destacada */}
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 p-5 rounded-xl border border-blue-200/60 shadow-sm">
-              <label className="block text-sm font-bold text-blue-900 mb-3">Presupuesto Estimado</label>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <div className="flex items-center bg-white border border-blue-200 rounded-lg overflow-hidden shadow-sm flex-1">
-                  <span className="bg-gray-50 px-3 py-2.5 border-r border-gray-200 text-gray-500 text-sm font-medium">Cant.</span>
-                  <input type="number" min="1" required value={cantidad} onChange={(e) => setCantidad(Number(e.target.value))} className="w-full px-4 py-2.5 outline-none text-center font-bold text-gray-800" />
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCalculate}
-                  disabled={loadingEstimate}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg transition-all shadow-sm disabled:bg-blue-300 disabled:cursor-not-allowed flex-1 sm:flex-none flex justify-center items-center"
-                >
-                  {loadingEstimate ? (
-                    <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  ) : (
-                    "Calcular"
-                  )}
-                </button>
-              </div>
-
-              {totalEstimado !== null && !isNaN(totalEstimado) && (
-                <div className="mt-4 flex justify-between items-end border-t border-blue-200/80 pt-4">
-                  <span className="text-sm font-semibold text-blue-800">Total a pagar:</span>
-                  <span className="text-2xl font-black text-blue-700 tracking-tight">L. {totalEstimado.toFixed(2)}</span>
-                </div>
-              )}
-            </div>
-          </form>
-        </div>
-
-        {/* Pie del modal */}
-        <div className="px-6 py-5 bg-gray-50 border-t border-gray-200 flex justify-end gap-3 rounded-b-xl">
-          <button type="button" onClick={onCancel} className="px-6 py-2.5 text-sm font-bold text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition-all shadow-sm">
-            Cancelar
+        <footer className="direct-request-actions">
+          <button type="button" className="button button-outline" onClick={onCancel} disabled={loadingSubmit}>Cancelar</button>
+          <button type="submit" className="button" disabled={loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)}>
+            {loadingSubmit ? "Enviando…" : "Confirmar solicitud"}
           </button>
-          <button
-            type="submit"
-            form="requestForm"
-            disabled={loadingSubmit || totalEstimado === null}
-            className="px-6 py-2.5 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 transition-all shadow-md disabled:bg-blue-300 disabled:cursor-not-allowed flex items-center justify-center min-w-[160px]"
-          >
-            {loadingSubmit ? (
-              <>
-                <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>{" "}
-                Procesando...
-              </>
-            ) : (
-              "Confirmar Solicitud"
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
+        </footer>
+      </form>
+    </dialog>
   );
 };
