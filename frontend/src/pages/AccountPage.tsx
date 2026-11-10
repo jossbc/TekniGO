@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { User } from "firebase/auth";
 import { Link, Navigate, useLocation } from "react-router-dom";
-import { ArrowUpRight, CheckCircle2, Clock3, ShieldCheck, Users } from "lucide-react";
+import { ArrowUpRight, CheckCircle2, ClipboardList, Clock3, ShieldCheck, Users } from "lucide-react";
 import { api, errorMessage, type Profile } from "../lib/api";
 import { accountPath } from "../lib/accountPath";
 import { registrationComplete, registrationRequirements } from "../lib/registration";
@@ -79,11 +79,14 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
             </>
           )}
 
-          {/* 2. Espacio de Cliente: Siempre ve 'Buscar servicios'. Si también es técnico, ve 'Cambiar a Técnico' */}
+          {/* 2. Espacio de Cliente: Siempre ve 'Buscar servicios' y 'Mis solicitudes'. Si también es técnico, ve 'Cambiar a Técnico' */}
           {space === "CLIENTE" && (
             <>
               <Link className="button button-outline" to="/catalogo">
                 Buscar servicios
+              </Link>
+              <Link className="button button-outline" to="/mis-solicitudes">
+                Mis solicitudes
               </Link>
               {profile && profile.roles.includes("TECNICO") && (
                 <Link className="button button-outline" to="/tecnico">
@@ -184,6 +187,20 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
                   {profile.estado_identidad === "EN_REVISION" || profile.estado_identidad === "VERIFICADO" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />
                 </Link>
               </section>
+              {profile.roles.includes("CLIENTE") && (space === "CLIENTE" || !space) && (
+                <section className="account-card">
+                  <span className="step-icon">
+                    <ClipboardList size={22} />
+                  </span>
+                  <h2>Mis solicitudes</h2>
+                  <p>
+                    Consulta el estado actual de tus contrataciones directas y abiertas, la propuesta pactada y la línea de tiempo de cambios.
+                  </p>
+                  <Link to="/mis-solicitudes">
+                    Ver mis contrataciones <ArrowUpRight size={15} />
+                  </Link>
+                </section>
+              )}
               {profile.roles.includes("TECNICO") && <TechnicianDocumentationCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
