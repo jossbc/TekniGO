@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
-from app.models import DirectRequest, Service, TechnicianProfile, User
+from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User
 from app.security import get_current_user
 
 router = APIRouter(tags=["Contrataciones del Cliente"])
@@ -19,6 +19,7 @@ router = APIRouter(tags=["Contrataciones del Cliente"])
 ALLOWED_MODALIDADES = {"TODOS", "DIRECTA", "ABIERTA"}
 ALLOWED_ESTADOS = {
     "TODOS",
+    "PUBLICADA",
     "PENDIENTE",
     "ACEPTADA",
     "RECHAZADA",
@@ -27,6 +28,7 @@ ALLOWED_ESTADOS = {
 }
 
 STATE_TIMELINE_DESCRIPTIONS = {
+    "PUBLICADA": "Solicitud abierta publicada y disponible para recibir propuestas.",
     "PENDIENTE": "Solicitud registrada y pendiente de respuesta.",
     "ACEPTADA": "Propuesta aceptada y trabajo programado con el técnico.",
     "RECHAZADA": "Solicitud rechazada por el técnico.",
@@ -35,6 +37,7 @@ STATE_TIMELINE_DESCRIPTIONS = {
 }
 
 ALLOWED_ACTIONS_BY_STATE: dict[str, list[str]] = {
+    "PUBLICADA": ["CANCELAR"],
     "PENDIENTE": ["CANCELAR"],
     "ACEPTADA": ["CANCELAR", "COMPLETAR"],
     "RECHAZADA": [],
@@ -356,12 +359,17 @@ def _build_request_timeline(record: Any, estado_normalizado: str) -> list[dict]:
 
     timeline = [
         {
-            "estado": "PENDIENTE",
-            "descripcion": STATE_TIMELINE_DESCRIPTIONS["PENDIENTE"],
+            "estado": "PUBLICADA" if getattr(record, "modalidad", None) == "ABIERTA" else "PENDIENTE",
+            "descripcion": (
+                STATE_TIMELINE_DESCRIPTIONS["PUBLICADA"]
+                if getattr(record, "modalidad", None) == "ABIERTA"
+                else STATE_TIMELINE_DESCRIPTIONS["PENDIENTE"]
+            ),
             "fecha": creada_en,
         }
     ]
-    if estado_normalizado != "PENDIENTE":
+    initial_state = timeline[0]["estado"]
+    if estado_normalizado != initial_state:
         updated_at = _iso(getattr(record, "actualizada_en", None)) or creada_en
         timeline.append(
             {

@@ -54,10 +54,10 @@ class ClientRequestsPaginationTests(unittest.TestCase):
         )
         self.db.add(self.service)
         self.db.commit()
+        self._original_open_request = models.OpenRequest
 
     def tearDown(self):
-        if hasattr(models, "OpenRequest"):
-            delattr(models, "OpenRequest")
+        models.OpenRequest = self._original_open_request
         self.db.close()
         self.engine.dispose()
 

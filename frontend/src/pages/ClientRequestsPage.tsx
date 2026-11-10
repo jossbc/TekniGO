@@ -32,13 +32,18 @@ export default function ClientRequestsPage({ user }: { user: User }) {
           Volver a mi espacio de cliente
         </Link>
 
-        <div className="catalog-heading">
-          <span className="catalog-eyebrow">MIS CONTRATACIONES</span>
-          <h1>Seguimiento de mis solicitudes</h1>
-          <p>
-            Consulta tus solicitudes directas y abiertas, filtra por estado y revisa la propuesta pactada y
-            la línea de tiempo de cada trabajo.
-          </p>
+        <div className="catalog-heading client-requests-page-heading">
+          <div>
+            <span className="catalog-eyebrow">MIS CONTRATACIONES</span>
+            <h1>Seguimiento de mis solicitudes</h1>
+            <p>
+              Consulta tus solicitudes directas y abiertas, filtra por estado y revisa la propuesta pactada y
+              la línea de tiempo de cada trabajo.
+            </p>
+          </div>
+          <Link className="button" style={{ width: "auto" }} to="/solicitudes/nueva">
+            Publicar solicitud abierta
+          </Link>
         </div>
 
         {state.status !== "ready" ? (

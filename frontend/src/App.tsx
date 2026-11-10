@@ -15,6 +15,7 @@ import ProfileRoute from "./pages/ProfileRoute";
 import CatalogRoute from "./pages/CatalogRoute";
 import AdminPage from "./pages/AdminPage";
 import ClientRequestsPage from "./pages/ClientRequestsPage";
+import PublishOpenRequestPage from "./pages/PublishOpenRequestPage";
 
 export default function App() {
   const { pathname } = useLocation();
@@ -58,6 +59,7 @@ export default function App() {
       <Route path="/verificacion" element={user ? <VerificationPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/admin" element={user ? <AdminPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/cliente" element={user ? <AccountPage user={user} space="CLIENTE" /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/solicitudes/nueva" element={user ? <PublishOpenRequestPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/mis-solicitudes" element={user ? <ClientRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/mis-solicitudes/:id" element={user ? <ClientRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <AccountPage user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />

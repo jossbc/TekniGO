@@ -85,6 +85,9 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
               <Link className="button button-outline" to="/catalogo">
                 Buscar servicios
               </Link>
+              <Link className="button button-outline" to="/solicitudes/nueva">
+                Publicar solicitud abierta
+              </Link>
               <Link className="button button-outline" to="/mis-solicitudes">
                 Mis solicitudes
               </Link>
