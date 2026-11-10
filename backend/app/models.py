@@ -203,3 +203,31 @@ class DirectRequest(Base):
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
     servicio = relationship("Service", foreign_keys=[servicio_id])
+
+
+class OpenRequest(Base):
+    __tablename__ = "solicitudes_abiertas"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    cliente_id = Column(String, ForeignKey("usuarios.firebase_uid"), nullable=False, index=True)
+    tecnico_id = Column(String, ForeignKey("usuarios.firebase_uid"), nullable=True, default=None)
+    especialidad_id = Column(String, ForeignKey("especialidades.id"), nullable=False, index=True)
+    servicio_id = Column(String, ForeignKey("servicios.id"), nullable=True, default=None)
+
+    modalidad = Column(String(20), nullable=False, default="ABIERTA", server_default="ABIERTA")
+    municipio = Column(String(80), nullable=False)
+    sector = Column(String(100), nullable=False)
+    direccion_exacta = Column(Text, nullable=False)
+    fecha_hora = Column(DateTime(timezone=True), nullable=False)
+    descripcion = Column(Text, nullable=False)
+
+    presupuesto = Column(Numeric(10, 2), nullable=False)
+    monto_base = Column(Numeric(10, 2), nullable=False)
+    metodo_pago = Column(String(20), nullable=False)  # 'efectivo' o 'tarjeta'
+
+    estado = Column(String(30), nullable=False, default="Publicada", server_default="Publicada")
+    creada_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    cliente = relationship("User", foreign_keys=[cliente_id])
+    tecnico = relationship("User", foreign_keys=[tecnico_id])
+    especialidad = relationship("Specialty", foreign_keys=[especialidad_id])

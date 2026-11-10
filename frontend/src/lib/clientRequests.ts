@@ -4,6 +4,7 @@ import { api } from "./api";
 export type ModalidadFiltro = "TODOS" | "DIRECTA" | "ABIERTA";
 export type EstadoFiltro =
   | "TODOS"
+  | "PUBLICADA"
   | "PENDIENTE"
   | "ACEPTADA"
   | "RECHAZADA"
@@ -83,6 +84,7 @@ export const MODALIDAD_OPTIONS: { value: ModalidadFiltro; label: string }[] = [
 
 export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
   { value: "TODOS", label: "Todos los estados" },
+  { value: "PUBLICADA", label: "Publicada" },
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "ACEPTADA", label: "Aceptada" },
   { value: "COMPLETADA", label: "Completada" },
@@ -92,6 +94,7 @@ export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
 
 export function formatRequestStateLabel(estado: string): string {
   const map: Record<string, string> = {
+    PUBLICADA: "Publicada",
     PENDIENTE: "Pendiente",
     ACEPTADA: "Aceptada",
     RECHAZADA: "Rechazada",

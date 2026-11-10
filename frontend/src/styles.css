@@ -463,6 +463,7 @@ img, video, canvas { max-width: 100%; }
 .request-modality-badge, .request-status-badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 650; white-space: nowrap; }
 .request-modality-directa { color: var(--blue); background: #eff6ff; border: 1px solid #bfdbfe; }
 .request-modality-abierta { color: #b64700; background: #fff2e8; border: 1px solid #ffd4b5; }
+.request-status-publicada { color: var(--blue); background: #eff6ff; border: 1px solid #bfdbfe; }
 .request-status-pendiente { color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; }
 .request-status-aceptada { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
 .request-status-completada { color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; }
@@ -510,6 +511,39 @@ img, video, canvas { max-width: 100%; }
   .client-request-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
+
+.client-requests-page-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.open-request-page { max-width: 920px; margin: 20px auto 80px; }
+.open-request-form-card { padding: 28px; }
+.open-request-form { display: grid; gap: 22px; }
+.open-request-fieldset { margin: 0; padding: 20px 22px; border: 1px solid var(--line); border-radius: 16px; background: #fff; display: grid; gap: 14px; }
+.open-request-fieldset > legend { display: inline-flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 14px; font-weight: 700; color: var(--ink); }
+.open-request-location-public { border-color: #bfdbfe; background: #f8fbff; }
+.open-request-location-public > legend svg { color: var(--blue); }
+.open-request-location-private { border-color: #fed7aa; background: #fffaf5; }
+.open-request-location-private > legend svg { color: var(--orange); }
+.open-request-privacy-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 10px; background: #eff6ff; color: var(--ink); font-size: 12.5px; }
+.open-request-privacy-note svg { color: var(--blue); flex-shrink: 0; margin-top: 2px; }
+.open-request-privacy-note-locked { background: #fff1e6; }
+.open-request-privacy-note-locked svg { color: var(--orange); }
+.open-request-two-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.open-request-form .field { margin-bottom: 0; }
+.open-request-form :is(input, select, textarea) { width: 100%; padding: 12px 14px; border: 1px solid #dce2eb; border-radius: 10px; background: #fff; color: var(--ink); font-size: 14px; font-family: inherit; }
+.open-request-form textarea { resize: vertical; }
+.open-request-suggested-range { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid #bfdbfe; border-radius: 12px; background: #eff6ff; font-size: 13px; color: var(--ink); }
+.open-request-suggested-range svg { color: var(--blue); flex-shrink: 0; margin-top: 2px; }
+.open-request-suggested-range p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.open-request-eligibility-alert { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.open-request-eligibility-alert ul { margin: 6px 0 8px 18px; padding: 0; }
+.open-request-confirmation-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.open-request-confirmation-head h2 { margin: 6px 0 0; }
+.open-request-confirmation-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin: 18px 0 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.open-request-confirmation-details dt { font-size: 11px; color: var(--muted); }
+.open-request-confirmation-details dd { margin: 3px 0 0; font-size: 14px; font-weight: 600; color: var(--ink); }
+@media (max-width: 760px) {
+  .open-request-two-cols, .open-request-confirmation-details { grid-template-columns: minmax(0, 1fr); }
+  .open-request-form-card, .open-request-fieldset { padding: 16px; }
+}
 .direct-request-modal {
   width: min(600px, calc(100% - 24px));
   max-height: calc(100dvh - 24px);
