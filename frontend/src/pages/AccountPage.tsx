@@ -102,6 +102,9 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
           {/* 3. Espacio de Técnico: Siempre ve 'Ofrecer servicios'. Si también es cliente, ve 'Cambiar a Cliente' */}
           {space === "TECNICO" && (
             <>
+              <Link className="button button-outline" to="/tecnico/oportunidades">
+                Consultar ofertas disponibles
+              </Link>
               {profile && profile.roles.includes("CLIENTE") && (
                 <Link className="button button-outline" to="/cliente">
                   Cambiar a Cliente
@@ -205,6 +208,20 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
                 </section>
               )}
               {profile.roles.includes("TECNICO") && <TechnicianDocumentationCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && (
+                <section className="account-card">
+                  <span className="step-icon">
+                    <ClipboardList size={22} />
+                  </span>
+                  <h2>Ofertas disponibles</h2>
+                  <p>
+                    Consulta solicitudes abiertas compatibles con tus especialidades y zonas de cobertura para postularte o descartar las que no te interesen.
+                  </p>
+                  <Link to="/tecnico/oportunidades">
+                    Ver ofertas compatibles <ArrowUpRight size={15} />
+                  </Link>
+                </section>
+              )}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>

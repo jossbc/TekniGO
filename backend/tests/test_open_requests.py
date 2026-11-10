@@ -14,6 +14,7 @@ from app.client_requests import list_client_requests
 from app.database import Base
 from app.models import (
     CoverageZone,
+    DiscardedOpenRequest,
     OpenRequest,
     Service,
     Specialty,
@@ -25,12 +26,14 @@ from app.models import (
 from app.open_requests import (
     CreateOpenRequestSchema,
     calculate_suggested_range,
+    discard_open_request_for_technician,
     get_open_request_for_viewer,
     get_suggested_range_endpoint,
     list_available_open_requests_for_technician,
     publish_open_request,
     publish_open_request_endpoint,
     router,
+    validate_technician_can_bid_on_open_request,
 )
 
 
@@ -619,3 +622,464 @@ class OpenRequestsSt01Tests(unittest.TestCase):
                 self.db,
             )
         self.assertEqual(fin_err.exception.status_code, 403)
+
+    def test_hu27_st01_query_opportunities_by_coverage_trade_and_state(self):
+        spec_elec = Specialty(nombre="Electricidad")
+        spec_carp = Specialty(nombre="Carpintería")
+        tech = User(
+            firebase_uid="tech-hu27-st01",
+            correo="hu27@example.com",
+            nombre_completo="Técnico Multioficio",
+            dni="0801200000271",
+            telefono="+50490000271",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([spec_elec, spec_carp, tech])
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add_all(
+            [
+                TechnicianSpecialty(usuario_id=tech.id, especialidad_id=self.specialty.id),  # Plomería
+                TechnicianSpecialty(usuario_id=tech.id, especialidad_id=spec_elec.id),  # Electricidad
+                CoverageZone(
+                    usuario_id=tech.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                ),
+                CoverageZone(
+                    usuario_id=tech.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Florencia",
+                ),
+            ]
+        )
+        self.db.commit()
+
+        # 1. Publicada compatible (Plomería - Col. Palmira)
+        req_pub = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+                presupuesto=Decimal("600.00"),
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        # 2. Con ofertas compatible (Electricidad - Col. Florencia)
+        req_offers = publish_open_request(
+            self._valid_payload(
+                especialidad_id=spec_elec.id,
+                municipio="Distrito Central",
+                sector="Col. Florencia",
+                presupuesto=Decimal("1200.00"),
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        row_offers = self.db.get(OpenRequest, req_offers["id"])
+        row_offers.estado = "Con ofertas"
+
+        # 3. Solicitudes NO elegibles como oportunidades (CA-02): Adjudicada/Aceptada, Cancelada, Completada, Otra zona, Otro oficio
+        req_awarded = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        row_awarded = self.db.get(OpenRequest, req_awarded["id"])
+        row_awarded.estado = "Aceptada"
+        row_awarded.tecnico_id = "other-tech-uid"
+
+        req_cancelled = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.db.get(OpenRequest, req_cancelled["id"]).estado = "Cancelada"
+
+        req_completed = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.db.get(OpenRequest, req_completed["id"]).estado = "Completada"
+
+        # Incompatible por oficio (Carpintería)
+        publish_open_request(
+            self._valid_payload(
+                especialidad_id=spec_carp.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        # Incompatible por zona (Col. Miramontes)
+        publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Miramontes",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.db.commit()
+
+        # CA-01 y CA-02: Consulta general retorna únicamente Publicada y Con ofertas compatibles
+        all_compatible = list_available_open_requests_for_technician(
+            {"uid": tech.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(all_compatible["total"], 2)
+        returned_ids = {item["id"] for item in all_compatible["solicitudes"]}
+        self.assertEqual(returned_ids, {req_pub["id"], req_offers["id"]})
+
+        # El detalle también permite consultar una licitación en estado "Con ofertas" protegiendo dirección y teléfono (CA-01, CA-03)
+        detail_offers = get_open_request_for_viewer(
+            req_offers["id"],
+            {"uid": tech.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(detail_offers["id"], req_offers["id"])
+        self.assertNotIn("direccion_exacta", detail_offers)
+        self.assertNotIn("telefono", detail_offers["cliente"])
+
+        # Filtro por estado CON_OFERTAS / Con ofertas
+        only_with_offers = list_available_open_requests_for_technician(
+            {"uid": tech.firebase_uid},
+            self.db,
+            estado="Con ofertas",
+        )
+        self.assertEqual(only_with_offers["total"], 1)
+        self.assertEqual(only_with_offers["solicitudes"][0]["id"], req_offers["id"])
+
+        # Filtro por oficio (Plomería) y sector (Col. Palmira)
+        by_trade_and_sector = list_available_open_requests_for_technician(
+            {"uid": tech.firebase_uid},
+            self.db,
+            especialidad_id=self.specialty.id,
+            sector="Col. Palmira",
+        )
+        self.assertEqual(by_trade_and_sector["total"], 1)
+        self.assertEqual(by_trade_and_sector["solicitudes"][0]["id"], req_pub["id"])
+
+        # CA-06: Ausencia de coincidencias retorna mensaje y filtros aplicados para poder revisarlos
+        no_match = list_available_open_requests_for_technician(
+            {"uid": tech.firebase_uid},
+            self.db,
+            especialidad_id=self.specialty.id,
+            sector="Col. Florencia",
+        )
+        self.assertEqual(no_match["total"], 0)
+        self.assertEqual(no_match["solicitudes"], [])
+        self.assertIsNotNone(no_match["mensaje"])
+        self.assertIn("filtros", no_match["mensaje"].lower())
+
+        # CA-02: Filtrar por un estado no válido para oportunidades (ej. CANCELADA o COMPLETADA) arroja 400
+        with self.assertRaises(HTTPException) as bad_state_err:
+            list_available_open_requests_for_technician(
+                {"uid": tech.firebase_uid},
+                self.db,
+                estado="CANCELADA",
+            )
+        self.assertEqual(bad_state_err.exception.status_code, 400)
+
+    def test_hu27_st02_discard_open_request_hides_only_for_that_technician(self):
+        tech_a = User(
+            firebase_uid="tech-discard-a",
+            correo="ta@example.com",
+            nombre_completo="Técnico A",
+            dni="0801200000281",
+            telefono="+50490000281",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech_b = User(
+            firebase_uid="tech-discard-b",
+            correo="tb@example.com",
+            nombre_completo="Técnico B",
+            dni="0801200000282",
+            telefono="+50490000282",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech_a, tech_b])
+        self.db.flush()
+        for t in (tech_a, tech_b):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        req_1 = publish_open_request(
+            self._valid_payload(municipio="Distrito Central", sector="Col. Palmira", presupuesto=Decimal("500.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_2 = publish_open_request(
+            self._valid_payload(municipio="Distrito Central", sector="Col. Palmira", presupuesto=Decimal("700.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+
+        # Ambos técnicos ven las 2 oportunidades inicialmente
+        self.assertEqual(
+            list_available_open_requests_for_technician({"uid": tech_a.firebase_uid}, self.db)["total"],
+            2,
+        )
+        self.assertEqual(
+            list_available_open_requests_for_technician({"uid": tech_b.firebase_uid}, self.db)["total"],
+            2,
+        )
+
+        # CA-05: Técnico A descarta req_1 (y es idempotente si vuelve a descartarla)
+        discard_res = discard_open_request_for_technician(
+            req_1["id"],
+            {"uid": tech_a.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(discard_res["descartada"])
+        self.assertEqual(discard_res["solicitud_id"], req_1["id"])
+        self.assertEqual(discard_res["estado_solicitud"], "PUBLICADA")
+
+        discard_again = discard_open_request_for_technician(
+            req_1["id"],
+            {"uid": tech_a.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(discard_again["descartada_en"], discard_res["descartada_en"])
+
+        # Se creó exactamente 1 fila en solicitudes_abiertas_descartadas para tech_a
+        rows = self.db.query(DiscardedOpenRequest).filter_by(usuario_id=tech_a.id).all()
+        self.assertEqual(len(rows), 1)
+
+        # CA-05: Técnico A ya no ve req_1 en su listado personal (solo ve req_2)
+        list_a = list_available_open_requests_for_technician({"uid": tech_a.firebase_uid}, self.db)
+        self.assertEqual(list_a["total"], 1)
+        self.assertEqual(list_a["solicitudes"][0]["id"], req_2["id"])
+
+        # CA-05: La solicitud NO se cancela y Técnico B sigue viendo ambas (req_1 y req_2)
+        stored_req_1 = self.db.get(OpenRequest, req_1["id"])
+        self.assertEqual(stored_req_1.estado, "Publicada")
+        list_b = list_available_open_requests_for_technician({"uid": tech_b.firebase_uid}, self.db)
+        self.assertEqual(list_b["total"], 2)
+        self.assertEqual({item["id"] for item in list_b["solicitudes"]}, {req_1["id"], req_2["id"]})
+
+    def test_hu27_st04_shared_operational_validation_blocks_bidding_and_repeats_on_action(self):
+        tech = User(
+            firebase_uid="tech-st04-shared",
+            correo="st04@example.com",
+            nombre_completo="Técnico Validación Compartida",
+            dni="0801200000291",
+            telefono="+50490000291",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech.id, rol="TECNICO"))
+        profile = TechnicianProfile(usuario_id=tech.id, disponible=True, estado_verificacion="VERIFICADO")
+        self.db.add(profile)
+        self.db.add(TechnicianSpecialty(usuario_id=tech.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        req_new = publish_open_request(
+            self._valid_payload(municipio="Distrito Central", sector="Col. Palmira", presupuesto=Decimal("900.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_accepted = publish_open_request(
+            self._valid_payload(municipio="Distrito Central", sector="Col. Palmira", presupuesto=Decimal("1100.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        accepted_row = self.db.get(OpenRequest, req_accepted["id"])
+        accepted_row.estado = "Aceptada"
+        accepted_row.tecnico_id = tech.firebase_uid
+        self.db.commit()
+
+        # 1. El técnico habilitado carga el listado antes y valida que puede postular a req_new
+        loaded_list = list_available_open_requests_for_technician({"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(loaded_list["total"], 1)
+        can_bid = validate_technician_can_bid_on_open_request(req_new["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertTrue(can_bid["elegible_para_postular"])
+
+        # 2. Aunque el listado se haya cargado antes, si pasa a No disponible, se bloquea postulación directa por API (CA-04)
+        profile.disponible = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as unav_bid_err:
+            validate_technician_can_bid_on_open_request(req_new["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(unav_bid_err.exception.status_code, 403)
+
+        # Condición transversal: No disponible impide nuevas postulaciones pero NO cancela trabajos ya aceptados
+        self.assertEqual(self.db.get(OpenRequest, req_accepted["id"]).estado, "Aceptada")
+        accepted_detail = get_open_request_for_viewer(req_accepted["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(accepted_detail["estado"], "ACEPTADA")
+
+        # 3. Técnico suspendido no puede postular por API (CA-04)
+        profile.disponible = True
+        profile.suspendido = True
+        self.db.commit()
+        with self.assertRaises(HTTPException) as susp_bid_err:
+            validate_technician_can_bid_on_open_request(req_new["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(susp_bid_err.exception.status_code, 403)
+
+        # 4. Técnico restringido por saldo no puede postular por API (CA-04)
+        profile.suspendido = False
+        profile.restriccion_financiera = True
+        self.db.commit()
+        with self.assertRaises(HTTPException) as fin_bid_err:
+            validate_technician_can_bid_on_open_request(req_new["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(fin_bid_err.exception.status_code, 403)
+
+        # 5. Técnico no verificado no puede postular por API (CA-04)
+        profile.restriccion_financiera = False
+        profile.estado_verificacion = "RESTRINGIDO"
+        self.db.commit()
+        with self.assertRaises(HTTPException) as unver_bid_err:
+            validate_technician_can_bid_on_open_request(req_new["id"], {"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(unver_bid_err.exception.status_code, 403)
+
+    def test_hu27_st05_incompatibilities_private_data_and_independent_discard_matrix(self):
+        spec_other = Specialty(nombre="Albañilería")
+        tech_1 = User(
+            firebase_uid="tech-st05-1",
+            correo="st05-1@example.com",
+            nombre_completo="Técnico ST05 Uno",
+            dni="0801200000301",
+            telefono="+50490000301",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech_2 = User(
+            firebase_uid="tech-st05-2",
+            correo="st05-2@example.com",
+            nombre_completo="Técnico ST05 Dos",
+            dni="0801200000302",
+            telefono="+50490000302",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([spec_other, tech_1, tech_2])
+        self.db.flush()
+        for t in (tech_1, tech_2):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        # Oportunidad compatible en estado "Con ofertas" con dirección exacta y teléfono privados
+        req_compatible = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+                direccion_exacta="Calle Privada #77, portón café",
+                presupuesto=Decimal("980.00"),
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.db.get(OpenRequest, req_compatible["id"]).estado = "Con ofertas"
+
+        # Solicitudes incompatibles (otro oficio, otra zona, adjudicada, cancelada, completada)
+        req_wrong_trade = publish_open_request(
+            self._valid_payload(especialidad_id=spec_other.id, municipio="Distrito Central", sector="Col. Palmira"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_wrong_zone = publish_open_request(
+            self._valid_payload(especialidad_id=self.specialty.id, municipio="Distrito Central", sector="Col. Hato de Enmedio"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_adjudicada = publish_open_request(
+            self._valid_payload(especialidad_id=self.specialty.id, municipio="Distrito Central", sector="Col. Palmira"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.db.get(OpenRequest, req_adjudicada["id"]).estado = "Adjudicada"
+        self.db.get(OpenRequest, req_adjudicada["id"]).tecnico_id = "foreign-tech"
+        self.db.commit()
+
+        # 1. Incompatibilidades bloqueadas en listado, detalle, descarte y postulación (CA-02, CA-04)
+        for bad_id in (req_wrong_trade["id"], req_wrong_zone["id"], req_adjudicada["id"]):
+            with self.subTest(bad_id=bad_id):
+                with self.assertRaises(HTTPException) as det_err:
+                    get_open_request_for_viewer(bad_id, {"uid": tech_1.firebase_uid}, self.db)
+                self.assertEqual(det_err.exception.status_code, 403)
+
+                with self.assertRaises(HTTPException) as disc_err:
+                    discard_open_request_for_technician(bad_id, {"uid": tech_1.firebase_uid}, self.db)
+                self.assertEqual(disc_err.exception.status_code, 403)
+
+                with self.assertRaises(HTTPException) as bid_err:
+                    validate_technician_can_bid_on_open_request(bad_id, {"uid": tech_1.firebase_uid}, self.db)
+                self.assertEqual(bid_err.exception.status_code, 403)
+
+        # 2. Datos privados ocultos en listado y detalle de "Con ofertas" antes de Aceptada (CA-03)
+        listing_1 = list_available_open_requests_for_technician({"uid": tech_1.firebase_uid}, self.db)
+        self.assertEqual(listing_1["total"], 1)
+        card = listing_1["solicitudes"][0]
+        self.assertEqual(card["id"], req_compatible["id"])
+        self.assertEqual(card["presupuesto"], 980.0)
+        self.assertEqual(card["municipio"], "Distrito Central")
+        self.assertEqual(card["sector"], "Col. Palmira")
+        self.assertNotIn("direccion_exacta", card)
+        self.assertNotIn("telefono", card["cliente"])
+
+        detail_1 = get_open_request_for_viewer(req_compatible["id"], {"uid": tech_1.firebase_uid}, self.db)
+        self.assertNotIn("direccion_exacta", detail_1)
+        self.assertNotIn("telefono", detail_1["cliente"])
+
+        # 3. Descarte independiente (CA-05): tech_1 descarta req_compatible; sigue Con ofertas para el cliente y visible para tech_2
+        discard_open_request_for_technician(req_compatible["id"], {"uid": tech_1.firebase_uid}, self.db)
+        after_discard_1 = list_available_open_requests_for_technician({"uid": tech_1.firebase_uid}, self.db)
+        self.assertEqual(after_discard_1["total"], 0)
+        self.assertIsNotNone(after_discard_1["mensaje"])
+
+        after_discard_2 = list_available_open_requests_for_technician({"uid": tech_2.firebase_uid}, self.db)
+        self.assertEqual(after_discard_2["total"], 1)
+        self.assertEqual(after_discard_2["solicitudes"][0]["id"], req_compatible["id"])
+        self.assertEqual(self.db.get(OpenRequest, req_compatible["id"]).estado, "Con ofertas")
