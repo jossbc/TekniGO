@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { User } from "firebase/auth";
-import { ShieldCheck, Star, ArrowLeft, Briefcase, Wrench, MapPin } from "lucide-react";
+import { Award, ShieldCheck, Star, ArrowLeft, Briefcase, Wrench, MapPin } from "lucide-react";
 import { api, errorMessage } from "./lib/api";
 import type { CatalogTechnician } from "./components/TechnicianCard";
 import type { CoverageZone } from "./CoverageZoneSelector";
@@ -72,6 +72,9 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
               {technician.nombre_completo}
               {technician.tecnico_verificado && <ShieldCheck size={32} color="#2563eb" aria-label="Verificado" />}
             </h1>
+            {technician.tecnico_verificado && <p className="status-pill status-pill-verified">Técnico Verificado</p>}
+            {technician.tecnico_verificado && technician.estado_certificacion === "CERTIFICADO" &&
+              <p className="status-pill"><Award size={15} aria-hidden="true" /> Técnico Certificado</p>}
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
               {technician.especialidades.map((esp, idx) => (
                 <span key={idx} style={{ background: "#eff6ff", color: "#1d4ed8", padding: "0.35rem 1rem", borderRadius: "999px", fontSize: "0.95rem", fontWeight: 600 }}>

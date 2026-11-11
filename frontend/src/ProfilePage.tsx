@@ -1,3 +1,4 @@
+import TechnicianCertificates from './components/TechnicianCertificates'
 import LoadingState from './components/LoadingState'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
@@ -277,6 +278,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
           {isTechnician && (
             <>
+              <TechnicianCertificates user={user} />
               <section className="account-card profile-card">
                 <h2 style={cardTitle}>Estado del perfil técnico</h2>
 

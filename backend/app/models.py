@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -352,3 +352,29 @@ class OpenRequestProposal(Base):
 
     solicitud = relationship("OpenRequest", foreign_keys=[solicitud_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
+
+
+class TradeCertificate(Base):
+    __tablename__ = "certificaciones_oficio"
+    __table_args__ = (
+        CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO', 'REVOCADO')", name="ck_certificacion_estado"),
+        Index("ix_certificacion_tecnico_estado", "usuario_id", "estado"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("perfiles_tecnicos.usuario_id"))
+    titulo: Mapped[str] = mapped_column(String(150))
+    ruta_privada: Mapped[str] = mapped_column(String(500), unique=True)
+    content_type: Mapped[str] = mapped_column(String(50))
+    estado: Mapped[str] = mapped_column(String(20), default="PENDIENTE", server_default="PENDIENTE")
+    observaciones: Mapped[str | None] = mapped_column(Text)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TradeCertificateDecision(Base):
+    __tablename__ = "decisiones_certificaciones_oficio"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    certificacion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("certificaciones_oficio.id"), index=True)
+    administrador_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"))
+    estado: Mapped[str] = mapped_column(String(20))
+    observaciones: Mapped[str | None] = mapped_column(Text)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

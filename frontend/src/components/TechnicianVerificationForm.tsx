@@ -244,20 +244,7 @@ export default function TechnicianVerificationForm({ user, initialStatus = 'NO_V
       if (fechaPoliciales) formData.append('fecha_policiales', fechaPoliciales)
       if (fechaPenales) formData.append('fecha_penales', fechaPenales)  
 
-      const token = await user.getIdToken()
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-      const response = await fetch(`${API_URL}/technicians/me/verification-documents`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || 'Error al enviar la solicitud de verificación.')
-      }
-
-      const data: VerificationDocsResponse = await response.json()
+      const data = await api<VerificationDocsResponse>('/technicians/me/verification-documents', user, formData)
       applyResponse(data, true)
       setDniFrontal(null); setDniReverso(null); setSelfie(null)
       setAntecedentesPoliciales(null); setAntecedentesPenales(null)

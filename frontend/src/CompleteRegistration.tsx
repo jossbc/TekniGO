@@ -14,6 +14,7 @@ import SpecialtySelector from './components/SpecialtySelector'
 import CoverageZoneSelector from './CoverageZoneSelector'
 import { Button } from './components/ui'
 import TechnicianVerificationForm from './components/TechnicianVerificationForm'
+import TechnicianCertificates from './components/TechnicianCertificates'
 
 export default function CompleteRegistration({ user }: { user: User }) {
   const { state, retry, updateProfile } = useAccount(user)
@@ -74,7 +75,8 @@ export default function CompleteRegistration({ user }: { user: User }) {
             />
           )}
         </section>
-        {profile.roles.includes('TECNICO') && <>
+        {isTechnician && <>
+          <TechnicianCertificates user={user} />
           <section className="account-card profile-card" style={{ marginBottom: 24 }}>
             <h2>Tus especialidades</h2>
             <p>Selecciona al menos una especialidad y presiona Guardar.</p>

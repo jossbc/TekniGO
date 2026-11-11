@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.identity_documents import _require_admin, _serialize_doc
 from app.identity_processing import IdentityProcessingRetry, process_current_identity
-from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, User, UserRole
+from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, TradeCertificate, User, UserRole
 from app.security import get_current_user
 from app.technician_activation import ANTECEDENTES_TYPES, IDENTITY_BASIC_TYPES, compute_document_expiration, sync_technician_verification_state
 
@@ -83,7 +83,7 @@ def _roles(user):
 @router.get("/dossiers")
 def list_dossiers(response: Response, claims=Depends(get_current_user), db: Session = Depends(get_db),
                   offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
-                  tipo: Literal["TODOS", "CLIENTE", "TECNICO"] = "TODOS"):
+                  tipo: Literal["TODOS", "CLIENTE", "TECNICO", "CERTIFICACIONES"] = "TODOS"):
     _require_admin(claims, db)
     response.headers["Cache-Control"] = "no-store, private"
     technician = select(UserRole.usuario_id).where(UserRole.usuario_id == User.id, UserRole.rol == "TECNICO").exists()
@@ -100,8 +100,15 @@ def list_dossiers(response: Response, claims=Depends(get_current_user), db: Sess
         TechnicianProfile.usuario_id == User.id,
         TechnicianProfile.estado_verificacion == "VERIFICADO",
     ).exists()
-    pending_technician = and_(technician, ~verified_technician)
-    condition = fallback if tipo == "CLIENTE" else pending_technician if tipo == "TECNICO" else or_(pending_technician, fallback)
+    certificates = select(TradeCertificate.usuario_id).where(TradeCertificate.usuario_id == User.id)
+    pending_certificates = certificates.where(TradeCertificate.estado == "PENDIENTE").exists()
+    pending_technician = and_(technician, or_(~verified_technician, pending_certificates))
+    condition = {
+        "TODOS": or_(pending_technician, fallback),
+        "CLIENTE": fallback,
+        "TECNICO": pending_technician,
+        "CERTIFICACIONES": and_(technician, certificates.exists()),
+    }[tipo]
     query = select(User).where(condition)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     users = db.scalars(query.order_by(User.creado_en, User.id).offset(offset).limit(limit)).all()

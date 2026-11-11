@@ -6,6 +6,7 @@ import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
+import AdminCertificates from '../components/AdminCertificates'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -42,6 +43,7 @@ function DossierManager({ user }: { user: User }) {
   const [error, setError] = useState('')
   const [dossierError, setDossierError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const [certificateRefresh, setCertificateRefresh] = useState(0)
   const [notice, setNotice] = useState('')
   function handleSaved(result: ReviewOutcome) {
     if (result.revision_completa) {
@@ -67,7 +69,7 @@ function DossierManager({ user }: { user: User }) {
       .then(value => { if (active) { setList(value); if (!value.expedientes.length && offset > 0) setOffset(Math.max(0, offset - 20)) } })
       .catch(err => { if (active) setError(errorMessage(err)) })
     return () => { active = false }
-  }, [user, offset, refresh, type])
+  }, [user, offset, refresh, certificateRefresh, type])
   useEffect(() => {
     let active = true
     setDossier(null); setDossierError('')
@@ -82,13 +84,13 @@ function DossierManager({ user }: { user: User }) {
     <p>Los clientes se verifican automáticamente. Aquí se revisan los casos que requieren intervención administrativa y los expedientes técnicos.</p>
     <div className="admin-toolbar">
       <div className="dossier-filters" role="group" aria-label="Filtrar por tipo de cuenta">
-        {[['TODOS', 'Todos'], ['CLIENTE', 'Clientes'], ['TECNICO', 'Técnicos']].map(([value, label]) => <Button key={value} className={type === value ? '' : 'button-outline'} aria-pressed={type === value} onClick={() => { setType(value); setOffset(0); setList(null) }}>{label}</Button>)}
+        {[['TODOS', 'Todos'], ['CLIENTE', 'Clientes'], ['TECNICO', 'Técnicos'], ['CERTIFICACIONES', 'Con certificaciones']].map(([value, label]) => <Button key={value} className={type === value ? '' : 'button-outline'} aria-pressed={type === value} onClick={() => { if (type !== value) { setType(value); setOffset(0); setList(null) } }}>{label}</Button>)}
       </div>
       <Button className="button-outline" onClick={() => setRefresh(value => value + 1)}>Actualizar expedientes</Button>
     </div>
     {!list && !error && <p role="status">Cargando expedientes…</p>}
     {list && <section className="account-card" style={{ marginBlock: 24 }}>
-      <h2>Expedientes pendientes ({list.total})</h2>
+      <h2>{type === 'CERTIFICACIONES' ? 'Expedientes con certificaciones' : 'Expedientes pendientes'} ({list.total})</h2>
       {list.expedientes.length === 0 && <p>No hay expedientes para este filtro.</p>}
       <div className="admin-table-wrap"><table className="admin-dossier-table">
         <thead><tr><th>Nombre</th><th>Tipo de cuenta</th><th>Identidad</th><th>Expediente</th></tr></thead>
@@ -106,7 +108,7 @@ function DossierManager({ user }: { user: User }) {
       {error && <p className="alert" role="alert">{error}</p>}
       {dossierError && <p className="alert" role="alert">No pudimos abrir el expediente: {dossierError}</p>}
       {selected && !dossier && !dossierError && <p role="status">Cargando expediente seleccionado…</p>}
-      {dossier && <section aria-label="Expediente seleccionado">
+      {dossier?.usuario_id === selected && <section aria-label="Expediente seleccionado">
         <h2>{dossier.nombre_completo} · Versión {dossier.version ?? 'sin documentos'}</h2>
         <RoleBadges roles={dossier.roles} />
         <p>DNI registrado: {dossier.dni}</p>
@@ -130,6 +132,7 @@ function DossierManager({ user }: { user: User }) {
           return doc ? <DocumentReviewCard key={`${doc.id}-${refresh}`} user={user} userId={dossier.usuario_id} doc={doc} label={label} machineRejected={dossier.resultados_identidad.find(result => result.proceso_responsable === 'PROCESAMIENTO_IDENTIDAD')?.estado === 'RECHAZADO'} identity={['DNI_FRONTAL', 'DNI_REVERSO', 'SELFIE'].includes(type)} onSaved={handleSaved} /> :
             <p className="alert" key={type}>{label}: faltante. Impide completar favorablemente la revisión.</p>
         })}
+        {dossier.roles.includes('TECNICO') && <AdminCertificates key={dossier.usuario_id} user={user} userId={dossier.usuario_id} onSaved={() => setCertificateRefresh(value => value + 1)} />}
         <h3>Historial privado de decisiones</h3>
         {!dossier.decisiones.length && <p>Aún no hay decisiones administrativas.</p>}
         <ul>{dossier.decisiones.map((decision, index) => <li key={index}>

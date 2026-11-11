@@ -1,4 +1,4 @@
-import { ShieldCheck, Star } from "lucide-react";
+import { Award, ShieldCheck, Star } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "./ui";
 
@@ -24,6 +24,8 @@ export function TechnicianCard({ technician }: { technician: CatalogTechnician }
             {technician.nombre_completo}
             {isVerified && <ShieldCheck size={18} color="#2563eb" aria-label="Técnico Verificado" />}
           </h3>
+          {isVerified && technician.estado_certificacion === "CERTIFICADO" &&
+            <span className="status-pill"><Award size={15} aria-hidden="true" /> Técnico Certificado</span>}
           <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: "#eab308", fontWeight: 600 }}>
             <Star size={16} fill="currentColor" />
             <span>{technician.calificacion_promedio == null ? "Sin calificaciones" : technician.calificacion_promedio.toFixed(1)}</span>
