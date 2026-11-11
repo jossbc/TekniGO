@@ -16,6 +16,7 @@ from app.permissions import router as permissions_router
 from app.phone_verification import router as phone_verification_router
 from app.admin_verification import router as admin_verification_router
 from app.direct_requests_router import router as direct_requests_router
+from app.technician_direct_requests import router as technician_direct_requests_router
 from app.client_requests import router as client_requests_router
 from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
@@ -43,6 +44,7 @@ app.include_router(permissions_router)
 app.include_router(phone_verification_router)
 app.include_router(admin_verification_router)
 app.include_router(direct_requests_router)
+app.include_router(technician_direct_requests_router)
 app.include_router(client_requests_router)
 app.include_router(open_requests_router)
 app.include_router(certifications_router)
