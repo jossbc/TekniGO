@@ -17,6 +17,7 @@ import AdminPage from "./pages/AdminPage";
 import ClientRequestsPage from "./pages/ClientRequestsPage";
 import PublishOpenRequestPage from "./pages/PublishOpenRequestPage";
 import TechnicianOpportunitiesPage from "./pages/TechnicianOpportunitiesPage";
+import TechnicianRequestsPage from "./pages/TechnicianRequestsPage";
 
 export default function App() {
   const { pathname } = useLocation();
@@ -66,6 +67,7 @@ export default function App() {
       <Route path="/tecnico" element={user ? <AccountPage user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/oportunidades" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/oportunidades/:id" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/tecnico/solicitudes" element={user ? <TechnicianRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

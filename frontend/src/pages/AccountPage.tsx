@@ -14,6 +14,7 @@ import EmailVerification from "../components/EmailVerification";
 import PhoneVerification from "../components/PhoneVerification";
 import { AvailabilityToggle } from "../components/AvailabilityToggle";
 import TechnicianDocumentationCard from "../components/TechnicianDocumentationCard";
+import TechnicianIncomingRequestsCard from "../components/TechnicianIncomingRequestsCard";
 
 export default function AccountPage({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" }) {
   const location = useLocation();
@@ -126,7 +127,11 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
           </div>
         )}
         <AccountStatus state={state} retry={retry} />
-        {profile?.roles.includes("ADMIN") && <Link className="button" to="/admin">Revisar expedientes técnicos</Link>}
+        {profile?.roles.includes("ADMIN") && (
+          <Link className="button" to="/admin">
+            Revisar expedientes técnicos
+          </Link>
+        )}
         {registrationPending && (
           <section className="account-card" style={{ marginBottom: 24 }}>
             <h2>Completa tu registro</h2>
@@ -199,29 +204,29 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
                     <ClipboardList size={22} />
                   </span>
                   <h2>Mis solicitudes</h2>
-                  <p>
-                    Consulta el estado actual de tus contrataciones directas y abiertas, la propuesta pactada y la línea de tiempo de cambios.
-                  </p>
+                  <p>Consulta el estado actual de tus contrataciones directas y abiertas, la propuesta pactada y la línea de tiempo de cambios.</p>
                   <Link to="/mis-solicitudes">
                     Ver mis contrataciones <ArrowUpRight size={15} />
                   </Link>
                 </section>
               )}
               {profile.roles.includes("TECNICO") && <TechnicianDocumentationCard user={user} />}
+              {/* Tarjeta de Ofertas disponibles */}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && (
                 <section className="account-card">
                   <span className="step-icon">
                     <ClipboardList size={22} />
                   </span>
                   <h2>Ofertas disponibles</h2>
-                  <p>
-                    Consulta solicitudes abiertas compatibles con tus especialidades y zonas de cobertura para postularte o descartar las que no te interesen.
-                  </p>
+                  <p>Consulta solicitudes abiertas compatibles con tus especialidades y zonas de cobertura para postularte o descartar las que no te interesen.</p>
                   <Link to="/tecnico/oportunidades">
                     Ver ofertas compatibles <ArrowUpRight size={15} />
                   </Link>
                 </section>
               )}
+
+              {/* Tarjeta de Solicitudes entrantes con preview (HU-22) */}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianIncomingRequestsCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>

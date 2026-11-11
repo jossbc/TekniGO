@@ -220,7 +220,7 @@ class DirectRequest(Base):
     monto_base = Column(Numeric(10, 2), nullable=False)
     metodo_pago = Column(String, nullable=False) # 'efectivo' o 'tarjeta'
 
-    estado = Column(String, nullable=False, default="Pendiente") # Pendiente, Aceptada, Rechazada, Cancelada, Completada
+    estado = Column(String, nullable=False, default="PENDIENTE") # PENDIENTE, ACEPTADA, RECHAZADA, CANCELADA, COMPLETADA
     creada_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Relaciones para facilitar consultas en SQLAlchemy
