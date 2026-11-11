@@ -9,7 +9,6 @@ import uuid
 from fastapi import HTTPException, Response
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from starlette.requests import Request
 
 from app.admin_verification import (
     AdminVerificationReviewSchema, DocumentReviewItem, apply_technician_review,
@@ -21,7 +20,7 @@ from app.identity_processing import IdentityChecks, IdentityProcessingRetry, pro
 from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, User, UserRole
 from app.storage import PrivateDocumentStorage
 from app.technician_activation import REQUIRED_TECHNICIAN_DOCS
-from app.technicians import process_technician_identity_endpoint, upload_verification_documents
+from app.technicians import _save_verification_documents, process_technician_identity_endpoint
 
 IMAGE = b'\xff\xd8\xffsynthetic-identity'
 PDF = b'%PDF-1.7 synthetic-background'
@@ -78,13 +77,8 @@ class TechnicianIdentityFlowTests(unittest.TestCase):
         for field, content in files.items():
             body += b'--bound\r\nContent-Disposition: form-data; name="'+field.encode()+b'"; filename="file.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'+content+b'\r\n'
         body += b'--bound--\r\n'
-        async def receive(): return {'type':'http.request', 'body':body, 'more_body':False}
-        request = Request({'type':'http', 'method':'POST', 'path':'/', 'headers':[(b'content-type', b'multipart/form-data; boundary=bound')]}, receive)
         with patch('app.technicians.PrivateDocumentStorage', return_value=self.store), patch('app.identity_processing.configured_processor', return_value=self.processor):
-            task = upload_verification_documents(request, {'uid':'tech'}, self.db)
-            try: task.send(None)
-            except StopIteration as completed: return completed.value
-            self.fail('The in-memory request unexpectedly suspended')
+            return _save_verification_documents('multipart/form-data; boundary=bound', body, {'uid':'tech'}, self.db)
 
     def test_positive_automatic_result_does_not_approve_technical_documents(self):
         result = self.process()

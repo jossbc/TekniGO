@@ -5,8 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, R
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, delete, func
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.database import get_db
+from app.certifications import approved_certificate_owners
 from app.models import (
     TechnicianProfile,
     User,
@@ -277,6 +279,7 @@ def get_technicians_catalog(
 
     results = db.execute(query).unique().all()
 
+    certified = approved_certificate_owners(db, [user.id for user, _ in results])
     catalog = []
     state_changed = False
     for user, profile in results:
@@ -308,7 +311,7 @@ def get_technicians_catalog(
             "especialidades": list(specs),
             "tecnico_verificado": evaluation["tecnico_verificado"],
             "estado_verificacion": profile.estado_verificacion,
-            "estado_certificacion": profile.estado_certificacion or "NO_CERTIFICADO",
+            "estado_certificacion": "CERTIFICADO" if user.id in certified else "NO_CERTIFICADO",
             #"tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
             #"unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA", #SE QUITARON ESTOS CAMPOS DE PERFILES TECNICOS
             "calificacion_promedio": (
@@ -319,7 +322,9 @@ def get_technicians_catalog(
     if state_changed:
         db.commit()
     
-    return catalog
+    return sorted(catalog, key=lambda row: (
+        row["estado_certificacion"] != "CERTIFICADO", row["nombre_completo"].casefold(), row["usuario_id"],
+    ))
 
 
 # --- ENDPOINT HU-13 / HU-18 ST-03: VISTA DETALLADA DEL PERFIL PÚBLICO DEL TÉCNICO ---
@@ -400,7 +405,7 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         "zonas_cobertura": [CoverageZoneItem.model_validate(zone) for zone in coverage_zones],
         "tecnico_verificado": evaluation["tecnico_verificado"],
         "estado_verificacion": tech_profile.estado_verificacion,
-        "estado_certificacion": tech_profile.estado_certificacion or "NO_CERTIFICADO",
+        "estado_certificacion": "CERTIFICADO" if approved_certificate_owners(db, [user.id]) else "NO_CERTIFICADO",
         #"tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0, #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
         #"unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
         "calificacion_promedio": (
@@ -509,6 +514,13 @@ async def upload_verification_documents(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    body = await request.body()
+    return await run_in_threadpool(
+        _save_verification_documents, request.headers.get("content-type", ""), body, claims, db,
+    )
+
+
+def _save_verification_documents(content_type: str, body: bytes, claims: dict, db: Session):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update().execution_options(populate_existing=True))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
@@ -519,8 +531,7 @@ async def upload_verification_documents(
         raise HTTPException(404, "No se encontró tu perfil de técnico")
     if technician.estado_verificacion == "VERIFICADO":
         raise HTTPException(409, "Tu perfil de técnico ya fue verificado")
-    body = await request.body()
-    parts = _parse_multipart_parts(request.headers.get("content-type", ""), body)
+    parts = _parse_multipart_parts(content_type, body)
     # 1. Consultar documentos existentes previamente para el usuario
     latest_request_id = select(IdentityVerificationRequest.id).where(
         IdentityVerificationRequest.usuario_id == user.id,
@@ -759,6 +770,10 @@ def get_my_activation_status(
     )
     if previous_state != evaluation["estado_verificacion"]:
         db.commit()
+    evaluation["estado_certificacion"] = (
+        "CERTIFICADO" if evaluation["tecnico_verificado"] and approved_certificate_owners(db, [user.id])
+        else "NO_CERTIFICADO"
+    )
     return evaluation
 
 @router.get("/admin/verification-documents/{document_id}/content")

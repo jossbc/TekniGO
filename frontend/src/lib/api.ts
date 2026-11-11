@@ -18,20 +18,46 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, user: User, body?: unknown, method?: string): Promise<T> {
-
-  const token = await user.getIdToken()
-  
   const httpMethod = method || (body === undefined ? 'GET' : 'POST')
+  const readOnly = httpMethod === 'GET' || httpMethod === 'HEAD'
+  // Technical document submission also runs identity evaluation after storing the files.
+  const timeoutMs = httpMethod === 'POST' && path === '/technicians/me/verification-documents'
+    ? 360_000
+    : !readOnly && path.endsWith('/identity-verification') ? 240_000 : 30_000
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new ApiError(504, readOnly
+        ? 'TekniGO tardó demasiado en responder. Intenta nuevamente.'
+        : 'TekniGO tardó demasiado en confirmar el cambio. Revisa si se guardó antes de volver a enviarlo.'))
+      controller.abort()
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([request<T>(path, user, body, httpMethod, controller.signal), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function request<T>(path: string, user: User, body: unknown, httpMethod: string, signal: AbortSignal): Promise<T> {
+  const token = await user.getIdToken()
+  signal.throwIfAborted()
+  const multipart = typeof FormData !== 'undefined' && body instanceof FormData
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+  if (!multipart) headers['Content-Type'] = 'application/json'
 
   const options: RequestInit = {
     method: httpMethod,
+    signal,
     cache: 'no-store',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers,
   }
 
   // Asegura que no se envíe un body si el método es GET o HEAD
   if (body !== undefined && httpMethod !== 'GET' && httpMethod !== 'HEAD') {
-    options.body = JSON.stringify(body)
+    options.body = multipart ? body : JSON.stringify(body)
   }
 
   const url = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`
@@ -39,6 +65,7 @@ export async function api<T>(path: string, user: User, body?: unknown, method?: 
   if (response.status === 401) {
     // Recover an expired token once; a revoked session still requires sign-in.
     const refreshedToken = await user.getIdToken(true)
+    signal.throwIfAborted()
     options.headers = { ...options.headers, Authorization: `Bearer ${refreshedToken}` }
     response = await fetch(url, options)
   }

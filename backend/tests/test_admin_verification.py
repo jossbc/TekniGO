@@ -9,16 +9,16 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
-from starlette.requests import Request
 
 from app.admin_verification import AdminVerificationReviewSchema, DocumentReviewItem, apply_technician_review, get_technician_dossier, list_technician_dossiers, list_dossiers, router
+from app.certifications import list_certificates
 from app.database import Base
 from app.identity_documents import get_document_content_for_admin, router as documents_router
 from app.identity_processing import process_current_identity
-from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, User, UserRole
+from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, TradeCertificate, User, UserRole
 from app.security import get_current_user
 from app.technician_activation import REQUIRED_TECHNICIAN_DOCS
-from app.technicians import upload_verification_documents
+from app.technicians import _save_verification_documents
 
 
 class AdminVerificationTests(unittest.TestCase):
@@ -155,19 +155,11 @@ class AdminVerificationTests(unittest.TestCase):
         item = DocumentReviewItem(documento_id=self.docs['SELFIE'].id, estado='RECHAZADO', observaciones='Selfie borrosa')
         apply_technician_review(self.tech.id, AdminVerificationReviewSchema(documentos=[item]), {'uid':'admin'}, self.db)
         body = b'--bound\r\nContent-Disposition: form-data; name="selfie"; filename="selfie.jpg"\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8\xffnew-selfie\r\n--bound--\r\n'
-        async def receive(): return {'type':'http.request', 'body':body, 'more_body':False}
-        request = Request({'type':'http','method':'POST','path':'/', 'headers':[(b'content-type', b'multipart/form-data; boundary=bound')]}, receive)
         store = Mock()
         store.read_private.return_value = b'old-file'
         store.store.side_effect = lambda **kwargs: SimpleNamespace(ruta_privada=f'{uuid.uuid4()}.enc', content_type='image/jpeg', tamano_bytes=10, sha256='b'*64)
         with patch('app.technicians.PrivateDocumentStorage', return_value=store):
-            task = upload_verification_documents(request, {'uid':'tech'}, self.db)
-            try:
-                task.send(None)
-            except StopIteration as completed:
-                result = completed.value
-            else:
-                self.fail('The in-memory upload unexpectedly required external I/O')
+            result = _save_verification_documents('multipart/form-data; boundary=bound', body, {'uid':'tech'}, self.db)
         self.assertEqual(len(self.db.scalars(select(IdentityDocument)).all()), 10)
         self.assertEqual(len(self.db.scalars(select(DocumentReviewDecision)).all()), 1)
         self.assertTrue(all(doc['estado']=='PENDIENTE' for doc in result['documentos']))
@@ -192,6 +184,33 @@ class AdminVerificationTests(unittest.TestCase):
 
     def queue(self, tipo="TODOS", offset=0, limit=20):
         return list_dossiers(Response(), {"uid":"admin"}, self.db, offset, limit, tipo)
+
+    def test_certificates_are_scoped_to_the_dossier_and_keep_verified_technicians_reviewable(self):
+        self.profile.estado_verificacion = "VERIFICADO"
+        other = self.add_user("other", "TECNICO", "4")
+        self.db.add(TechnicianProfile(usuario_id=other.id, estado_verificacion="VERIFICADO"))
+        cert = TradeCertificate(usuario_id=self.tech.id, titulo="Certificado de oficio",
+                                ruta_privada="certificado.enc", content_type="application/pdf")
+        self.db.add(cert)
+        self.db.commit()
+
+        def certificates(user_id, status="PENDIENTE"):
+            return list_certificates(Response(), {"uid": "admin"}, self.db, status, 0, user_id)
+
+        self.assertEqual(certificates(other.id), {
+            "certificaciones": [], "hay_mas": False, "tiene_certificaciones": False,
+        })
+        self.assertEqual([item["id"] for item in certificates(self.tech.id)["certificaciones"]], [str(cert.id)])
+        for filter_type in ("TODOS", "TECNICO", "CERTIFICACIONES"):
+            self.assertEqual([item["usuario_id"] for item in self.queue(filter_type)["expedientes"]], [str(self.tech.id)])
+        self.assertEqual(self.queue("CLIENTE")["total"], 0)
+
+        cert.estado = "APROBADO"
+        self.db.commit()
+        self.assertEqual(self.queue("TECNICO")["total"], 0)
+        self.assertEqual(self.queue("CERTIFICACIONES")["total"], 1)
+        self.assertTrue(certificates(self.tech.id)["tiene_certificaciones"])
+        self.assertEqual(certificates(self.tech.id)["certificaciones"], [])
 
     def test_client_failures_enter_queue_automatically_with_roles_and_filters(self):
         self.assertEqual(self.queue("CLIENTE")["total"], 0)
