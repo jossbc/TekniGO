@@ -1,10 +1,34 @@
 import uuid
 from datetime import datetime, date, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, func, Numeric, UniqueConstraint, JSON, Column, ForeignKey
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+class FlexibleUuid(TypeDecorator):
+    """Acepta uuid.UUID o str en Python; en PostgreSQL usa el tipo nativo UUID y en SQLite VARCHAR(36)."""
+
+    impl = String(36)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(Uuid(as_uuid=False))
+        return dialect.type_descriptor(String(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == "postgresql":
+            return str(uuid.UUID(str(value))) if not isinstance(value, uuid.UUID) else str(value)
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
 
 
 class User(Base):
@@ -177,10 +201,10 @@ class CoverageZone(Base):
 class DirectRequest(Base):
     __tablename__ = 'solicitudes_directas'
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(FlexibleUuid, primary_key=True, default=lambda: str(uuid.uuid4()))
     cliente_id = Column(String, ForeignKey('usuarios.firebase_uid'), nullable=False)
     tecnico_id = Column(String, ForeignKey('usuarios.firebase_uid'), nullable=False)
-    servicio_id = Column(String, ForeignKey('servicios.id'), nullable=False)
+    servicio_id = Column(FlexibleUuid, ForeignKey('servicios.id'), nullable=False)
 
     # Ubicación y Detalles
     municipio = Column(String, nullable=False)
@@ -211,8 +235,8 @@ class OpenRequest(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     cliente_id = Column(String, ForeignKey("usuarios.firebase_uid"), nullable=False, index=True)
     tecnico_id = Column(String, ForeignKey("usuarios.firebase_uid"), nullable=True, default=None)
-    especialidad_id = Column(String, ForeignKey("especialidades.id"), nullable=False, index=True)
-    servicio_id = Column(String, ForeignKey("servicios.id"), nullable=True, default=None)
+    especialidad_id = Column(FlexibleUuid, ForeignKey("especialidades.id"), nullable=False, index=True)
+    servicio_id = Column(FlexibleUuid, ForeignKey("servicios.id"), nullable=True, default=None)
 
     modalidad = Column(String(20), nullable=False, default="ABIERTA", server_default="ABIERTA")
     municipio = Column(String(80), nullable=False)
