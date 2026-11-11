@@ -6,7 +6,7 @@ __pycache__/
 .git/
 .env
 .env.*
-*.log.
-venv-*/
+*.log
+.venv-*/
 .identity_models/
 .test-temp/
