@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, FormEvent } from "react";
 import type { User } from "firebase/auth";
-import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw } from "lucide-react";
+import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw, ArrowLeft } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api, errorMessage } from "./lib/api";
 import { TechnicianCard, type CatalogTechnician } from "./components/TechnicianCard";
 import hondurasLocation from "./data/hondurasLocation.json";
@@ -67,6 +68,10 @@ export default function CatalogPage({ user }: { user: User }) {
 
   return (
     <main className="account catalog-page">
+      <Link className="public-profile-back" to="/cliente">
+        <ArrowLeft size={16} />
+        Volver a mi espacio de cliente
+      </Link>
       <header className="catalog-heading">
         <span className="catalog-eyebrow">CATÁLOGO DE PROFESIONALES</span>
         <h1>Encuentra al experto ideal</h1>

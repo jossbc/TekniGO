@@ -1,4 +1,5 @@
 import type { User } from 'firebase/auth'
+import { resolveApiUrl } from './api'
 
 export type ReviewOutcome = { estado_identidad: string; revision_completa: boolean }
 export type ReviewDocument = { id: string; tipo: string; estado: string; observaciones: string | null; fecha_emision: string | null; fecha_vencimiento: string | null }
@@ -13,7 +14,7 @@ export type AdminDossier = {
 }
 
 export async function openPrivateDocument(user: User, id: string): Promise<Blob> {
-  const url = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/admin/identity-documents/${id}/content`
+  const url = resolveApiUrl(`/admin/identity-documents/${id}/content`)
   const request = async (refresh = false) => fetch(url, { headers: { Authorization: `Bearer ${await user.getIdToken(refresh)}` }, cache: 'no-store' })
   let response = await request()
   if (response.status === 401) response = await request(true)

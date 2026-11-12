@@ -2,7 +2,7 @@ import LoadingState from './LoadingState'
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { CheckCircle2, CircleAlert, Clock3, CreditCard, ShieldCheck, Upload, X } from 'lucide-react'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, resolveApiUrl } from '../lib/api'
 import { ALLOWED_IMAGE_TYPES, IMAGE_RULES_HINT, validateIdentityImage } from '../lib/validation'
 import SelfieCameraCapture from './SelfieCameraCapture'
 import { Button } from './ui'
@@ -178,7 +178,7 @@ export default function ClientIdentityVerification({ user, initialStatus = 'PEND
       formData.append('selfie', selfie!)
 
       const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/users/me/identity-documents`,
+        resolveApiUrl('/users/me/identity-documents'),
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },

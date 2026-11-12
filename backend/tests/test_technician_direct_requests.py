@@ -13,6 +13,7 @@ from app.main import app as fastapi_app
 from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User, UserRole
 from app.technician_direct_requests import (
     accept_my_direct_request_endpoint,
+    get_my_direct_request_detail_endpoint,
     get_my_direct_requests_endpoint,
     reject_my_direct_request_endpoint,
 )
@@ -106,6 +107,7 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
     def test_routes_registered_on_fastapi_app(self):
         paths = fastapi_app.openapi()["paths"]
         self.assertIn("get", paths["/technicians/me/direct-requests"])
+        self.assertIn("get", paths["/technicians/me/direct-requests/{solicitud_id}"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/accept"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/reject"])
 
@@ -148,6 +150,16 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
         self.assertEqual(payload[0]["total_estimado"], 800.0)
         self.assertEqual(payload[1]["estado"], "PENDIENTE")
         self.assertEqual(payload[1]["total_estimado"], 400.0)
+
+        detail = get_my_direct_request_detail_endpoint(
+            solicitud_id=req_older.id,
+            response=Response(),
+            claims={"uid": self.tech_owner.firebase_uid},
+            db=self.db,
+        )
+        self.assertEqual(detail["id"], req_older.id)
+        self.assertEqual(detail["cliente_nombre"], "Joseline Banegas")
+        self.assertEqual(detail["total_estimado"], 400.0)
 
     def test_accept_and_reject_update_status_and_block_non_pending_repeats(self):
         req_1 = self._add_direct_request(tecnico_uid=self.tech_owner.firebase_uid, estado="Pendiente")

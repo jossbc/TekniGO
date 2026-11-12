@@ -2,19 +2,17 @@ import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
 import { ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Inbox, Check, X } from "lucide-react";
-import { api, errorMessage } from "../lib/api";
+import { errorMessage } from "../lib/api";
+import {
+  acceptTechnicianDirectRequest,
+  listTechnicianDirectRequests,
+  rejectTechnicianDirectRequest,
+  type TechnicianDirectRequest,
+} from "../lib/directRequests";
 import LoadingState from "./LoadingState";
 import { Button } from "./ui";
 
-export interface DirectRequest {
-  id: string;
-  cliente_nombre: string;
-  servicio_nombre: string;
-  fecha_hora: string;
-  descripcion: string;
-  estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | string;
-  total_estimado: number | string;
-}
+export type DirectRequest = TechnicianDirectRequest;
 
 function normalizeEstado(estado?: string): string {
   return (estado || "PENDIENTE").trim().toUpperCase();
@@ -44,7 +42,7 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
     setLoading(true);
     setLoadError("");
 
-    api<DirectRequest[]>("/technicians/me/direct-requests", user)
+    listTechnicianDirectRequests(user)
       .then((data) => {
         if (!active) return;
         setRequests(Array.isArray(data) ? data : []);
@@ -75,12 +73,11 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
         : "Solicitud rechazada correctamente.";
 
     try {
-      await api(
-        `/technicians/me/direct-requests/${encodeURIComponent(id)}/${decision}`,
-        user,
-        undefined,
-        "PATCH",
-      );
+      if (decision === "accept") {
+        await acceptTechnicianDirectRequest(user, id);
+      } else {
+        await rejectTechnicianDirectRequest(user, id);
+      }
       setRequests((prev) =>
         prev.map((req) => (req.id === id ? { ...req, estado: nextState } : req)),
       );

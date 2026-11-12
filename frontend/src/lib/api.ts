@@ -17,6 +17,13 @@ export class ApiError extends Error {
   }
 }
 
+export function resolveApiUrl(path: string): string {
+  const configured = (import.meta.env?.VITE_API_URL || '').trim().replace(/\/$/, '')
+  const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(configured)
+  const base = configured && !isLocal ? configured : ''
+  return `${base}${path}`
+}
+
 export async function api<T>(path: string, user: User, body?: unknown, method?: string): Promise<T> {
   const httpMethod = method || (body === undefined ? 'GET' : 'POST')
   const readOnly = httpMethod === 'GET' || httpMethod === 'HEAD'
@@ -60,7 +67,7 @@ async function request<T>(path: string, user: User, body: unknown, httpMethod: s
     options.body = multipart ? body : JSON.stringify(body)
   }
 
-  const url = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`
+  const url = resolveApiUrl(path)
   let response = await fetch(url, options)
   if (response.status === 401) {
     // Recover an expired token once; a revoked session still requires sign-in.

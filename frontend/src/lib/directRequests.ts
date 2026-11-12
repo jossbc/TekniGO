@@ -1,9 +1,17 @@
-import { getAuth } from "firebase/auth";
+import { getAuth, type User } from "firebase/auth";
+import { api, resolveApiUrl } from "./api";
 
-const CONFIGURED_API_URL = (import.meta.env?.VITE_API_URL || "").trim().replace(/\/$/, "");
-const IS_LOCAL_CONFIG = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(CONFIGURED_API_URL);
-// In local Vite dev and Docker nginx, use same-origin relative routes proxied to the backend.
-const API_URL = CONFIGURED_API_URL && !IS_LOCAL_CONFIG ? CONFIGURED_API_URL : "";
+export interface TechnicianDirectRequest {
+  id: string;
+  cliente_nombre: string;
+  servicio_nombre: string;
+  fecha_hora: string;
+  descripcion: string;
+  estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | string;
+  total_estimado: number | string;
+}
+
+export const TECHNICIAN_DIRECT_REQUESTS_PATH = "/technicians/me/direct-requests";
 
 async function authorizedJsonPost(path: string, body: unknown, fallbackError: string) {
   const currentUser = getAuth().currentUser;
@@ -13,7 +21,7 @@ async function authorizedJsonPost(path: string, body: unknown, fallbackError: st
 
   let token = await currentUser.getIdToken();
   const sendRequest = (bearer: string) =>
-    fetch(`${API_URL}${path}`, {
+    fetch(resolveApiUrl(path), {
       method: "POST",
       cache: "no-store",
       headers: {
@@ -71,3 +79,16 @@ export const createDirectRequest = async (requestData: {
     requestData,
     "Error al crear la solicitud",
   );
+
+// HU-22, HU-23, HU-24: Bandeja, detalle y respuesta del técnico autenticado
+export const listTechnicianDirectRequests = (user: User) =>
+  api<TechnicianDirectRequest[]>(TECHNICIAN_DIRECT_REQUESTS_PATH, user);
+
+export const getTechnicianDirectRequest = (user: User, solicitudId: string) =>
+  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}`, user);
+
+export const acceptTechnicianDirectRequest = (user: User, solicitudId: string) =>
+  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/accept`, user, undefined, "PATCH");
+
+export const rejectTechnicianDirectRequest = (user: User, solicitudId: string) =>
+  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/reject`, user, undefined, "PATCH");
