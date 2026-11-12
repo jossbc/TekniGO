@@ -23,7 +23,7 @@ export default function CompleteRegistration({ user }: { user: User }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const profile = state.status === 'ready' ? state.profile : null
-  const isTechnician = profile?.roles.includes('TECNICO');
+  const isTechnician = Boolean(profile?.roles?.some((r) => String(r).toUpperCase().includes('TECNICO')))
   async function finish() {
     if (!profile) return
     setBusy(true)

@@ -238,7 +238,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
       </main>
     );
 
-  const isTechnician = !!profile?.roles.includes("TECNICO");
+  const isTechnician = Boolean(profile?.roles?.some((r) => String(r).toUpperCase().includes("TECNICO")));
 
   return (
     <main className="account profile-page" style={{ margin: "0 auto 90px" }}>
@@ -296,7 +296,6 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
           {isTechnician && (
             <>
-              <TechnicianCertificates user={user} />
               <section className="account-card profile-card">
                 <h2 style={cardTitle}>Estado del perfil técnico</h2>
 
@@ -394,6 +393,8 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                   </div>
                 )}
               </section>
+
+              <TechnicianCertificates user={user} />
 
               <section className="account-card profile-card">
                 <h2 style={cardTitle}>Especialidades</h2>
@@ -496,6 +497,12 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
             </Button>
           </div>
         </form>
+      )}
+
+      {profile && editing && isTechnician && (
+        <div style={{ marginTop: "1.5rem" }}>
+          <TechnicianCertificates user={user} />
+        </div>
       )}
     </main>
   );

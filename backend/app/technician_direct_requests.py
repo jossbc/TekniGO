@@ -102,7 +102,7 @@ def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
     rows = list(
         db.scalars(
             select(DirectRequest)
-            .where(DirectRequest.tecnico_id == user.firebase_uid)
+            .where(DirectRequest.tecnico_id.in_((user.firebase_uid, str(user.id))))
             .order_by(DirectRequest.creada_en.desc(), DirectRequest.id.desc())
         ).all()
     )
@@ -113,13 +113,7 @@ def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
     ]
 
 
-def respond_to_direct_request(
-    solicitud_id: str,
-    target_estado: str,
-    claims: dict,
-    db: Session,
-) -> dict:
-    """HU-23 / HU-24: Valida propiedad del técnico y actualiza una solicitud pendiente a ACEPTADA o RECHAZADA."""
+def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session) -> DirectRequest:
     user = _require_technician_user(claims, db)
     clean_id = (solicitud_id or "").strip()
     if not clean_id:
@@ -136,11 +130,29 @@ def respond_to_direct_request(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud directa.")
 
-    if record.tecnico_id != user.firebase_uid:
+    if record.tecnico_id not in (user.firebase_uid, str(user.id)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permiso para modificar esta solicitud.",
         )
+    return record
+
+
+def get_technician_direct_request_detail(solicitud_id: str, claims: dict, db: Session) -> dict:
+    """HU-22: Obtiene el detalle de una solicitud directa dirigida al técnico autenticado."""
+    record = _get_owned_direct_request(solicitud_id, claims, db)
+    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+
+
+def respond_to_direct_request(
+    solicitud_id: str,
+    target_estado: str,
+    claims: dict,
+    db: Session,
+) -> dict:
+    """HU-23 / HU-24: Valida propiedad del técnico y actualiza una solicitud pendiente a ACEPTADA o RECHAZADA."""
+    record = _get_owned_direct_request(solicitud_id, claims, db)
 
     current_state = (record.estado or "PENDIENTE").strip().upper()
     if current_state != "PENDIENTE":
@@ -165,6 +177,17 @@ def get_my_direct_requests_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return list_technician_direct_requests(claims, db)
+
+
+@router.get("/me/direct-requests/{solicitud_id}", response_model=TechnicianDirectRequestOut, status_code=status.HTTP_200_OK)
+def get_my_direct_request_detail_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return get_technician_direct_request_detail(solicitud_id, claims, db)
 
 
 @router.patch(

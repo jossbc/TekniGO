@@ -1,4 +1,5 @@
 import type { User } from 'firebase/auth'
+import { resolveApiUrl } from './api'
 
 export type CertificateStatus = 'PENDIENTE' | 'APROBADO' | 'RECHAZADO' | 'REVOCADO'
 export type Certificate = {
@@ -20,7 +21,7 @@ export const ownerCertificatesPath = '/technicians/me/certifications'
 export const adminCertificatesPath = '/admin/certifications'
 
 export async function certificateFileRequest(path: string, user: User, body?: FormData) {
-  const url = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${path}`
+  const url = resolveApiUrl(path)
   const request = async (refresh = false) => fetch(url, {
     method: body ? 'POST' : 'GET',
     body,
