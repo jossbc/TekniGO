@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, model_validator, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from app.models import (
     Specialty,
     TechnicianProfile,
     TechnicianSpecialty,
+    TradeCertificate,
     User,
 )
 from app.permissions import require_enabled_client
@@ -79,6 +80,8 @@ class CounterOfferSchema(BaseModel):
             return None
         cleaned = v.strip()
         return cleaned if cleaned else None
+
+#HU-30 Esquema para el Rechazo de una Propuesta CA-03
 
 
 def validate_counter_offer_amount(value: Any) -> Decimal:
@@ -1215,10 +1218,44 @@ def serialize_open_request_proposal(
     tech_user: User | None = None,
     tech_profile: TechnicianProfile | None = None,
 ) -> dict:
-    """HU-28 (CA-02, CA-05): Serializa una propuesta conservando técnico, monto, fecha y estado pendiente."""
+    """HU-28 / HU-29 / HU-30 (CA-01, CA-02, CA-06): Serializa propuesta con técnico, calificación, insignias separadas y habilitación."""
     resolved_user = tech_user or db.scalar(select(User).where(User.id == proposal.usuario_id))
     resolved_profile = tech_profile or db.get(TechnicianProfile, proposal.usuario_id)
     monto_val = float(Decimal(str(proposal.monto)).quantize(Decimal("0.01")))
+
+    # HU-30 CA-02: Insignias separadas de verificación y certificación de oficio
+    verificado = bool(
+        resolved_user is not None
+        and resolved_user.estado_identidad == "VERIFICADO"
+        and resolved_profile is not None
+        and resolved_profile.estado_verificacion == "VERIFICADO"
+    )
+
+    certificaciones_count = 0
+    if resolved_profile is not None:
+        certificaciones_count = db.scalar(
+            select(func.count(TradeCertificate.id)).where(
+                TradeCertificate.usuario_id == resolved_profile.usuario_id,
+                TradeCertificate.estado == "APROBADO",
+            )
+        ) or 0
+
+    certificado = certificaciones_count > 0
+
+    # HU-30 CA-06: Verificación de habilitación operativa para adjudicación
+    habilitado_operativamente = bool(
+        resolved_user is not None
+        and resolved_profile is not None
+        and is_operationally_enabled(resolved_user, resolved_profile)
+    )
+
+    propuesta_estado = (proposal.estado or "PENDIENTE").strip().upper()
+    elegible_para_adjudicar = bool(
+        proposal.activa
+        and propuesta_estado == "PENDIENTE"
+        and habilitado_operativamente
+    )
+
     return {
         "id": str(proposal.id),
         "propuesta_id": str(proposal.id),
@@ -1228,8 +1265,9 @@ def serialize_open_request_proposal(
         "tipo": proposal.tipo,
         "monto": monto_val,
         "justificacion": proposal.justificacion,
-        "estado": (proposal.estado or "PENDIENTE").strip().upper(),
+        "estado": propuesta_estado,
         "activa": bool(proposal.activa),
+        "elegible_para_adjudicar": elegible_para_adjudicar,
         "creada_en": proposal.creada_en.isoformat() if proposal.creada_en else None,
         "actualizada_en": proposal.actualizada_en.isoformat() if proposal.actualizada_en else None,
         "tecnico": {
@@ -1239,6 +1277,11 @@ def serialize_open_request_proposal(
             "estado_verificacion": (
                 resolved_profile.estado_verificacion if resolved_profile is not None else None
             ),
+            "verificado": verificado,
+            "certificado": certificado,
+            "certificaciones_aprobadas_count": certificaciones_count,
+            "disponible": resolved_profile.disponible if resolved_profile is not None else False,
+            "habilitado_operativamente": habilitado_operativamente,
             "calificacion_promedio": (
                 float(Decimal(str(resolved_profile.calificacion_promedio)).quantize(Decimal("0.01")))
                 if resolved_profile is not None and resolved_profile.calificacion_promedio is not None
@@ -1668,20 +1711,21 @@ def list_open_request_proposals_for_viewer(
     claims: dict,
     db: Session,
 ) -> dict:
-    """HU-28 ST-04 (CA-05): El cliente propietario ve todas las propuestas y eventos; el técnico ve solo su propuesta sin dirección ni teléfono."""
+    """HU-28 ST-04 / HU-30 ST-01 (CA-01): El cliente propietario consulta todas las propuestas para comparación; cada técnico ve solo la suya."""
     uid = claims.get("uid") if isinstance(claims, dict) else None
     if not uid:
         raise HTTPException(401, "Sesión inválida o expirada")
 
     user = db.scalar(select(User).where(User.firebase_uid == uid))
-    if user is None:
+    if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
 
     clean_id = (solicitud_id or "").strip()
-    record = db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id))
+    record = db.get(OpenRequest, clean_id)
     if record is None:
         raise HTTPException(404, "No se encontró la solicitud abierta")
 
+    # CA-01: Propietario consulta todas las propuestas para comparación
     if record.cliente_id == user.firebase_uid:
         proposals = db.scalars(
             select(OpenRequestProposal)
@@ -1690,11 +1734,35 @@ def list_open_request_proposals_for_viewer(
         ).all()
         return {
             "solicitud_id": str(record.id),
+            "presupuesto_base": float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01"))),
             "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+            "es_propietario": True,
             "total": len(proposals),
             "propuestas": [serialize_open_request_proposal(p, db) for p in proposals],
             "eventos": get_open_request_events(str(record.id)),
         }
+
+    # CA-01: Si no es el propietario, solo un técnico con rol puede consultar su propia propuesta
+    if not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "No tienes permiso para consultar las propuestas de esta solicitud")
+
+    own_proposals = db.scalars(
+        select(OpenRequestProposal)
+        .where(
+            OpenRequestProposal.solicitud_id == str(record.id),
+            OpenRequestProposal.usuario_id == user.id,
+        )
+        .order_by(OpenRequestProposal.creada_en.desc())
+    ).all()
+    return {
+        "solicitud_id": str(record.id),
+        "presupuesto_base": float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01"))),
+        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "es_propietario": False,
+        "ubicacion_exacta_protegida": True,
+        "total": len(own_proposals),
+        "propuestas": [serialize_open_request_proposal(p, db, tech_user=user) for p in own_proposals],
+    }
 
     if not any(role.rol == "TECNICO" for role in user.roles):
         raise HTTPException(403, "No tienes permiso para consultar las propuestas de esta solicitud")
@@ -1786,3 +1854,130 @@ async def stream_open_request_events(
             "X-Accel-Buffering": "no",
         },
     )
+
+# --- HU-30 ST-03: Rechazo individual de propuestas por el cliente ---
+class RejectProposalSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    motivo: str | None = Field(default=None, max_length=500, description="Motivo opcional del rechazo")
+
+
+def reject_open_request_proposal_by_owner(
+    solicitud_id: str,
+    proposal_id: str,
+    payload: RejectProposalSchema,
+    claims: dict,
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """HU-30 ST-03 (CA-03): El cliente propietario rechaza una propuesta pendiente sin cancelar la licitación."""
+    uid = claims.get("uid") if isinstance(claims, dict) else None
+    if not uid:
+        raise HTTPException(401, "Sesión inválida o expirada")
+
+    user = db.scalar(select(User).where(User.firebase_uid == uid))
+    if not user:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+
+    clean_solicitud_id = (solicitud_id or "").strip()
+    record = db.scalar(
+        select(OpenRequest)
+        .where(OpenRequest.id == clean_solicitud_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta")
+
+    if record.cliente_id != user.firebase_uid:
+        raise HTTPException(403, "Solo el cliente propietario puede rechazar propuestas de esta licitación")
+
+    state_key = _canonical_state_key(record.estado)
+    if state_key in {"ACEPTADA", "ADJUDICADA", "CANCELADA", "COMPLETADA"}:
+        raise HTTPException(
+            409,
+            f"La solicitud se encuentra en estado {(record.estado or '').strip()} y no permite rechazar propuestas.",
+        )
+
+    clean_prop_id = (proposal_id or "").strip()
+    proposal = db.scalar(
+        select(OpenRequestProposal)
+        .where(
+            OpenRequestProposal.id == clean_prop_id,
+            OpenRequestProposal.solicitud_id == str(record.id),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if proposal is None:
+        raise HTTPException(404, "No se encontró la propuesta en esta solicitud")
+
+    current_prop_state = (proposal.estado or "PENDIENTE").strip().upper()
+    if current_prop_state == "RECHAZADA":
+        raise HTTPException(409, "La propuesta ya fue rechazada anteriormente")
+    if current_prop_state in {"ACEPTADA", "ADJUDICADA"}:
+        raise HTTPException(409, "No se puede rechazar una propuesta ya aceptada")
+
+    reference_now = now or datetime.now(timezone.utc)
+    proposal.estado = "RECHAZADA"
+    proposal.activa = False
+    proposal.actualizada_en = reference_now
+
+    if payload.motivo and payload.motivo.strip():
+        motivo_limpio = payload.motivo.strip()
+        proposal.justificacion = (
+            f"{proposal.justificacion} | Motivo rechazo: {motivo_limpio}"
+            if proposal.justificacion
+            else f"Motivo rechazo: {motivo_limpio}"
+        )
+
+    # CA-03: No cancelar la licitación. Si quedan otras propuestas activas sigue Con ofertas; si no, pasa a Publicada
+    active_count = db.scalar(
+        select(func.count(OpenRequestProposal.id)).where(
+            OpenRequestProposal.solicitud_id == str(record.id),
+            OpenRequestProposal.activa.is_(True),
+            OpenRequestProposal.estado == "PENDIENTE",
+            OpenRequestProposal.id != proposal.id,
+        )
+    ) or 0
+
+    record.estado = "Con ofertas" if active_count > 0 else "Publicada"
+    db.commit()
+    db.refresh(record)
+    db.refresh(proposal)
+
+    # Emitir evento y notificar a suscriptores SSE
+    event = {
+        "evento_id": str(uuid.uuid4()),
+        "tipo": "PROPUESTA_RECHAZADA",
+        "solicitud_id": str(record.id),
+        "propuesta_id": str(proposal.id),
+        "tecnico_id": proposal.tecnico_id,
+        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "emitido_en": reference_now.isoformat(),
+        "mensaje": f"Propuesta por L. {float(proposal.monto):.2f} fue rechazada por el cliente.",
+    }
+    _OPEN_REQUEST_EVENTS[str(record.id)].append(event)
+    for queue in list(_OPEN_REQUEST_SUBSCRIBERS.get(str(record.id), [])):
+        try:
+            queue.put_nowait(event)
+        except Exception:
+            pass
+
+    return {
+        "mensaje": "Propuesta rechazada correctamente. La licitación continúa disponible.",
+        "solicitud_id": str(record.id),
+        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "propuesta": serialize_open_request_proposal(proposal, db),
+    }
+
+
+@router.post("/{solicitud_id}/proposals/{proposal_id}/reject", status_code=200)
+def reject_proposal_endpoint(
+    solicitud_id: str,
+    proposal_id: str,
+    payload: RejectProposalSchema = RejectProposalSchema(),
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return reject_open_request_proposal_by_owner(solicitud_id, proposal_id, payload, claims, db)

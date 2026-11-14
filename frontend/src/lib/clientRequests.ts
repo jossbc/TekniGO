@@ -73,12 +73,18 @@ export type ReceivedOpenRequestProposal = {
   justificacion: string | null;
   estado: string;
   activa: boolean;
+  elegible_para_adjudicar?: boolean;
   creada_en: string | null;
   tecnico: {
     usuario_id: string;
     firebase_uid: string;
     nombre_completo: string | null;
     estado_verificacion: string | null;
+    verificado?: boolean;
+    certificado?: boolean;
+    certificaciones_aprobadas_count?: number;
+    disponible?: boolean;
+    habilitado_operativamente?: boolean;
     calificacion_promedio: number | null;
   };
 };
@@ -191,6 +197,26 @@ export async function executeMyRequestAction(
     `/users/me/requests/${encodeURIComponent(solicitudId)}/actions`,
     user,
     { accion },
+    "POST",
+  );
+}
+
+
+export async function rejectProposalApi(
+  user: User,
+  solicitudId: string,
+  proposalId: string,
+  motivo?: string,
+): Promise<{
+  mensaje: string;
+  solicitud_id: string;
+  estado_solicitud: string;
+  propuesta: ReceivedOpenRequestProposal;
+}> {
+  return api(
+    `/open-requests/${encodeURIComponent(solicitudId)}/proposals/${encodeURIComponent(proposalId)}/reject`,
+    user,
+    { motivo: motivo || null },
     "POST",
   );
 }
