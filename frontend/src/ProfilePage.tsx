@@ -434,7 +434,16 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                 <ServiceManager user={user} />
               </section>
               <section className="account-card profile-card">
-                <h2 style={cardTitle}>Zonas de cobertura</h2>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+                  <h2 style={{ ...cardTitle, margin: 0 }}>Zonas de cobertura</h2>
+                  <Link
+                    to="/tecnico/oportunidades"
+                    className="button button-outline"
+                    style={{ width: "auto", minHeight: 38, padding: "6px 14px", fontSize: "0.9rem" }}
+                  >
+                    Ver solicitudes abiertas en mis zonas <ArrowUpRight size={15} />
+                  </Link>
+                </div>
                 <CoverageZoneSelector user={user} />
               </section>
             </>

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
+import { Link } from "react-router-dom";
 import {
   Briefcase,
   Calendar,
@@ -181,7 +182,7 @@ export default function TechnicianOpportunitiesManager({
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [user, refreshTick]);
 
   const availableMunicipios = useMemo(() => {
     const unique = new Set<string>();
@@ -330,6 +331,89 @@ export default function TechnicianOpportunitiesManager({
 
   return (
     <div className="client-requests-section">
+      {/* Resumen de zonas de cobertura activas del técnico con filtro rápido */}
+      <div
+        style={{
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: 12,
+          padding: "0.85rem 1rem",
+          marginBottom: "0.85rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.5rem",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <strong style={{ fontSize: "0.9rem", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <MapPin size={16} color="var(--blue)" />
+            Mis zonas de cobertura activas ({coverageZones.length})
+          </strong>
+          <Link to="/perfil" style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--blue)" }}>
+            Editar o agregar más zonas en mi perfil →
+          </Link>
+        </div>
+
+        {coverageZones.length === 0 ? (
+          <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
+            Aún no tienes zonas de cobertura guardadas en tu perfil.
+          </span>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.45rem" }}>
+            <button
+              type="button"
+              onClick={() => {
+                setMunicipio("");
+                setSector("");
+                setOffset(0);
+              }}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                fontSize: "0.82rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                border: !municipio && !sector ? "1px solid #2563eb" : "1px solid #cbd5e1",
+                background: !municipio && !sector ? "#2563eb" : "#fff",
+                color: !municipio && !sector ? "#fff" : "#334155",
+              }}
+            >
+              Todas mis zonas
+            </button>
+            {coverageZones.map((z, idx) => {
+              const active = municipio === z.municipio && sector === z.sector;
+              return (
+                <button
+                  key={`${z.departamento}-${z.municipio}-${z.sector}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setMunicipio(z.municipio);
+                    setSector(z.sector);
+                    setOffset(0);
+                  }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    border: active ? "1px solid #2563eb" : "1px solid #bfdbfe",
+                    background: active ? "#2563eb" : "#eff6ff",
+                    color: active ? "#fff" : "#1d4ed8",
+                  }}
+                >
+                  <MapPin size={12} />
+                  {z.municipio}: {z.sector}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Barra de filtros por oficio, cobertura y estado (ST-01, CA-01, CA-06) */}
       <div className="client-requests-toolbar">
         <div className="client-requests-filter-controls" style={{ flexWrap: "wrap", gap: "0.75rem" }}>
@@ -429,7 +513,12 @@ export default function TechnicianOpportunitiesManager({
 
       {listError && (
         <div className="alert" role="alert">
-          {listError}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span>{listError}</span>
+            <Link className="button button-outline" to="/perfil" style={{ width: "auto" }}>
+              Ir a mi perfil profesional
+            </Link>
+          </div>
         </div>
       )}
 
@@ -444,11 +533,18 @@ export default function TechnicianOpportunitiesManager({
             {page.mensaje ||
               "No hay solicitudes abiertas Publicadas o Con ofertas que coincidan con los filtros actuales."}
           </p>
-          {hasActiveFilters && (
-            <Button type="button" className="button-outline" onClick={clearFilters}>
-              Limpiar y revisar filtros
-            </Button>
-          )}
+          <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap", marginTop: "8px" }}>
+            {hasActiveFilters && (
+              <Button type="button" className="button-outline" onClick={clearFilters}>
+                Limpiar y revisar filtros
+              </Button>
+            )}
+            {(specialties.length === 0 || coverageZones.length === 0) && (
+              <Link className="button" to="/perfil" style={{ width: "auto" }}>
+                Configurar especialidades y zonas en mi perfil
+              </Link>
+            )}
+          </div>
         </section>
       )}
 

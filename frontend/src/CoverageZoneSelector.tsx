@@ -1,10 +1,11 @@
 import LoadingState from './components/LoadingState'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { User } from 'firebase/auth'
-import { CheckCircle2, CircleAlert, MapPin, Plus, Trash2, X } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, CircleAlert, MapPin, Plus, X } from 'lucide-react'
 import { api, errorMessage } from './lib/api'
 import { Button } from './components/ui'
 import hondurasLocation from './data/hondurasLocation.json'
+import { getSectorsForMunicipio, stripAccentsAndLower } from './data/hondurasSectors'
 
 export type CoverageZone = {
   departamento: string
@@ -14,24 +15,47 @@ export type CoverageZone = {
 
 const inputStyle = {
   width: '100%',
+  height: 46,
   minHeight: 46,
-  padding: '10px 14px',
+  padding: '0 14px',
   borderRadius: 8,
   border: '1px solid #dce2eb',
   fontSize: '0.95rem',
-  background: '#fff'
+  background: '#fff',
+  boxSizing: 'border-box' as const,
 }
+
+const labelStyle = {
+  display: 'block',
+  fontSize: '0.85rem',
+  fontWeight: 600,
+  marginBottom: 6,
+  whiteSpace: 'nowrap' as const,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}
+
+function zoneKey(z: CoverageZone): string {
+  return `${stripAccentsAndLower(z.departamento)}|${stripAccentsAndLower(z.municipio)}|${stripAccentsAndLower(z.sector)}`
+}
+
 export default function CoverageZoneSelector({ user }: { user: User }) {
   const [zones, setZones] = useState<CoverageZone[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  // Selección vinculada
+
+  // Selección vinculada (desplegable multi-sector + opción "Otro")
   const [selectedDepto, setSelectedDepto] = useState<string>('')
   const [selectedMunicipio, setSelectedMunicipio] = useState<string>('')
-  const [customSector, setCustomSector] = useState<string>('')
+  const [selectedSectors, setSelectedSectors] = useState<string[]>([])
+  const [useOtherSector, setUseOtherSector] = useState(false)
+  const [customSector, setCustomSector] = useState('')
+  const [dropdownOpen, setDropdownOpen] = useState(false)
   const [formError, setFormError] = useState('')
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     let active = true
     api<CoverageZone[]>('/technicians/me/coverage-zones', user)
@@ -49,63 +73,18 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
       })
     return () => { active = false }
   }, [user])
-  function handleDeptoChange(depto: string) {
-    setSelectedDepto(depto)
-    setSelectedMunicipio('')
-    setFormError('')
-  }
-  function handleAddZone(e: FormEvent) {
-    e.preventDefault()
-    setFormError('')
-    setNotice('')
-    if (!selectedDepto) {
-      setFormError('Por favor selecciona un departamento.')
-      return
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false)
+      }
     }
-   
-    let finalMunicipio = selectedMunicipio.trim()
-    let finalSector = customSector.trim()
-    if (!finalMunicipio) {
-      setFormError('Por favor selecciona un municipio.')
-      return
-    }
-    if (!finalSector) {
-      setFormError('Por favor escribe un sector o colonia.')
-      return
-    }
-    // Regla: Municipio no puede contener números
-    if (/\d/.test(finalMunicipio)) {
-      setFormError('El municipio no puede contener números.')
-      return
-    }
-    // Regla: Sector no puede comenzar con un número
-    if (/^\d/.test(finalSector)) {
-      setFormError('El sector no puede comenzar con un número.')
-      return
-    }
-    // Asegurar primera letra mayúscula
-    finalMunicipio = finalMunicipio.charAt(0).toUpperCase() + finalMunicipio.slice(1)
-    finalSector = finalSector.charAt(0).toUpperCase() + finalSector.slice(1)
-    // Validar duplicados exactos
-    const exists = zones.some(
-      (z) => z.departamento.toLowerCase() === selectedDepto.toLowerCase() &&
-             z.municipio.toLowerCase() === finalMunicipio.toLowerCase() &&
-             z.sector.toLowerCase() === finalSector.toLowerCase()
-    )
-    if (exists) {
-      setFormError('Esta zona ya está agregada a tu lista.')
-      return
-    }
-    setZones([...zones, { departamento: selectedDepto, municipio: finalMunicipio, sector: finalSector }])
-    
-    // Limpiar campo de sector para seguir agregando en el mismo municipio
-    setCustomSector('')
-  }
-  function handleRemoveZone(index: number) {
-    setNotice('')
-    setZones(zones.filter((_, i) => i !== index))
-  }
-  async function handleSave() {
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  async function persistZones(nextZones: CoverageZone[], successMsg: string) {
     setBusy(true)
     setError('')
     setNotice('')
@@ -113,30 +92,185 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
       const saved = await api<CoverageZone[]>(
         '/technicians/me/coverage-zones',
         user,
-        { zonas_cobertura: zones },
+        { zonas_cobertura: nextZones },
         'PATCH'
       )
-      setZones(saved ?? zones)
-      setNotice('Zonas de cobertura actualizadas correctamente.')
+      setZones(saved ?? nextZones)
+      setNotice(successMsg)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
       setBusy(false)
     }
   }
-  // Lista de departamentos disponibles (claves del JSON)
+
+  function handleDeptoChange(depto: string) {
+    setSelectedDepto(depto)
+    setSelectedMunicipio('')
+    setSelectedSectors([])
+    setUseOtherSector(false)
+    setCustomSector('')
+    setDropdownOpen(false)
+    setFormError('')
+  }
+
+  function handleMunicipioChange(mun: string) {
+    setSelectedMunicipio(mun)
+    setSelectedSectors([])
+    setUseOtherSector(false)
+    setCustomSector('')
+    setDropdownOpen(false)
+    setFormError('')
+  }
+
+  function toggleSectorSelection(sectorName: string) {
+    setFormError('')
+    setSelectedSectors((prev) =>
+      prev.includes(sectorName)
+        ? prev.filter((item) => item !== sectorName)
+        : [...prev, sectorName]
+    )
+  }
+
+  function collectPendingSectors(): { sectors: string[]; errorMsg: string | null } {
+    const list = [...selectedSectors]
+    if (useOtherSector) {
+      const trimmed = customSector.trim()
+      if (!trimmed) {
+        return { sectors: [], errorMsg: 'Escribe el nombre del sector en el campo "Otro".' }
+      }
+      if (/^\d/.test(trimmed)) {
+        return { sectors: [], errorMsg: 'El sector no puede comenzar con un número.' }
+      }
+      const formatted = trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+      list.push(formatted)
+    }
+    return { sectors: list, errorMsg: null }
+  }
+
+  function buildMergedZones(baseZones: CoverageZone[], depto: string, muni: string, sectorsToAdd: string[]): CoverageZone[] {
+    const existingKeys = new Set(baseZones.map(zoneKey))
+    const merged = [...baseZones]
+    for (const rawSector of sectorsToAdd) {
+      const cleanMuni = muni.trim()
+      const cleanSec = rawSector.trim()
+      if (!depto || !cleanMuni || !cleanSec) continue
+      const candidate: CoverageZone = {
+        departamento: depto,
+        municipio: cleanMuni,
+        sector: cleanSec,
+      }
+      const key = zoneKey(candidate)
+      if (!existingKeys.has(key)) {
+        existingKeys.add(key)
+        merged.push(candidate)
+      }
+    }
+    return merged
+  }
+
+  async function handleAddZone(e: FormEvent) {
+    e.preventDefault()
+    setFormError('')
+    setNotice('')
+    if (!selectedDepto) {
+      setFormError('Por favor selecciona un departamento.')
+      return
+    }
+    if (!selectedMunicipio.trim()) {
+      setFormError('Por favor selecciona un municipio.')
+      return
+    }
+    const { sectors: sectorsToAdd, errorMsg } = collectPendingSectors()
+    if (errorMsg) {
+      setFormError(errorMsg)
+      return
+    }
+    if (sectorsToAdd.length === 0) {
+      setFormError('Selecciona al menos un sector o marca "Otro" para escribirlo.')
+      return
+    }
+
+    const nextZones = buildMergedZones(zones, selectedDepto, selectedMunicipio, sectorsToAdd)
+    const addedCount = nextZones.length - zones.length
+    setSelectedSectors([])
+    setUseOtherSector(false)
+    setCustomSector('')
+    setDropdownOpen(false)
+    await persistZones(
+      nextZones,
+      addedCount > 0
+        ? `Se guardaron tus zonas de cobertura (${nextZones.length} en total).`
+        : 'Esos sectores ya estaban en tu lista de cobertura.'
+    )
+  }
+
+  async function handleRemoveZone(index: number) {
+    if (busy) return
+    const nextZones = zones.filter((_, i) => i !== index)
+    setZones(nextZones)
+    await persistZones(nextZones, 'Zona eliminada y cobertura actualizada correctamente.')
+  }
+
+  async function handleSave() {
+    if (busy) return
+    let nextZones = zones
+    const { sectors: sectorsToAdd, errorMsg } = collectPendingSectors()
+    if (errorMsg) {
+      setFormError(errorMsg)
+      return
+    }
+    if (selectedDepto && selectedMunicipio.trim() && sectorsToAdd.length > 0) {
+      nextZones = buildMergedZones(zones, selectedDepto, selectedMunicipio, sectorsToAdd)
+      setSelectedSectors([])
+      setUseOtherSector(false)
+      setCustomSector('')
+      setDropdownOpen(false)
+    }
+    await persistZones(nextZones, 'Zonas de cobertura actualizadas correctamente.')
+  }
+
   const departamentos = Object.keys(hondurasLocation)
-  // Municipios correspondientes al departamento seleccionado
   const municipiosDisponibles = selectedDepto
     ? (hondurasLocation as Record<string, string[]>)[selectedDepto] ?? []
     : []
+  const sectoresDisponibles = selectedMunicipio
+    ? getSectorsForMunicipio(selectedMunicipio, zones)
+    : []
+
+  const existingKeysInMuni = new Set(
+    zones
+      .filter(
+        (z) =>
+          stripAccentsAndLower(z.departamento) === stripAccentsAndLower(selectedDepto) &&
+          stripAccentsAndLower(z.municipio) === stripAccentsAndLower(selectedMunicipio)
+      )
+      .map((z) => stripAccentsAndLower(z.sector))
+  )
+
+  const selectableSectorsInMuni = sectoresDisponibles
+    .map((item) => item.sector)
+    .filter((sec) => !existingKeysInMuni.has(stripAccentsAndLower(sec)))
+
+  const totalPendingCount = selectedSectors.length + (useOtherSector && customSector.trim() ? 1 : 0)
+
+  const dropdownSummaryText = !selectedMunicipio
+    ? '-- Primero elige un municipio --'
+    : selectedSectors.length === 0 && !useOtherSector
+      ? '-- Selecciona uno o varios sectores --'
+      : [
+          ...selectedSectors,
+          ...(useOtherSector ? [customSector.trim() ? `Otro: ${customSector.trim()}` : 'Otro sector'] : []),
+        ].join(', ')
+
   if (loading) {
     return <LoadingState message="Cargando zonas de cobertura." />
   }
+
   return (
     <div>
       <p style={{ color: 'var(--muted)', fontSize: '0.95rem', marginTop: 0, marginBottom: '1.25rem' }}>
-        Indica los departamentos, municipios y sectores donde trabajas para recibir solicitudes dentro de tu área de atención.
+        Selecciona los departamentos, municipios y sectores donde trabajas. En el desplegable de sectores puedes marcar varios a la vez o elegir &laquo;Otro&raquo;.
       </p>
       {notice && (
         <div className="success-alert" role="status" style={{ marginBottom: '1.25rem' }}>
@@ -150,15 +284,34 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
           {error}
         </div>
       )}
-      {/* Formulario de selección vinculada */}
-      <form onSubmit={handleAddZone} style={{ background: '#f9fafb', padding: '1.25rem', borderRadius: 12, border: '1px solid #e5e7eb', marginBottom: '1.5rem' }}>
+
+      {/* Formulario de selección vinculada con desplegable multi-sector perfectamente alineado */}
+      <form
+        onSubmit={handleAddZone}
+        style={{
+          background: '#f9fafb',
+          padding: '1.25rem',
+          borderRadius: 12,
+          border: '1px solid #e5e7eb',
+          marginBottom: '1.5rem'
+        }}
+      >
         <h4 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <MapPin size={18} color="var(--blue)" /> Agregar nueva zona
+          <MapPin size={18} color="var(--blue)" /> Agregar zonas de cobertura
         </h4>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '1rem',
+            alignItems: 'start',
+            marginBottom: '1rem',
+          }}
+        >
           {/* 1. Departamento */}
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 4 }}>
+            <label style={labelStyle}>
               Departamento
             </label>
             <select
@@ -172,14 +325,15 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
               ))}
             </select>
           </div>
+
           {/* 2. Municipio (vinculado al departamento) */}
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 4 }}>
+            <label style={labelStyle}>
               Municipio
             </label>
             <select
               value={selectedMunicipio}
-              onChange={(e) => setSelectedMunicipio(e.target.value)}
+              onChange={(e) => handleMunicipioChange(e.target.value)}
               disabled={!selectedDepto}
               style={{ ...inputStyle, background: !selectedDepto ? '#f3f4f6' : '#fff' }}
             >
@@ -191,43 +345,228 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
               ))}
             </select>
           </div>
-          {/* 3. Sector / Colonia (con validaciones en tiempo real) */}
-          <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 4 }}>
-              Sector / Colonia / Barrio
+
+          {/* 3. Sector / Colonia (Desplegable con selección múltiple + opción Otro) */}
+          <div ref={dropdownRef} style={{ position: 'relative' }}>
+            <label style={labelStyle}>
+              Sector / Colonia
             </label>
-            <input
-              type="text"
-              placeholder="Ej. Kennedy, Guamilito, Centro..."
-              value={customSector}
-              onChange={(e) => {
-                const sinNumeroInicial = e.target.value.replace(/^\d+/, '')
-                const conMayuscula = sinNumeroInicial ? sinNumeroInicial.charAt(0).toUpperCase() + sinNumeroInicial.slice(1) : ''
-                setCustomSector(conMayuscula)
+            <button
+              type="button"
+              disabled={!selectedMunicipio}
+              onClick={() => setDropdownOpen((open) => !open)}
+              aria-haspopup="listbox"
+              aria-expanded={dropdownOpen}
+              style={{
+                ...inputStyle,
+                background: !selectedMunicipio ? '#f3f4f6' : '#fff',
+                color: !selectedMunicipio || (selectedSectors.length === 0 && !useOtherSector) ? '#6b7280' : '#111827',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                textAlign: 'left',
+                cursor: !selectedMunicipio ? 'not-allowed' : 'pointer',
+                fontWeight: 400,
               }}
-              maxLength={35}
-              style={inputStyle}
-              required
-            />
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                {dropdownSummaryText}
+              </span>
+              <ChevronDown size={16} style={{ flexShrink: 0, color: '#6b7280' }} />
+            </button>
+
+            {dropdownOpen && selectedMunicipio && (
+              <div
+                role="listbox"
+                aria-multiselectable="true"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 4px)',
+                  left: 0,
+                  right: 0,
+                  zIndex: 40,
+                  background: '#fff',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 10,
+                  boxShadow: '0 10px 25px rgba(15, 23, 42, 0.14)',
+                  maxHeight: 270,
+                  overflowY: 'auto',
+                  padding: '0.5rem',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '4px 8px 8px',
+                    borderBottom: '1px solid #f1f5f9',
+                    marginBottom: 4,
+                    gap: 8,
+                  }}
+                >
+                  {selectableSectorsInMuni.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSectors(selectableSectorsInMuni)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--blue)',
+                        fontSize: '0.8rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Seleccionar todos ({selectableSectorsInMuni.length})
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '0.78rem', color: '#6b7280' }}>Sectores del municipio</span>
+                  )}
+
+                  {(selectedSectors.length > 0 || useOtherSector) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSectors([])
+                        setUseOtherSector(false)
+                        setCustomSector('')
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#6b7280',
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Limpiar
+                    </button>
+                  )}
+                </div>
+
+                {sectoresDisponibles.map((item) => {
+                  const alreadySaved = existingKeysInMuni.has(stripAccentsAndLower(item.sector))
+                  const isSelected = selectedSectors.includes(item.sector)
+                  return (
+                    <label
+                      key={item.sector}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '7px 8px',
+                        borderRadius: 6,
+                        fontSize: '0.9rem',
+                        cursor: alreadySaved ? 'default' : 'pointer',
+                        background: alreadySaved
+                          ? '#f0fdf4'
+                          : isSelected
+                            ? '#eff6ff'
+                            : 'transparent',
+                        color: alreadySaved ? '#166534' : '#1f2937',
+                        fontWeight: isSelected || alreadySaved ? 600 : 400,
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={alreadySaved || isSelected}
+                          disabled={alreadySaved || busy}
+                          onChange={() => toggleSectorSelection(item.sector)}
+                          style={{ width: 16, height: 16, accentColor: '#2563eb', cursor: alreadySaved ? 'default' : 'pointer' }}
+                        />
+                        <span>{item.sector}</span>
+                      </span>
+                      {alreadySaved && (
+                        <span style={{ fontSize: '0.75rem', color: '#166534', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                          <Check size={13} /> Ya agregada
+                        </span>
+                      )}
+                    </label>
+                  )
+                })}
+
+                {/* Opción Otro dentro del desplegable */}
+                <div style={{ borderTop: '1px solid #f1f5f9', marginTop: 4, paddingTop: 4 }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '7px 8px',
+                      borderRadius: 6,
+                      fontSize: '0.9rem',
+                      cursor: 'pointer',
+                      background: useOtherSector ? '#eff6ff' : 'transparent',
+                      color: '#1d4ed8',
+                      fontWeight: 600,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={useOtherSector}
+                      disabled={busy}
+                      onChange={(e) => {
+                        setUseOtherSector(e.target.checked)
+                        setFormError('')
+                      }}
+                      style={{ width: 16, height: 16, accentColor: '#2563eb', cursor: 'pointer' }}
+                    />
+                    <span>Otro (escribir sector manualmente)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {useOtherSector && (
+              <input
+                type="text"
+                placeholder="Escribe el nombre del sector o colonia..."
+                value={customSector}
+                onChange={(e) => {
+                  const sinNumeroInicial = e.target.value.replace(/^\d+/, '')
+                  const conMayuscula = sinNumeroInicial
+                    ? sinNumeroInicial.charAt(0).toUpperCase() + sinNumeroInicial.slice(1)
+                    : ''
+                  setCustomSector(conMayuscula)
+                  setFormError('')
+                }}
+                maxLength={40}
+                style={{ ...inputStyle, marginTop: 8 }}
+              />
+            )}
           </div>
         </div>
+
         {formError && (
           <p role="alert" style={{ color: '#b91c1c', fontSize: '0.85rem', fontWeight: 600, margin: '0 0 10px' }}>
             {formError}
           </p>
         )}
+
         <Button
           type="submit"
           className="button-outline"
+          disabled={busy || !selectedMunicipio || totalPendingCount === 0}
           style={{ width: 'auto', padding: '0.5rem 1.25rem', fontSize: '0.9rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
-          <Plus size={16} /> Agregar a la lista
+          <Plus size={16} />
+          {totalPendingCount > 0
+            ? `Agregar y guardar (${totalPendingCount} ${totalPendingCount === 1 ? 'sector' : 'sectores'})`
+            : 'Agregar a mis zonas'}
         </Button>
       </form>
+
       {/* Lista de zonas agregadas */}
       <div style={{ marginBottom: '1.5rem' }}>
         <h4 style={{ fontSize: '1rem', fontWeight: 700, margin: '0 0 0.75rem' }}>
-          Zonas de cobertura seleccionadas ({zones.length})
+          Zonas de cobertura activas ({zones.length})
         </h4>
         {zones.length === 0 ? (
           <p style={{ color: '#6b7280', fontSize: '0.9rem', fontStyle: 'italic' }}>
@@ -237,7 +576,7 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
             {zones.map((zone, index) => (
               <span
-                key={`${zone.municipio}-${zone.sector}-${index}`}
+                key={`${zone.departamento}-${zone.municipio}-${zone.sector}-${index}`}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -252,16 +591,18 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
                 }}
               >
                 <MapPin size={14} />
-                <strong>{zone.departamento}:</strong><strong>{zone.municipio},</strong> {zone.sector}
+                <strong>{zone.departamento}:</strong> <strong>{zone.municipio},</strong> {zone.sector}
                 <button
                   type="button"
+                  disabled={busy}
                   onClick={() => handleRemoveZone(index)}
                   title="Eliminar zona"
+                  aria-label={`Eliminar zona ${zone.municipio}, ${zone.sector}`}
                   style={{
                     background: 'none',
                     border: 'none',
                     padding: 0,
-                    cursor: 'pointer',
+                    cursor: busy ? 'wait' : 'pointer',
                     color: '#93c5fd',
                     display: 'flex',
                     alignItems: 'center'
@@ -276,6 +617,7 @@ export default function CoverageZoneSelector({ user }: { user: User }) {
           </div>
         )}
       </div>
+
       {/* Guardar cambios */}
       <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
         <Button

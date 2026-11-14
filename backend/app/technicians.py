@@ -90,7 +90,13 @@ def update_coverage_zones(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo los técnicos pueden configurar zonas de cobertura.",
         )
-     # Evitar duplicados exactos (mismo departamento, municipio y sector)
+    tech_profile = db.get(TechnicianProfile, user.id)
+    if not tech_profile:
+        tech_profile = TechnicianProfile(usuario_id=user.id, disponible=False)
+        db.add(tech_profile)
+        db.flush()
+
+    # Evitar duplicados exactos (mismo departamento, municipio y sector)
     seen = set()
     cleaned_zones = []
     for item in payload.zonas_cobertura:
@@ -241,6 +247,7 @@ def get_technicians_catalog(
     municipio: str = Query(None, description="Filtrar por municipio"),
     db: Session = Depends(get_db),
     departamento: str | None = None,
+    sector: str | None = None,
 ):
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.
@@ -270,12 +277,15 @@ def get_technicians_catalog(
 
     departamento = (departamento or "").strip()
     municipio = (municipio or "").strip()
-    if departamento or municipio:
+    sector = (sector or "").strip()
+    if departamento or municipio or sector:
         query = query.join(CoverageZone, User.id == CoverageZone.usuario_id)
         if departamento:
             query = query.where(CoverageZone.departamento == departamento)
         if municipio:
             query = query.where(CoverageZone.municipio.icontains(municipio, autoescape=True))
+        if sector:
+            query = query.where(CoverageZone.sector.icontains(sector, autoescape=True))
 
     results = db.execute(query).unique().all()
 
