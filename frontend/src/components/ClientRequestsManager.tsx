@@ -312,21 +312,18 @@ export default function ClientRequestsManager({
     }
   }
 
-    const [rejectingProposalId, setRejectingProposalId] = useState<string>("");
+      const [confirmRejectId, setConfirmRejectId] = useState<string | null>(null);
+  const [rejectingProposalId, setRejectingProposalId] = useState<string>("");
 
-  async function handleRejectProposal(proposalId: string, techName: string) {
+  async function executeRejectProposal(proposalId: string) {
     if (!detail || rejectingProposalId) return;
-    const confirmed = window.confirm(
-      `¿Deseas rechazar la propuesta de ${techName}? La licitación seguirá activa para recibir otras ofertas.`
-    );
-    if (!confirmed) return;
-
     setRejectingProposalId(proposalId);
     setDetailError("");
     setActionNotice("");
     try {
       const res = await rejectProposalApi(user, detail.id, proposalId);
       setActionNotice(res.mensaje || "Propuesta rechazada correctamente.");
+      setConfirmRejectId(null);
       setDetail((prev) => {
         if (!prev) return prev;
         return {
@@ -817,57 +814,109 @@ export default function ClientRequestsManager({
                                 </span>
                               )}
 
-                              {/* Enlace al perfil público */}
-                              {prop.tecnico?.usuario_id && (
-                                <Link
-                                  className="button button-outline"
-                                  to={`/tecnicos/${prop.tecnico.usuario_id}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
+                              {confirmRejectId === prop.id ? (
+                                <div
                                   style={{
-                                    width: "auto",
-                                    fontSize: "0.8rem",
-                                    padding: "4px 10px",
-                                    marginTop: "4px",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "4px",
+                                    marginTop: "8px",
+                                    padding: "8px 12px",
+                                    borderRadius: "8px",
+                                    background: "#fef2f2",
+                                    border: "1px solid #fecaca",
+                                    textAlign: "left",
+                                    maxWidth: "340px",
                                   }}
                                 >
-                                  Ver perfil completo <ArrowUpRight size={13} />
-                              {/* Botón de rechazo individual (CA-03) */}
-                              {prop.estado === "PENDIENTE" &&
-                                ["PUBLICADA", "CON OFERTAS", "CON_OFERTAS"].includes(
-                                  (detail.estado || "").toUpperCase()
-                                ) && (
-                                  <Button
-                                    type="button"
-                                    className="button-outline"
-                                    disabled={rejectingProposalId === prop.id}
-                                    style={{
-                                      width: "auto",
-                                      fontSize: "0.8rem",
-                                      padding: "4px 10px",
-                                      marginTop: "4px",
-                                      color: "#dc2626",
-                                      borderColor: "#fca5a5",
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      gap: "4px",
-                                    }}
-                                    onClick={() =>
-                                      handleRejectProposal(
-                                        prop.id,
-                                        prop.tecnico?.nombre_completo || "este técnico"
-                                      )
-                                    }
-                                  >
-                                    <X size={13} />
-                                    {rejectingProposalId === prop.id ? "Rechazando…" : "Rechazar propuesta"}
-                                  </Button>
-                                )}
-                                </Link>
-                                
+                                  <p style={{ margin: "0 0 8px", fontSize: "0.85rem", color: "#991b1b", fontWeight: 500 }}>
+                                    ¿Rechazar propuesta de <strong>{prop.tecnico?.nombre_completo || "este técnico"}</strong>? La licitación seguirá activa para otras ofertas.
+                                  </p>
+                                  <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                                    <button
+                                      type="button"
+                                      disabled={rejectingProposalId === prop.id}
+                                      onClick={() => setConfirmRejectId(null)}
+                                      style={{
+                                        background: "transparent",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "6px",
+                                        padding: "4px 10px",
+                                        fontSize: "0.8rem",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Cancelar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={rejectingProposalId === prop.id}
+                                      onClick={() => executeRejectProposal(prop.id)}
+                                      style={{
+                                        background: "#dc2626",
+                                        color: "#fff",
+                                        border: "none",
+                                        borderRadius: "6px",
+                                        padding: "4px 12px",
+                                        fontSize: "0.8rem",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      {rejectingProposalId === prop.id ? "Rechazando…" : "Sí, rechazar"}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "8px",
+                                    flexWrap: "wrap",
+                                    marginTop: "6px",
+                                    justifyContent: "flex-end",
+                                  }}
+                                >
+                                  {prop.tecnico?.usuario_id && (
+                                    <Link
+                                      className="button button-outline"
+                                      to={`/tecnicos/${prop.tecnico.usuario_id}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{
+                                        width: "auto",
+                                        fontSize: "0.8rem",
+                                        padding: "4px 10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "4px",
+                                      }}
+                                    >
+                                      Ver perfil completo <ArrowUpRight size={13} />
+                                    </Link>
+                                  )}
+                                  {prop.estado === "PENDIENTE" &&
+                                    ["PUBLICADA", "CON OFERTAS", "CON_OFERTAS"].includes(
+                                      (detail.estado || "").toUpperCase()
+                                    ) && (
+                                      <Button
+                                        type="button"
+                                        className="button-outline"
+                                        style={{
+                                          width: "auto",
+                                          fontSize: "0.8rem",
+                                          padding: "4px 10px",
+                                          color: "#dc2626",
+                                          borderColor: "#fca5a5",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px",
+                                        }}
+                                        onClick={() => setConfirmRejectId(prop.id)}
+                                      >
+                                        <X size={13} />
+                                        Rechazar propuesta
+                                      </Button>
+                                    )}
+                                </div>
                               )}
                             </div>
                           </div>
