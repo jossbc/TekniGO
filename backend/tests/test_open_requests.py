@@ -6,7 +6,7 @@ from unittest.mock import patch
 import uuid
 
 from fastapi import FastAPI, HTTPException, Response
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -40,6 +40,10 @@ from app.open_requests import (
     publish_open_request_endpoint,
     router,
     validate_technician_can_bid_on_open_request,
+    CounterOfferSchema,
+    get_open_request_events,
+    submit_counter_offer_for_open_request,
+    validate_counter_offer_amount,
 )
 
 
@@ -1513,3 +1517,351 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         catalog = list_coverage_zones_catalog(self.db, municipio="Tegucigalpa")
         self.assertEqual(len(catalog), 1)
         self.assertEqual(catalog[0]["sector"], "Kennedy")
+
+    def test_hu29_st01_and_st02_counter_offer_persistence_and_uniqueness(self):
+        """HU-29 ST-01 / ST-02: Validaciones decimales, persistencia con autor/fecha y unicidad de contraofertas."""
+        # 1. Validaciones decimales (CA-02)
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount(None)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("no-numerico")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount(0)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("-150.00")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("1000000.00")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # Monto válido cuantizado a 2 decimales
+        valid_amount = validate_counter_offer_amount("L. 1250.556")
+        self.assertEqual(valid_amount, Decimal("1250.56"))
+
+        # 2. Configurar 2 técnicos habilitados y compatibles con la especialidad
+        tech1 = User(
+            firebase_uid="tech1-hu29",
+            correo="tech1-hu29@example.com",
+            nombre_completo="Técnico Uno HU29",
+            dni="0801200000701",
+            telefono="+50490000701",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu29",
+            correo="tech2-hu29@example.com",
+            nombre_completo="Técnico Dos HU29",
+            dni="0801200000702",
+            telefono="+50490000702",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2])
+        self.db.flush()
+        for t in (tech1, tech2):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        # Publicar licitación con presupuesto base de L. 800.00
+        pub_res = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("800.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = pub_res["id"]
+
+        # 3. Primer técnico envía contraoferta válida por L. 1,200.00 (CA-01, CA-02, CA-04)
+        offer1 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="1200.00", justificacion="Requiere cableado adicional de calibre 8"),
+            {"uid": tech1.firebase_uid},
+            self.db,
+        )
+
+        self.assertEqual(offer1["propuesta"]["monto"], 1200.0)
+        self.assertEqual(offer1["propuesta"]["tipo"], "CONTRAOFERTA")
+        self.assertEqual(offer1["propuesta"]["justificacion"], "Requiere cableado adicional de calibre 8")
+        self.assertEqual(offer1["propuesta"]["estado"], "PENDIENTE")
+        self.assertEqual(offer1["estado_solicitud"], "CON OFERTAS")
+        self.assertFalse(offer1["reintento_idempotente"])
+
+        # Verificar persistencia en base de datos
+        db_prop1 = self.db.scalar(
+            select(OpenRequestProposal).where(
+                OpenRequestProposal.solicitud_id == solicitud_id,
+                OpenRequestProposal.usuario_id == tech1.id,
+            )
+        )
+        self.assertIsNotNone(db_prop1)
+        self.assertEqual(db_prop1.tipo, "CONTRAOFERTA")
+        self.assertEqual(Decimal(str(db_prop1.monto)), Decimal("1200.00"))
+        self.assertEqual(db_prop1.tecnico_id, tech1.firebase_uid)
+        self.assertEqual(db_prop1.justificacion, "Requiere cableado adicional de calibre 8")
+
+        # CA-03: La contraoferta no altera el presupuesto inicial de la solicitud ni adjudica al técnico
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(Decimal(str(req_db.presupuesto)), Decimal("800.00"))
+        self.assertIsNone(req_db.tecnico_id)
+        self.assertEqual(req_db.estado, "Con ofertas")
+
+        # 4. Reintento idempotente: Mismo técnico reenvía idéntica contraoferta (CA-06)
+        retry_offer1 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto=1200.00),
+            {"uid": tech1.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(retry_offer1["reintento_idempotente"])
+        self.assertEqual(retry_offer1["propuesta"]["id"], offer1["propuesta"]["id"])
+
+        # 5. Unicidad: El mismo técnico NO puede enviar otra contraoferta distinta compitiendo contra sí mismo (CA-06)
+        with self.assertRaises(HTTPException) as dup_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1350.00"),
+                {"uid": tech1.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(dup_err.exception.status_code, 409)
+        self.assertIn("no puedes competir contra ti mismo", dup_err.exception.detail)
+
+        # 6. Segundo técnico puede enviar su propia contraoferta (CA-04)
+        offer2 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="950.00", justificacion="Cuento con los materiales listos"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(offer2["propuesta"]["monto"], 950.0)
+        self.assertEqual(offer2["estado_solicitud"], "CON OFERTAS")
+
+        # Total de propuestas para la solicitud: 2 propuestas distintas
+        total_props = self.db.query(OpenRequestProposal).filter_by(solicitud_id=solicitud_id).count()
+        self.assertEqual(total_props, 2)
+
+        # 7. Si la solicitud es adjudicada o cancelada, se rechazan nuevas contraofertas (CA-06)
+        req_db.estado = "Aceptada"
+        req_db.tecnico_id = tech1.firebase_uid
+        self.db.commit()
+
+        tech3 = User(
+            firebase_uid="tech3-hu29",
+            correo="tech3-hu29@example.com",
+            nombre_completo="Técnico Tres HU29",
+            dni="0801200000703",
+            telefono="+50490000703",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech3)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech3.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech3.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add(TechnicianSpecialty(usuario_id=tech3.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech3.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as closed_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="900.00"),
+                {"uid": tech3.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(closed_err.exception.status_code, 409)
+        self.assertIn("adjudicado", closed_err.exception.detail)
+
+    def test_hu29_st05_invalid_amounts_events_and_concurrent_awarding(self):
+        """HU-29 ST-05: Probar importes inválidos, eventos en tiempo real, protección de privacidad y adjudicación concurrente."""
+        tech = User(
+            firebase_uid="tech-hu29-st05",
+            correo="tech-hu29-st05@example.com",
+            nombre_completo="Técnico ST05",
+            dni="0801200000801",
+            telefono="+50490000801",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech.id, rol="TECNICO"))
+        tech_profile = TechnicianProfile(usuario_id=tech.id, disponible=True, estado_verificacion="VERIFICADO")
+        self.db.add(tech_profile)
+        self.db.add(TechnicianSpecialty(usuario_id=tech.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        # Publicar licitación
+        published = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("900.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = published["id"]
+
+        # 1. Importes inválidos vía servicio (CA-02)
+        invalid_amounts = [
+            (None, 400, "obligatorio"),
+            ("", 400, "obligatorio"),
+            ("   ", 400, "obligatorio"),
+            (0, 400, "mayor a cero"),
+            (-100, 400, "mayor a cero"),
+            ("cien", 400, "número válido"),
+            (1000000, 400, "no puede exceder"),
+        ]
+        for bad_monto, expected_status, expected_phrase in invalid_amounts:
+            with self.assertRaises(HTTPException) as ctx:
+                submit_counter_offer_for_open_request(
+                    solicitud_id,
+                    CounterOfferSchema(monto=bad_monto),
+                    {"uid": tech.firebase_uid},
+                    self.db,
+                )
+            self.assertEqual(ctx.exception.status_code, expected_status)
+            self.assertIn(expected_phrase, ctx.exception.detail)
+
+        # 2. Condición transversal: Si el técnico pasa a no disponible, se bloquea la contraoferta
+        tech_profile.disponible = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as unavail_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(unavail_err.exception.status_code, 403)
+        self.assertIn("Disponible", unavail_err.exception.detail)
+
+        # Restaurar disponibilidad
+        tech_profile.disponible = True
+        self.db.commit()
+
+        # 3. Envío exitoso y emisión de evento en tiempo real (CA-05)
+        res = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="1350.50", justificacion="Incluye repuestos importados"),
+            {"uid": tech.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(res["propuesta"]["monto"], 1350.50)
+        self.assertEqual(res["propuesta"]["tipo"], "CONTRAOFERTA")
+        self.assertEqual(res["estado_solicitud"], "CON OFERTAS")
+
+        # Verificar evento generado
+        event = res.get("evento")
+        self.assertIsNotNone(event)
+        self.assertEqual(event["tipo"], "NUEVA_OFERTA")
+        self.assertEqual(event["tipo_propuesta"], "CONTRAOFERTA")
+        self.assertTrue(event["ubicacion_exacta_protegida"])
+        self.assertIn("Nueva contraoferta recibida por L. 1350.50", event["mensaje"])
+        # CA-05: No expone dirección exacta ni teléfono del cliente
+        self.assertNotIn("direccion_exacta", event)
+        self.assertNotIn("telefono", event)
+
+        # Eventos almacenados para la solicitud
+        events_list = get_open_request_events(solicitud_id)
+        self.assertTrue(len(events_list) >= 1)
+
+        # 4. Vista del cliente: ve la contraoferta, perfil del técnico, pero no se adjudica ni cambia monto base (CA-03)
+        client_feed = list_open_request_proposals_for_viewer(solicitud_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertEqual(len(client_feed["propuestas"]), 1)
+        prop_client = client_feed["propuestas"][0]
+        self.assertEqual(prop_client["monto"], 1350.50)
+        self.assertEqual(prop_client["tipo"], "CONTRAOFERTA")
+        self.assertEqual(prop_client["justificacion"], "Incluye repuestos importados")
+        self.assertEqual(prop_client["tecnico"]["nombre_completo"], "Técnico ST05")
+
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(Decimal(str(req_db.presupuesto)), Decimal("900.00"))
+        self.assertIsNone(req_db.tecnico_id)
+
+        # 5. Adjudicación concurrente / solicitud cancelada rechaza nuevas contraofertas (CA-06)
+        # 5.1 Caso cancelación
+        req_db.estado = "Cancelada"
+        self.db.commit()
+
+        tech_other = User(
+            firebase_uid="tech-hu29-other",
+            correo="tech-hu29-other@example.com",
+            nombre_completo="Técnico Otro",
+            dni="0801200000802",
+            telefono="+50490000802",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech_other)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech_other.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech_other.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add(TechnicianSpecialty(usuario_id=tech_other.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech_other.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as cancel_ctx:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech_other.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(cancel_ctx.exception.status_code, 409)
+        self.assertIn("cancelada", cancel_ctx.exception.detail)
+
+        # 5.2 Caso adjudicación concurrente a otro técnico
+        req_db.estado = "Aceptada"
+        req_db.tecnico_id = tech.firebase_uid
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as awarded_ctx:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech_other.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(awarded_ctx.exception.status_code, 409)
+        self.assertIn("adjudicado", awarded_ctx.exception.detail)

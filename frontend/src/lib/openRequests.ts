@@ -99,6 +99,7 @@ export type TechnicianProposalSummary = {
   id: string;
   tipo: string;
   monto: number;
+  justificacion?: string | null;
   estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | "CANCELADA" | "RETIRADA" | string;
   creada_en: string | null;
 };
@@ -250,6 +251,44 @@ export async function acceptPublishedBudgetApi(
     `/open-requests/${encodeURIComponent(solicitudId)}/accept-budget`,
     user,
     {},
+    "POST",
+  );
+}
+
+export type CounterOfferPayload = {
+  monto: number | string;
+  justificacion?: string | null;
+};
+
+export type SubmitCounterOfferResponse = {
+  propuesta: {
+    id: string;
+    propuesta_id: string;
+    solicitud_id: string;
+    usuario_id: string;
+    tecnico_id: string;
+    tipo: string;
+    monto: number;
+    justificacion?: string | null;
+    estado: string;
+    activa: boolean;
+    creada_en: string | null;
+  };
+  solicitud: TechnicianOpportunityItem;
+  estado_solicitud: string;
+  reintento_idempotente: boolean;
+  mensaje: string;
+};
+
+export async function submitCounterOfferApi(
+  user: User,
+  solicitudId: string,
+  payload: CounterOfferPayload,
+): Promise<SubmitCounterOfferResponse> {
+  return api<SubmitCounterOfferResponse>(
+    `/open-requests/${encodeURIComponent(solicitudId)}/counter-offer`,
+    user,
+    payload,
     "POST",
   );
 }
