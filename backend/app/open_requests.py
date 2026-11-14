@@ -1,15 +1,17 @@
 """HU-26: Publicación de solicitudes abiertas (licitaciones), rango sugerido y visibilidad por elegibilidad."""
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import os
 import re
 from typing import Any
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, model_validator, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -62,6 +64,49 @@ class CreateOpenRequestSchema(BaseModel):
                     return copied
         return data
 
+# --- HU-29 ST-01: Esquema y validaciones decimales para Contraoferta ---
+
+class CounterOfferSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    monto: Any = Field(description="Monto positivo propuesto en lempiras para la contraoferta")
+    justificacion: str | None = Field(default=None, max_length=500, description="Justificación opcional del monto propuesto")
+
+    @field_validator("justificacion")
+    @classmethod
+    def clean_justificacion(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        cleaned = v.strip()
+        return cleaned if cleaned else None
+
+
+def validate_counter_offer_amount(value: Any) -> Decimal:
+    """HU-29 CA-02: Monto vacío, cero, negativo o no numérico impide enviar; el valor válido se guarda con dos decimales."""
+    if value is None:
+        raise HTTPException(400, "El monto de la contraoferta es obligatorio")
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            raise HTTPException(400, "El monto de la contraoferta es obligatorio")
+        if cleaned.upper().startswith("L."):
+            cleaned = cleaned[2:].strip()
+        elif cleaned.upper().startswith("L"):
+            cleaned = cleaned[1:].strip()
+        value = cleaned
+    try:
+        raw = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise HTTPException(400, "El monto de la contraoferta debe ser un número válido") from None
+
+    if not raw.is_finite():
+        raise HTTPException(400, "El monto de la contraoferta debe ser un número finito")
+    if raw <= Decimal("0"):
+        raise HTTPException(400, "El monto de la contraoferta debe ser mayor a cero")
+    if raw > MAX_BUDGET_AMOUNT:
+        raise HTTPException(400, "El monto de la contraoferta no puede exceder L. 999,999.99")
+
+    return raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 def require_verified_unsuspended_client(claims: dict, db: Session) -> User:
     """CA-01: Solo un cliente verificado y no suspendido puede publicar una solicitud abierta."""
@@ -722,6 +767,7 @@ def serialize_open_request_for_technician(
             "id": str(my_proposal.id),
             "tipo": my_proposal.tipo,
             "monto": float(Decimal(str(my_proposal.monto)).quantize(Decimal("0.01"))),
+            "justificacion": my_proposal.justificacion,
             "estado": (my_proposal.estado or "PENDIENTE").strip().upper(),
             "creada_en": my_proposal.creada_en.isoformat() if my_proposal.creada_en else None,
         }
@@ -1116,6 +1162,7 @@ def validate_bidding_eligibility_endpoint(
 
 
 _OPEN_REQUEST_EVENTS: dict[str, list[dict]] = defaultdict(list)
+_OPEN_REQUEST_SUBSCRIBERS: dict[str, list[asyncio.Queue]] = defaultdict(list)
 
 
 def emit_new_offer_event(
@@ -1124,11 +1171,14 @@ def emit_new_offer_event(
     *,
     emitted_at: datetime | None = None,
 ) -> dict:
-    """HU-28 ST-04 (CA-05): Emite evento de nueva oferta para actualización del cliente sin exponer dirección ni teléfono."""
+    """HU-28 / HU-29 (CA-05): Emite evento de nueva oferta para actualización del cliente sin exponer dirección ni teléfono."""
     timestamp = (emitted_at or datetime.now(timezone.utc)).isoformat()
+    tipo_propuesta = serialized_proposal.get("tipo")
+    es_contraoferta = (tipo_propuesta == "CONTRAOFERTA")
     event = {
         "evento_id": str(uuid.uuid4()),
         "tipo": "NUEVA_OFERTA",
+        "tipo_propuesta": tipo_propuesta,
         "solicitud_id": str(record.id),
         "cliente_id": record.cliente_id,
         "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
@@ -1138,11 +1188,19 @@ def emit_new_offer_event(
         "ubicacion_exacta_protegida": True,
         "emitido_en": timestamp,
         "mensaje": (
-            f"Nueva propuesta recibida por L. {serialized_proposal['monto']:.2f} "
-            f"de {serialized_proposal['tecnico'].get('nombre_completo') or 'técnico verificado'}."
-        ),
+            f"Nueva contraoferta recibida por L. {serialized_proposal['monto']:.2f} "
+            if es_contraoferta
+            else f"Nueva propuesta recibida por L. {serialized_proposal['monto']:.2f} "
+        )
+        + f"de {serialized_proposal['tecnico'].get('nombre_completo') or 'técnico verificado'}.",
     }
     _OPEN_REQUEST_EVENTS[str(record.id)].append(event)
+    # HU-29 ST-04: Difusión inmediata a suscriptores SSE activos
+    for queue in list(_OPEN_REQUEST_SUBSCRIBERS.get(str(record.id), [])):
+        try:
+            queue.put_nowait(event)
+        except Exception:
+            pass
     return event
 
 
@@ -1389,6 +1447,221 @@ def accept_published_budget_endpoint(
         response.status_code = 200
     return result
 
+# --- HU-29 ST-01 / ST-02: Lógica de contraoferta ---
+
+def submit_counter_offer_for_open_request(
+    solicitud_id: str,
+    payload: CounterOfferSchema,
+    claims: dict,
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """HU-29 ST-01 (CA-01 a CA-06): Registra una contraoferta validando importe positivo, elegibilidad y unicidad."""
+    uid = claims.get("uid") if isinstance(claims, dict) else None
+    if not uid:
+        raise HTTPException(401, "Sesión inválida o expirada")
+
+    user = db.scalar(
+        select(User)
+        .where(User.firebase_uid == uid)
+        .execution_options(populate_existing=True)
+    )
+    if user is None:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+
+    # CA-01 y Condición transversal: Validar elegibilidad técnica en tiempo real
+    profile = require_eligible_technician_for_bidding(
+        user,
+        db,
+        proceso_responsable="POSTULACION_CONTRAOFERTA",
+    )
+
+    clean_id = (solicitud_id or "").strip()
+    record = db.scalar(
+        select(OpenRequest)
+        .where(OpenRequest.id == clean_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta")
+
+    state_key = _canonical_state_key(record.estado)
+
+    # CA-06: Si la solicitud ya está adjudicada, cancelada o no disponible, rechazar
+    if record.tecnico_id is not None or state_key in {"ACEPTADA", "ADJUDICADA", "COMPLETADA"}:
+        if record.tecnico_id and record.tecnico_id != user.firebase_uid:
+            raise HTTPException(
+                409,
+                "Otro técnico ya fue adjudicado a esta solicitud antes de confirmar tu contraoferta.",
+            )
+        raise HTTPException(
+            409,
+            "Esta solicitud abierta ya fue adjudicada y no admite nuevas contraofertas.",
+        )
+
+    if state_key == "CANCELADA":
+        raise HTTPException(
+            409,
+            "La solicitud se encuentra cancelada y no recibe contraofertas.",
+        )
+
+    if state_key not in AVAILABLE_OPPORTUNITY_STATE_KEYS:
+        raise HTTPException(
+            409,
+            f"La solicitud se encuentra en estado {(record.estado or '').strip()} y ya no recibe propuestas.",
+        )
+
+    if not is_technician_compatible_with_open_request(user.id, record, db):
+        raise HTTPException(
+            403,
+            "Esta solicitud abierta no está disponible para tu especialidad o zona de cobertura",
+        )
+
+    # CA-02: Validar monto decimal positivo con 2 decimales
+    counter_amount = validate_counter_offer_amount(payload.monto)
+    reference_now = now or datetime.now(timezone.utc)
+
+    # CA-06 / ST-02: Validar propuestas activas previas del mismo técnico
+    existing = db.scalar(
+        select(OpenRequestProposal)
+        .where(
+            OpenRequestProposal.solicitud_id == str(record.id),
+            OpenRequestProposal.usuario_id == user.id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+    if existing is not None:
+        existing_amount = Decimal(str(existing.monto)).quantize(Decimal("0.01"))
+        existing_state = (existing.estado or "PENDIENTE").strip().upper()
+
+        # Idempotencia: Si reintenta exactamente la misma contraoferta activa
+        if (
+            existing.activa
+            and existing_state == "PENDIENTE"
+            and existing.tipo == "CONTRAOFERTA"
+            and existing_amount == counter_amount
+        ):
+            if _canonical_state_key(record.estado) == "PUBLICADA":
+                record.estado = "Con ofertas"
+                db.commit()
+                db.refresh(record)
+            serialized_existing = serialize_open_request_proposal(
+                existing,
+                db,
+                tech_user=user,
+                tech_profile=profile,
+            )
+            return {
+                "propuesta": serialized_existing,
+                "solicitud": serialize_open_request_for_technician(record, user, db),
+                "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
+                "reintento_idempotente": True,
+                "mensaje": f"Ya habías enviado una contraoferta por L. {float(counter_amount):.2f} para esta solicitud.",
+            }
+
+        # CA-06: Si ya tiene otra propuesta activa, bloquear competencia contra sí mismo
+        if existing.activa and existing_state in {"PENDIENTE", "ACEPTADA"}:
+            raise HTTPException(
+                409,
+                "Ya cuentas con una propuesta activa en esta licitación y no puedes competir contra ti mismo.",
+            )
+
+        # Si tenía propuesta previa inactiva (ej. RETIRADA/RECHAZADA), reactivar como contraoferta
+        existing.tipo = "CONTRAOFERTA"
+        existing.monto = counter_amount
+        existing.justificacion = payload.justificacion
+        existing.estado = "PENDIENTE"
+        existing.activa = True
+        existing.actualizada_en = reference_now
+        proposal = existing
+    else:
+        proposal = OpenRequestProposal(
+            id=str(uuid.uuid4()),
+            solicitud_id=str(record.id),
+            usuario_id=user.id,
+            tecnico_id=user.firebase_uid,
+            tipo="CONTRAOFERTA",
+            monto=counter_amount,
+            justificacion=payload.justificacion,
+            estado="PENDIENTE",
+            activa=True,
+            creada_en=reference_now,
+            actualizada_en=reference_now,
+        )
+        db.add(proposal)
+
+    # CA-03 & CA-04: Pasa a "Con ofertas" y continúa disponible sin adjudicar
+    record.estado = "Con ofertas"
+    record.tecnico_id = None
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent = db.scalar(
+            select(OpenRequestProposal).where(
+                OpenRequestProposal.solicitud_id == str(record.id),
+                OpenRequestProposal.usuario_id == user.id,
+            )
+        )
+        if concurrent is not None and concurrent.tipo == "CONTRAOFERTA":
+            concurrent_amount = Decimal(str(concurrent.monto)).quantize(Decimal("0.01"))
+            if concurrent_amount == counter_amount:
+                return {
+                    "propuesta": serialize_open_request_proposal(concurrent, db, tech_user=user, tech_profile=profile),
+                    "solicitud": serialize_open_request_for_technician(record, user, db),
+                    "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
+                    "reintento_idempotente": True,
+                    "mensaje": f"Ya habías enviado una contraoferta por L. {float(counter_amount):.2f} para esta solicitud.",
+                }
+        raise HTTPException(
+            409,
+            "Ya cuentas con una propuesta activa en esta licitación y no puedes competir contra ti mismo.",
+        ) from None
+
+    db.refresh(record)
+    db.refresh(proposal)
+
+    serialized_proposal = serialize_open_request_proposal(
+        proposal,
+        db,
+        tech_user=user,
+        tech_profile=profile,
+    )
+    # CA-05: Emite evento en tiempo real protegiendo dirección y teléfono
+    event = emit_new_offer_event(
+        record,
+        serialized_proposal,
+        emitted_at=reference_now,
+    )
+    return {
+        "propuesta": serialized_proposal,
+        "solicitud": serialize_open_request_for_technician(record, user, db),
+        "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
+        "evento": event,
+        "reintento_idempotente": False,
+        "mensaje": f"Contraoferta enviada por L. {float(counter_amount):.2f}. Queda pendiente de decisión del cliente.",
+    }
+
+
+@router.post("/{solicitud_id}/counter-offer", status_code=201)
+@router.post("/{solicitud_id}/proposals/counter-offer", status_code=201)
+def submit_counter_offer_endpoint(
+    solicitud_id: str,
+    payload: CounterOfferSchema,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    result = submit_counter_offer_for_open_request(solicitud_id, payload, claims, db)
+    if result.get("reintento_idempotente"):
+        response.status_code = 200
+    return result
 
 def list_open_request_proposals_for_viewer(
     solicitud_id: str,
@@ -1453,3 +1726,63 @@ def get_open_request_proposals_and_events_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return list_open_request_proposals_for_viewer(solicitud_id, claims, db)
+
+
+# --- HU-29 ST-04: Endpoint SSE en tiempo real ---
+
+@router.get("/{solicitud_id}/events/stream")
+async def stream_open_request_events(
+    solicitud_id: str,
+    request: Request,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """HU-29 ST-04 (CA-05): Stream de eventos SSE en tiempo real para actualización de propuestas sin exponer datos privados."""
+    user = db.scalar(select(User).where(User.firebase_uid == claims.get("uid")))
+    if not user:
+        raise HTTPException(401, "Usuario no autenticado")
+
+    clean_id = (solicitud_id or "").strip()
+    record = db.get(OpenRequest, clean_id)
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta")
+
+    is_owner = (record.cliente_id == user.firebase_uid)
+    is_tech = any(role.rol == "TECNICO" for role in user.roles)
+    if not is_owner and not is_tech:
+        raise HTTPException(403, "No tienes permiso para escuchar eventos de esta solicitud")
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _OPEN_REQUEST_SUBSCRIBERS[clean_id].append(queue)
+
+    async def event_generator():
+        try:
+            init_data = json.dumps({
+                "tipo": "CONECTADO",
+                "solicitud_id": clean_id,
+                "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
+                "ubicacion_exacta_protegida": True,
+            })
+            yield f"event: conexion\ndata: {init_data}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: propuesta_actualizada\ndata: {json.dumps(event_data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield "event: ping\ndata: {}\n\n"
+        finally:
+            if queue in _OPEN_REQUEST_SUBSCRIBERS.get(clean_id, []):
+                _OPEN_REQUEST_SUBSCRIBERS[clean_id].remove(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

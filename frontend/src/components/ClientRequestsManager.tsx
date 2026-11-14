@@ -214,6 +214,31 @@ export default function ClientRequestsManager({
     };
   }, [user, selectedId, refreshTick]);
 
+    // HU-29 ST-04 (CA-05): Actualización en tiempo real de nuevas ofertas y contraofertas
+  useEffect(() => {
+    if (!detail || detail.modalidad !== "ABIERTA") return;
+    const estado = (detail.estado || "").toUpperCase();
+    if (estado !== "PUBLICADA" && estado !== "CON OFERTAS" && estado !== "CON_OFERTAS") return;
+
+    const interval = setInterval(() => {
+      getMyRequestDetail(user, detail.id)
+        .then((updated) => {
+          setDetail((prev) => {
+            if (!prev || prev.id !== updated.id) return prev;
+            const prevCount = prev.propuestas_recibidas?.length || 0;
+            const newCount = updated.propuestas_recibidas?.length || 0;
+            if (prevCount !== newCount || prev.estado !== updated.estado) {
+              return updated;
+            }
+            return prev;
+          });
+        })
+        .catch(() => {});
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [user, detail?.id, detail?.modalidad, detail?.estado]);
+
   function openDetail(id: string) {
     setActionNotice("");
     setSelectedId(id);
@@ -532,15 +557,35 @@ export default function ClientRequestsManager({
                     <p>Aún no has recibido propuestas de técnicos para esta licitación.</p>
                   ) : (
                     <div className="client-requests-list">
-                      {detail.propuestas_recibidas.map((prop) => (
+                                            {detail.propuestas_recibidas.map((prop) => (
                         <div key={prop.id} className="client-request-action-row">
                           <div>
-                            <strong>{prop.tecnico?.nombre_completo || "Técnico verificado"}</strong>
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: 4 }}>
+                              <strong>{prop.tecnico?.nombre_completo || "Técnico verificado"}</strong>
+                              <span
+                                style={{
+                                  fontSize: "0.75rem",
+                                  padding: "2px 8px",
+                                  borderRadius: 12,
+                                  fontWeight: 600,
+                                  background: prop.tipo === "CONTRAOFERTA" ? "#e0f2fe" : "#f0fdf4",
+                                  color: prop.tipo === "CONTRAOFERTA" ? "#0369a1" : "#166534",
+                                  border: `1px solid ${prop.tipo === "CONTRAOFERTA" ? "#bae6fd" : "#bbf7d0"}`,
+                                }}
+                              >
+                                {prop.tipo === "CONTRAOFERTA" ? "Contraoferta" : "Monto publicado"}
+                              </span>
+                            </div>
                             <p>
                               Monto propuesto: <strong>{formatLempiras(prop.monto)}</strong> · Estado:{" "}
                               <strong>{formatRequestStateLabel(prop.estado)}</strong> · Enviada:{" "}
                               {formatDateTime(prop.creada_en)}
                             </p>
+                            {prop.justificacion && (
+                              <p style={{ margin: "4px 0 0", fontStyle: "italic", color: "var(--muted)", fontSize: "0.85rem" }}>
+                                Justificación: "{prop.justificacion}"
+                              </p>
+                            )}
                           </div>
                           {prop.tecnico?.usuario_id && (
                             <Link
