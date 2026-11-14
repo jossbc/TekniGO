@@ -6,13 +6,20 @@ import { Button } from "./ui";
 import { api, errorMessage } from "../lib/api";
 import { formatLempiras, formatUnitLabel } from "../lib/clientRequests";
 import {
+  fetchCoverageZonesCatalog,
   fetchSpecialtiesForOpenRequest,
   fetchSuggestedRangeForSpecialty,
   publishOpenRequestApi,
   type PublishedOpenRequestResponse,
   type SpecialtyOption,
   type SuggestedRangeResponse,
+  type TechnicianCoverageZoneItem,
 } from "../lib/openRequests";
+import {
+  getHondurasDepartamentos,
+  getMunicipiosByDepartamento,
+  getSectorsForMunicipio,
+} from "../data/hondurasSectors";
 
 type HiringEligibility = {
   puede_contratar: boolean;
@@ -43,12 +50,17 @@ export default function OpenRequestForm({
 
   const [especialidadId, setEspecialidadId] = useState(initialSpecialties?.[0]?.id || "");
   const [descripcion, setDescripcion] = useState("");
+  const [departamento, setDepartamento] = useState("");
   const [municipio, setMunicipio] = useState("");
-  const [sector, setSector] = useState("");
+  const [sectorPreset, setSectorPreset] = useState("");
+  const [customSector, setCustomSector] = useState("");
+  const [coverageCatalog, setCoverageCatalog] = useState<TechnicianCoverageZoneItem[]>([]);
   const [direccionExacta, setDireccionExacta] = useState("");
   const [fechaHora, setFechaHora] = useState("");
   const [metodoPago, setMetodoPago] = useState<"efectivo" | "tarjeta">("efectivo");
   const [presupuesto, setPresupuesto] = useState("");
+
+  const sector = (sectorPreset === "__OTRO__" ? customSector : sectorPreset).trim();
 
   const [suggestedRange, setSuggestedRange] = useState<SuggestedRangeResponse | null>(null);
   const [loadingRange, setLoadingRange] = useState(false);
@@ -92,12 +104,20 @@ export default function OpenRequestForm({
     let active = true;
     if (!especialidadId) {
       setSuggestedRange(null);
+      fetchCoverageZonesCatalog(user).then((zones) => {
+        if (active) setCoverageCatalog(zones);
+      });
       return;
     }
     setLoadingRange(true);
-    fetchSuggestedRangeForSpecialty(user, especialidadId)
-      .then((range) => {
-        if (active) setSuggestedRange(range);
+    Promise.all([
+      fetchSuggestedRangeForSpecialty(user, especialidadId),
+      fetchCoverageZonesCatalog(user, { especialidad_id: especialidadId }),
+    ])
+      .then(([range, zones]) => {
+        if (!active) return;
+        setSuggestedRange(range);
+        setCoverageCatalog(zones);
       })
       .finally(() => {
         if (active) setLoadingRange(false);
@@ -199,12 +219,6 @@ export default function OpenRequestForm({
 
         <dl className="open-request-confirmation-details">
           <div>
-            <dt>Identificador de la solicitud</dt>
-            <dd>
-              <code>{created.solicitud_id || created.id}</code>
-            </dd>
-          </div>
-          <div>
             <dt>Especialidad</dt>
             <dd>{created.especialidad?.nombre || "Seleccionada"}</dd>
           </div>
@@ -212,6 +226,17 @@ export default function OpenRequestForm({
             <dt>Ubicación visible a postulantes</dt>
             <dd>
               {created.municipio}, {created.sector}
+            </dd>
+          </div>
+          <div>
+            <dt>Fecha y hora programada</dt>
+            <dd>
+              {created.fecha_hora
+                ? new Date(created.fecha_hora).toLocaleString("es-HN", {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })
+                : "Registrada"}
             </dd>
           </div>
           <div>
@@ -293,38 +318,106 @@ export default function OpenRequestForm({
         {/* Bloque 2 (ST-02 / CA-03): Ubicación parcial visible a técnicos elegibles */}
         <fieldset className="open-request-fieldset open-request-location-public">
           <legend>
-            <Eye size={16} aria-hidden="true" /> 2. Ubicación general (visible para técnicos elegibles)
+            <Eye size={16} aria-hidden="true" /> 2. Ubicación general en Honduras (visible para técnicos elegibles)
           </legend>
           <p className="open-request-privacy-note">
             <MapPin size={15} aria-hidden="true" />
             <span>
-              Los técnicos verificados y disponibles cuya cobertura coincida verán <strong>únicamente el municipio y el sector</strong> antes de que aceptes una propuesta.
+              Selecciona tu departamento, municipio y sector usando el mismo catálogo de zonas de cobertura de los técnicos. Los postulantes verán <strong>únicamente el municipio y el sector</strong> antes de adjudicar.
             </span>
           </p>
 
-          <div className="open-request-two-cols">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+              gap: "14px",
+            }}
+          >
+            <div className="field">
+              <label htmlFor="open-req-departamento">Departamento</label>
+              <select
+                id="open-req-departamento"
+                required
+                value={departamento}
+                onChange={(event) => {
+                  setDepartamento(event.target.value);
+                  setMunicipio("");
+                  setSectorPreset("");
+                  setCustomSector("");
+                }}
+              >
+                <option value="">Selecciona un departamento</option>
+                {getHondurasDepartamentos().map((depto) => (
+                  <option key={depto} value={depto}>
+                    {depto}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="field">
               <label htmlFor="open-req-municipio">Municipio</label>
-              <input
+              <select
                 id="open-req-municipio"
-                type="text"
                 required
+                disabled={!departamento}
                 value={municipio}
-                onChange={(event) => setMunicipio(event.target.value)}
-                placeholder="Ej. Distrito Central"
-              />
+                onChange={(event) => {
+                  setMunicipio(event.target.value);
+                  setSectorPreset("");
+                  setCustomSector("");
+                }}
+              >
+                <option value="">
+                  {departamento ? "Selecciona un municipio" : "Primero elige un departamento"}
+                </option>
+                {getMunicipiosByDepartamento(departamento).map((mun) => (
+                  <option key={mun} value={mun}>
+                    {mun}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="field">
               <label htmlFor="open-req-sector">Sector o colonia</label>
-              <input
+              <select
                 id="open-req-sector"
-                type="text"
                 required
-                value={sector}
-                onChange={(event) => setSector(event.target.value)}
-                placeholder="Ej. Col. Kennedy"
-              />
+                disabled={!municipio}
+                value={sectorPreset}
+                onChange={(event) => setSectorPreset(event.target.value)}
+              >
+                <option value="">
+                  {municipio ? "Selecciona un sector o colonia" : "Primero elige un municipio"}
+                </option>
+                {getSectorsForMunicipio(municipio, coverageCatalog).map((item) => (
+                  <option key={item.sector} value={item.sector}>
+                    {item.sector}
+                    {item.hasTechnicianCoverage ? " (Con cobertura de técnicos)" : ""}
+                  </option>
+                ))}
+                <option value="__OTRO__">Otro (escribir sector manualmente)...</option>
+              </select>
+
+              {sectorPreset === "__OTRO__" && (
+                <input
+                  id="open-req-sector-custom"
+                  type="text"
+                  required
+                  value={customSector}
+                  onChange={(event) => {
+                    const sinNumero = event.target.value.replace(/^\d+/, "");
+                    const capitalizado = sinNumero
+                      ? sinNumero.charAt(0).toUpperCase() + sinNumero.slice(1)
+                      : "";
+                    setCustomSector(capitalizado);
+                  }}
+                  placeholder="Escribe el nombre del sector o colonia..."
+                  style={{ marginTop: 8 }}
+                />
+              )}
             </div>
           </div>
         </fieldset>

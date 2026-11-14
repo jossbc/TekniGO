@@ -206,7 +206,7 @@ def list_client_requests(
 
     open_request_model = getattr(models, "OpenRequest", None)
 
-    # Caso 1: Solo solicitudes directas (o todas cuando aún no existe modelo de abiertas)
+    # Caso 1: Solo solicitudes directas 
     if norm_modalidad == "DIRECTA" or (norm_modalidad == "TODOS" and open_request_model is None):
         query = select(DirectRequest).where(DirectRequest.cliente_id == user.firebase_uid)
         if norm_estado != "TODOS":
@@ -239,7 +239,7 @@ def list_client_requests(
             "solicitudes": items,
         }
 
-    # Caso 2: Solo solicitudes abiertas cuando el modelo aún no está registrado
+    # Caso 2:  solicitudes abiertas
     if norm_modalidad == "ABIERTA" and open_request_model is None:
         return {
             "total": 0,
@@ -250,7 +250,7 @@ def list_client_requests(
             "solicitudes": [],
         }
 
-    # Caso 3: Existe modelo de solicitudes abiertas (ABIERTA o TODOS combinando ambas modalidades)
+    # Caso 3:todos combinando ambas modalidades
     combined: list[tuple[str, Any]] = []
     if norm_modalidad in {"TODOS", "DIRECTA"}:
         dq = select(DirectRequest).where(DirectRequest.cliente_id == user.firebase_uid)

@@ -31,12 +31,22 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
 
   const municipalities = [...new Set(coverageZones.map((zone) => zone.municipio))];
   const [municipio, setMunicipio] = useState("");
-  const [sector, setSector] = useState("");
+  const [sectorPreset, setSectorPreset] = useState("");
+  const [customSector, setCustomSector] = useState("");
   const [direccion, setDireccion] = useState("");
   const [fechaHora, setFechaHora] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [cantidad, setCantidad] = useState<number>(1);
   const [metodoPago, setMetodoPago] = useState("Efectivo");
+
+  const availableSectors = [
+    ...new Set(
+      coverageZones
+        .filter((zone) => zone.municipio === municipio && zone.sector.trim())
+        .map((zone) => zone.sector.trim()),
+    ),
+  ];
+  const sector = (sectorPreset === "__OTRO__" ? customSector : sectorPreset).trim();
 
   const [totalEstimado, setTotalEstimado] = useState<number | null>(null);
   const [loadingEstimate, setLoadingEstimate] = useState(false);
@@ -118,8 +128,17 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
           <div className="field-row">
             <label className="field">
               Municipio
-              <select required autoFocus value={municipio} onChange={(e) => setMunicipio(e.target.value)}
-                disabled={!municipalities.length}>
+              <select
+                required
+                autoFocus
+                value={municipio}
+                onChange={(e) => {
+                  setMunicipio(e.target.value);
+                  setSectorPreset("");
+                  setCustomSector("");
+                }}
+                disabled={!municipalities.length}
+              >
                 <option value="" disabled>Selecciona un municipio</option>
                 {municipalities.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
@@ -127,8 +146,30 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
             </label>
             <label className="field">
               Sector
-              <input type="text" required value={sector} onChange={(e) => setSector(e.target.value)}
-                placeholder="Ej. Colonia Kennedy" />
+              <select
+                required
+                value={sectorPreset}
+                onChange={(e) => setSectorPreset(e.target.value)}
+                disabled={!municipio}
+              >
+                <option value="" disabled>
+                  {municipio ? "Selecciona un sector" : "Primero elige un municipio"}
+                </option>
+                {availableSectors.map((sec) => (
+                  <option key={sec} value={sec}>{sec}</option>
+                ))}
+                <option value="__OTRO__">+ Otro sector (escribir manualmente)...</option>
+              </select>
+              {sectorPreset === "__OTRO__" && (
+                <input
+                  type="text"
+                  required
+                  value={customSector}
+                  onChange={(e) => setCustomSector(e.target.value)}
+                  placeholder="Ej. Colonia Kennedy"
+                  style={{ marginTop: 6 }}
+                />
+              )}
             </label>
           </div>
           <label className="field">

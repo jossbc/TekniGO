@@ -34,6 +34,7 @@ from app.open_requests import (
     get_open_request_for_viewer,
     get_suggested_range_endpoint,
     list_available_open_requests_for_technician,
+    list_coverage_zones_catalog,
     list_open_request_proposals_for_viewer,
     publish_open_request,
     publish_open_request_endpoint,
@@ -1463,3 +1464,52 @@ class OpenRequestsSt01Tests(unittest.TestCase):
             self.db.query(OpenRequestProposal).filter_by(solicitud_id=req_id, usuario_id=techs[3].id).count(),
             0,
         )
+
+    def test_honduras_location_equivalence_and_coverage_catalog(self):
+        tech = User(
+            firebase_uid="tech-hn-loc",
+            correo="hnloc@example.com",
+            nombre_completo="Técnico Honduras",
+            dni="0801200000888",
+            telefono="+50498888888",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add(TechnicianSpecialty(usuario_id=tech.id, especialidad_id=self.specialty.id))
+        # El técnico seleccionó desde CoverageZoneSelector (hondurasLocation.json):
+        # Municipio: "Distrito Central (Tegucigalpa)" y Sector: "Kennedy"
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central (Tegucigalpa)",
+                sector="Kennedy",
+            )
+        )
+        self.db.commit()
+
+        # El cliente publica con "Distrito Central" y "Col. Kennedy"
+        req = publish_open_request(
+            self._valid_payload(
+                especialidad_id=self.specialty.id,
+                municipio="Distrito Central",
+                sector="Col. Kennedy",
+                presupuesto=Decimal("900.00"),
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+
+        # La solicitud abierta aparece en las oportunidades disponibles del técnico
+        available = list_available_open_requests_for_technician({"uid": tech.firebase_uid}, self.db)
+        self.assertEqual(available["total"], 1)
+        self.assertEqual(available["solicitudes"][0]["id"], req["id"])
+
+        # El catálogo de zonas de cobertura devuelve la zona registrada
+        catalog = list_coverage_zones_catalog(self.db, municipio="Tegucigalpa")
+        self.assertEqual(len(catalog), 1)
+        self.assertEqual(catalog[0]["sector"], "Kennedy")

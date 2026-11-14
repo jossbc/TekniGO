@@ -3,7 +3,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import os
+import re
 from typing import Any
+import unicodedata
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -390,8 +392,98 @@ def get_suggested_range_endpoint(
     return calculate_suggested_range(especialidad_id, db, unidad_cobro=unidad_cobro)
 
 
+def _strip_accents(value: str | None) -> str:
+    text = " ".join((value or "").split()).strip()
+    if not text:
+        return ""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
 def _normalize_place(value: str | None) -> str:
-    return " ".join((value or "").split()).lower()
+    return _strip_accents(value).lower()
+
+
+_SECTOR_PREFIX_PATTERN = re.compile(
+    r"^(?:col(?:onia)?\.?|bo\.?|barrio|res(?:idencial)?\.?|urb(?:anizacion)?\.?|sec(?:tor)?\.?|aldea|villa|lot(?:ificacion)?\.?|ciudad)\s+",
+    re.IGNORECASE,
+)
+
+_WILDCARD_SECTORS = {
+    "todo el municipio",
+    "todos",
+    "todo",
+    "cualquier sector",
+    "general",
+    "toda la ciudad",
+}
+
+
+def _municipio_canonical_tokens(value: str | None) -> set[str]:
+    norm = _normalize_place(value)
+    if not norm:
+        return set()
+    tokens = {norm}
+    # Separar alias entre paréntesis, ej. "Distrito Central (Tegucigalpa)" -> "distrito central", "tegucigalpa"
+    outside = re.sub(r"\([^)]*\)", " ", norm)
+    outside_clean = " ".join(outside.split()).strip(" -_,")
+    if outside_clean:
+        tokens.add(outside_clean)
+    for inside in re.findall(r"\(([^)]+)\)", norm):
+        inside_clean = " ".join(inside.split()).strip(" -_,")
+        if inside_clean:
+            tokens.add(inside_clean)
+
+    # Alias geográficos equivalentes en Honduras
+    if tokens & {"distrito central", "tegucigalpa", "comayaguela", "tegucigalpa y comayaguela"}:
+        tokens.update({"distrito central", "tegucigalpa", "comayaguela", "distrito central (tegucigalpa)"})
+    if tokens & {"san juan de flores", "cantarranas", "san juan de flores (cantarranas)"}:
+        tokens.update({"san juan de flores", "cantarranas", "san juan de flores (cantarranas)"})
+    if tokens & {"san pedro sula", "sps"}:
+        tokens.update({"san pedro sula", "sps"})
+    return tokens
+
+
+def _sector_canonical_key(value: str | None) -> str:
+    norm = _normalize_place(value)
+    if not norm:
+        return ""
+    # Limpiar puntuación común y prefijos de colonia/barrio/residencial repetidamente
+    cleaned = re.sub(r"[.,;#\-_/]+", " ", norm)
+    cleaned = " ".join(cleaned.split())
+    prev = None
+    while cleaned and cleaned != prev:
+        prev = cleaned
+        cleaned = _SECTOR_PREFIX_PATTERN.sub("", cleaned).strip()
+    return " ".join(cleaned.split()) or norm
+
+
+def _municipalities_match(muni_a: str | None, muni_b: str | None) -> bool:
+    tokens_a = _municipio_canonical_tokens(muni_a)
+    tokens_b = _municipio_canonical_tokens(muni_b)
+    if not tokens_a or not tokens_b:
+        return False
+    return bool(tokens_a & tokens_b)
+
+
+def _sectors_match(sector_a: str | None, sector_b: str | None) -> bool:
+    key_a = _sector_canonical_key(sector_a)
+    key_b = _sector_canonical_key(sector_b)
+    if not key_a or not key_b:
+        return False
+    if key_a in _WILDCARD_SECTORS or key_b in _WILDCARD_SECTORS:
+        return True
+    return key_a == key_b
+
+
+def _locations_match(
+    muni_a: str | None,
+    sector_a: str | None,
+    muni_b: str | None,
+    sector_b: str | None,
+) -> bool:
+    return _municipalities_match(muni_a, muni_b) and _sectors_match(sector_a, sector_b)
 
 
 AVAILABLE_OPPORTUNITY_STATE_KEYS = {"PUBLICADA", "CON_OFERTAS"}
@@ -520,11 +612,28 @@ def _technician_compatible_specialty_ids(db: Session, usuario_id: uuid.UUID) -> 
     return {str(spec_id) for spec_id in rows}
 
 
+def _technician_coverage_zones(db: Session, usuario_id: uuid.UUID) -> list[CoverageZone]:
+    return list(
+        db.scalars(
+            select(CoverageZone).where(CoverageZone.usuario_id == usuario_id)
+        ).all()
+    )
+
+
 def _technician_coverage_pairs(db: Session, usuario_id: uuid.UUID) -> set[tuple[str, str]]:
-    zones = db.scalars(
-        select(CoverageZone).where(CoverageZone.usuario_id == usuario_id)
-    ).all()
-    return {(_normalize_place(z.municipio), _normalize_place(z.sector)) for z in zones}
+    zones = _technician_coverage_zones(db, usuario_id)
+    return {(_normalize_place(z.municipio), _sector_canonical_key(z.sector)) for z in zones}
+
+
+def _technician_covers_location(
+    zones: list[CoverageZone],
+    municipio: str | None,
+    sector: str | None,
+) -> bool:
+    return any(
+        _locations_match(z.municipio, z.sector, municipio, sector)
+        for z in zones
+    )
 
 
 def _technician_discarded_request_ids(db: Session, usuario_id: uuid.UUID) -> set[str]:
@@ -545,9 +654,8 @@ def is_technician_compatible_with_open_request(
     if str(record.especialidad_id) not in compatible_specs:
         return False
 
-    coverage_pairs = _technician_coverage_pairs(db, usuario_id)
-    req_pair = (_normalize_place(record.municipio), _normalize_place(record.sector))
-    return req_pair in coverage_pairs
+    zones = _technician_coverage_zones(db, usuario_id)
+    return _technician_covers_location(zones, record.municipio, record.sector)
 
 
 def serialize_open_request_for_technician(
@@ -672,14 +780,30 @@ def list_available_open_requests_for_technician(
     }
 
     compatible_specs = _technician_compatible_specialty_ids(db, user.id)
-    coverage_pairs = _technician_coverage_pairs(db, user.id)
-    if not compatible_specs or not coverage_pairs:
+    zones = _technician_coverage_zones(db, user.id)
+    diagnostico_cobertura = {
+        "tiene_especialidades": bool(compatible_specs),
+        "cantidad_especialidades": len(compatible_specs),
+        "tiene_zonas_cobertura": bool(zones),
+        "cantidad_zonas_cobertura": len(zones),
+    }
+    if not compatible_specs or not zones:
+        missing_parts: list[str] = []
+        if not compatible_specs:
+            missing_parts.append("especialidades en tu perfil")
+        if not zones:
+            missing_parts.append("zonas de cobertura")
+        missing_detail = f" (te falta configurar {' y '.join(missing_parts)} en tu perfil)" if missing_parts else ""
         return {
             "total": 0,
             "offset": offset,
             "limit": limit,
             "filtros_aplicados": applied_filters,
-            "mensaje": "No se encontraron oportunidades disponibles para tu especialidad o zona. Revisa tus filtros o cobertura.",
+            "diagnostico_cobertura": diagnostico_cobertura,
+            "mensaje": (
+                f"No se encontraron oportunidades disponibles para tu especialidad o zona{missing_detail}. "
+                "Revisa tus filtros o cobertura."
+            ),
             "solicitudes": [],
         }
 
@@ -692,6 +816,7 @@ def list_available_open_requests_for_technician(
                 "offset": offset,
                 "limit": limit,
                 "filtros_aplicados": applied_filters,
+                "diagnostico_cobertura": diagnostico_cobertura,
                 "mensaje": "No se encontraron oportunidades disponibles con los filtros seleccionados. Revisa o ajusta los filtros.",
                 "solicitudes": [],
             }
@@ -717,13 +842,11 @@ def list_available_open_requests_for_technician(
         if state_filter != "TODOS" and row_state_key != state_filter:
             continue
 
-        row_muni = _normalize_place(row.municipio)
-        row_sector = _normalize_place(row.sector)
-        if (row_muni, row_sector) not in coverage_pairs:
+        if not _technician_covers_location(zones, row.municipio, row.sector):
             continue
-        if norm_municipio is not None and row_muni != norm_municipio:
+        if municipio_clean is not None and not _municipalities_match(row.municipio, municipio_clean):
             continue
-        if norm_sector is not None and row_sector != norm_sector:
+        if sector_clean is not None and not _sectors_match(row.sector, sector_clean):
             continue
 
         matching.append(row)
@@ -735,6 +858,7 @@ def list_available_open_requests_for_technician(
         "offset": offset,
         "limit": limit,
         "filtros_aplicados": applied_filters,
+        "diagnostico_cobertura": diagnostico_cobertura,
         "mensaje": (
             "No se encontraron oportunidades disponibles con los filtros seleccionados. Revisa o ajusta los filtros."
             if total == 0
@@ -745,6 +869,73 @@ def list_available_open_requests_for_technician(
             for row in page_slice
         ],
     }
+
+
+def list_coverage_zones_catalog(
+    db: Session,
+    *,
+    especialidad_id: uuid.UUID | str | None = None,
+    municipio: str | None = None,
+) -> list[dict]:
+    """Retorna las zonas de cobertura (departamento, municipio, sector) registradas por técnicos para sugerir sectores estandarizados."""
+    query = select(CoverageZone).outerjoin(
+        TechnicianProfile,
+        TechnicianProfile.usuario_id == CoverageZone.usuario_id,
+    )
+    if especialidad_id is not None and str(especialidad_id).strip():
+        try:
+            spec_uuid = uuid.UUID(str(especialidad_id).strip())
+            query = query.join(
+                TechnicianSpecialty,
+                TechnicianSpecialty.usuario_id == CoverageZone.usuario_id,
+            ).where(TechnicianSpecialty.especialidad_id == spec_uuid)
+        except ValueError:
+            pass
+
+    rows = db.scalars(query).all()
+    seen: set[tuple[str, str, str]] = set()
+    items: list[dict] = []
+    for zone in rows:
+        if municipio and municipio.strip() and not _municipalities_match(zone.municipio, municipio):
+            continue
+        depto_clean = " ".join((zone.departamento or "").split())
+        muni_clean = " ".join((zone.municipio or "").split())
+        sector_clean = " ".join((zone.sector or "").split())
+        if not muni_clean or not sector_clean:
+            continue
+        key = (
+            _normalize_place(depto_clean),
+            _normalize_place(muni_clean),
+            _sector_canonical_key(sector_clean),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "departamento": depto_clean,
+                "municipio": muni_clean,
+                "sector": sector_clean,
+            }
+        )
+    items.sort(key=lambda item: (item["departamento"], item["municipio"], item["sector"]))
+    return items
+
+
+@router.get("/coverage-zones")
+def get_coverage_zones_catalog_endpoint(
+    response: Response,
+    especialidad_id: uuid.UUID | None = Query(None, description="Filtrar zonas por especialidad"),
+    municipio: str | None = Query(None, description="Filtrar zonas por municipio"),
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return list_coverage_zones_catalog(
+        db,
+        especialidad_id=especialidad_id,
+        municipio=municipio,
+    )
 
 
 def get_open_request_for_viewer(

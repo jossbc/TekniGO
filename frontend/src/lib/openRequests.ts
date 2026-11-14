@@ -146,9 +146,33 @@ export type AvailableOpportunitiesResponse = {
     sector: string | null;
     estado: string;
   };
+  diagnostico_cobertura?: {
+    tiene_especialidades: boolean;
+    cantidad_especialidades: number;
+    tiene_zonas_cobertura: boolean;
+    cantidad_zonas_cobertura: number;
+  };
   mensaje?: string | null;
   solicitudes: TechnicianOpportunityItem[];
 };
+
+export async function fetchCoverageZonesCatalog(
+  user: User,
+  params?: { especialidad_id?: string; municipio?: string },
+): Promise<TechnicianCoverageZoneItem[]> {
+  try {
+    const query = new URLSearchParams();
+    if (params?.especialidad_id) query.set("especialidad_id", params.especialidad_id);
+    if (params?.municipio) query.set("municipio", params.municipio);
+    const qs = query.toString();
+    return await api<TechnicianCoverageZoneItem[]>(
+      `/open-requests/coverage-zones${qs ? `?${qs}` : ""}`,
+      user,
+    );
+  } catch {
+    return [];
+  }
+}
 
 export type DiscardOpportunityResponse = {
   solicitud_id: string;

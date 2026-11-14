@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
-import { ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Inbox, Check, X } from "lucide-react";
+import { ArrowUpRight, Briefcase, CheckCircle2, CircleAlert, Clock3, Inbox, Check, MapPin, X } from "lucide-react";
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
@@ -9,6 +9,10 @@ import {
   rejectTechnicianDirectRequest,
   type TechnicianDirectRequest,
 } from "../lib/directRequests";
+import {
+  listAvailableOpportunitiesApi,
+  type AvailableOpportunitiesResponse,
+} from "../lib/openRequests";
 import LoadingState from "./LoadingState";
 import { Button } from "./ui";
 
@@ -30,6 +34,8 @@ function formatShortDate(iso: string | null | undefined): string {
 
 export default function TechnicianIncomingRequestsCard({ user }: { user: User }) {
   const [requests, setRequests] = useState<DirectRequest[]>([]);
+  const [openOpportunities, setOpenOpportunities] = useState<AvailableOpportunitiesResponse | null>(null);
+  const [openError, setOpenError] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
@@ -41,15 +47,22 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
     let active = true;
     setLoading(true);
     setLoadError("");
+    setOpenError("");
 
-    listTechnicianDirectRequests(user)
-      .then((data) => {
+    Promise.all([
+      listTechnicianDirectRequests(user).catch((err) => {
+        if (active) setLoadError(errorMessage(err));
+        return [] as DirectRequest[];
+      }),
+      listAvailableOpportunitiesApi(user, { limit: 3 }).catch((err) => {
+        if (active) setOpenError(errorMessage(err));
+        return null;
+      }),
+    ])
+      .then(([directData, openData]) => {
         if (!active) return;
-        setRequests(Array.isArray(data) ? data : []);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setLoadError(errorMessage(err));
+        setRequests(Array.isArray(directData) ? directData : []);
+        setOpenOpportunities(openData);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -297,8 +310,131 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
 
       <div style={{ marginTop: "12px" }}>
         <Link to="/tecnico/solicitudes">
-          Ver todas las solicitudes <ArrowUpRight size={15} />
+          Ver todas las solicitudes directas <ArrowUpRight size={15} />
         </Link>
+      </div>
+
+      {/* Bloque de Solicitudes Abiertas (Licitaciones) en tu zona de cobertura */}
+      <div
+        style={{
+          marginTop: "18px",
+          paddingTop: "16px",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+            marginBottom: "8px",
+          }}
+        >
+          <h3 style={{ margin: 0, fontSize: "14px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <Briefcase size={16} style={{ color: "var(--blue)" }} />
+            Solicitudes abiertas en tu zona (licitaciones)
+          </h3>
+          {openOpportunities && openOpportunities.total > 0 && (
+            <span
+              className="status-pill"
+              style={{ background: "#eff6ff", color: "#1d4ed8", fontWeight: 700 }}
+            >
+              {openOpportunities.total} disponible{openOpportunities.total !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+
+        {openError ? (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: "10px",
+              border: "1px solid #fed7aa",
+              background: "#fff7ed",
+              color: "#9a3412",
+              fontSize: "12.5px",
+            }}
+          >
+            <div>{openError}</div>
+            <Link to="/perfil" style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginTop: "6px", fontWeight: 700 }}>
+              Configurar disponibilidad o perfil <ArrowUpRight size={14} />
+            </Link>
+          </div>
+        ) : openOpportunities && openOpportunities.solicitudes.length > 0 ? (
+          <div style={{ display: "grid", gap: "8px" }}>
+            {openOpportunities.solicitudes.slice(0, 3).map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  padding: "10px 12px",
+                  border: "1px solid #bfdbfe",
+                  borderRadius: "10px",
+                  background: "#f8fafc",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--ink)" }}>
+                    {item.especialidad?.nombre || "Solicitud abierta"}
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                      <MapPin size={13} /> {item.municipio}, {item.sector}
+                    </span>
+                    {" · "}
+                    <strong style={{ color: "var(--blue)" }}>
+                      L. {Number(item.presupuesto ?? 0).toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
+                <Link
+                  className="button button-outline"
+                  to="/tecnico/oportunidades"
+                  style={{ width: "auto", minHeight: "32px", padding: "4px 10px", fontSize: "12px" }}
+                >
+                  Ver y postular
+                </Link>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: "10px",
+              border: "1px dashed var(--line)",
+              background: "var(--surface)",
+              color: "var(--muted)",
+              fontSize: "12.5px",
+            }}
+          >
+            <span>
+              {openOpportunities?.mensaje ||
+                "No hay solicitudes abiertas en tus zonas de cobertura y especialidades en este momento."}
+            </span>
+            {openOpportunities?.diagnostico_cobertura &&
+              (!openOpportunities.diagnostico_cobertura.tiene_especialidades ||
+                !openOpportunities.diagnostico_cobertura.tiene_zonas_cobertura) && (
+                <div style={{ marginTop: "6px" }}>
+                  <Link to="/perfil" style={{ fontWeight: 700 }}>
+                    Ir a mi perfil para agregar especialidades y zonas de cobertura →
+                  </Link>
+                </div>
+              )}
+          </div>
+        )}
+
+        <div style={{ marginTop: "10px" }}>
+          <Link to="/tecnico/oportunidades">
+            Ir al tablero de ofertas abiertas <ArrowUpRight size={15} />
+          </Link>
+        </div>
       </div>
     </section>
   );
