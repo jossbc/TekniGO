@@ -3,6 +3,7 @@ import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
 import {
   ArrowUpRight,
+  Award,
   Calendar,
   CheckCircle2,
   ClipboardList,
@@ -10,7 +11,10 @@ import {
   FileText,
   MapPin,
   RefreshCw,
+  ShieldCheck,
+  Star,
   UserCheck,
+  WifiOff,
   X,
 } from "lucide-react";
 import { Button } from "./ui";
@@ -25,6 +29,7 @@ import {
   formatUnitLabel,
   getMyRequestDetail,
   listMyRequests,
+  rejectProposalApi,
   type ClientRequestDetail,
   type ClientRequestsPageResponse,
   type EstadoFiltro,
@@ -162,6 +167,26 @@ export default function ClientRequestsManager({
   const [detailError, setDetailError] = useState("");
   const [executingAction, setExecutingAction] = useState("");
   const [actionNotice, setActionNotice] = useState("");
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+
+  //Manejar Estado de Conexión
+  useEffect(() => {
+    function handleOnline() {
+      setIsOffline(false);
+      if (selectedId) {
+        setRefreshTick((v) => v + 1);
+      }
+    }
+    function handleOffline() {
+      setIsOffline(true);
+    }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [selectedId]);
 
   useEffect(() => {
     setSelectedId(initialRequestId);
@@ -215,28 +240,43 @@ export default function ClientRequestsManager({
   }, [user, selectedId, refreshTick]);
 
     // HU-29 ST-04 (CA-05): Actualización en tiempo real de nuevas ofertas y contraofertas
+    //Se Realizaron cambios para la siguiente HU
+    // HU-30 ST-04 (CA-05): Actualización en tiempo real y recuperación automática tras reconexión
   useEffect(() => {
     if (!detail || detail.modalidad !== "ABIERTA") return;
+    const requestId = detail.id;
     const estado = (detail.estado || "").toUpperCase();
     if (estado !== "PUBLICADA" && estado !== "CON OFERTAS" && estado !== "CON_OFERTAS") return;
 
-    const interval = setInterval(() => {
-      getMyRequestDetail(user, detail.id)
+    function fetchLatest() {
+      getMyRequestDetail(user, requestId)
         .then((updated) => {
           setDetail((prev) => {
             if (!prev || prev.id !== updated.id) return prev;
-            const prevCount = prev.propuestas_recibidas?.length || 0;
-            const newCount = updated.propuestas_recibidas?.length || 0;
-            if (prevCount !== newCount || prev.estado !== updated.estado) {
-              return updated;
-            }
-            return prev;
+            const changed =
+              JSON.stringify(prev.propuestas_recibidas) !== JSON.stringify(updated.propuestas_recibidas) ||
+              prev.estado !== updated.estado;
+            return changed ? updated : prev;
           });
         })
         .catch(() => {});
-    }, 4000);
+    }
 
-    return () => clearInterval(interval);
+    // CA-05: Al reconectar o enfocar la pestaña, volver a consultar los datos persistidos inmediatamente
+    function handleFocusOrOnline() {
+      fetchLatest();
+    }
+
+    window.addEventListener("focus", handleFocusOrOnline);
+    window.addEventListener("online", handleFocusOrOnline);
+
+    const interval = setInterval(fetchLatest, 3500);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleFocusOrOnline);
+      window.removeEventListener("online", handleFocusOrOnline);
+    };
   }, [user, detail?.id, detail?.modalidad, detail?.estado]);
 
   function openDetail(id: string) {
@@ -269,6 +309,36 @@ export default function ClientRequestsManager({
       setDetailError(errorMessage(err));
     } finally {
       setExecutingAction("");
+    }
+  }
+
+      const [confirmRejectId, setConfirmRejectId] = useState<string | null>(null);
+  const [rejectingProposalId, setRejectingProposalId] = useState<string>("");
+
+  async function executeRejectProposal(proposalId: string) {
+    if (!detail || rejectingProposalId) return;
+    setRejectingProposalId(proposalId);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const res = await rejectProposalApi(user, detail.id, proposalId);
+      setActionNotice(res.mensaje || "Propuesta rechazada correctamente.");
+      setConfirmRejectId(null);
+      setDetail((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          estado: res.estado_solicitud,
+          propuestas_recibidas: (prev.propuestas_recibidas || []).map((p) =>
+            p.id === proposalId ? res.propuesta : p
+          ),
+        };
+      });
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+    } finally {
+      setRejectingProposalId("");
     }
   }
 
@@ -552,49 +622,304 @@ export default function ClientRequestsManager({
               {/* HU-28 CA-05: Propuestas recibidas en solicitudes abiertas */}
               {detail.modalidad === "ABIERTA" && (
                 <section className="client-request-box" aria-label="Propuestas recibidas">
-                  <h3>Propuestas recibidas ({detail.propuestas_recibidas?.length || 0})</h3>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: "8px" }}>
+                    <h3 style={{ margin: 0 }}>Propuestas recibidas ({detail.propuestas_recibidas?.length || 0})</h3>
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: isOffline ? "#ef4444" : "#22c55e",
+                          display: "inline-block",
+                        }}
+                      />
+                      {isOffline ? "Sin conexión (Reconectando…)" : "Actualización en vivo activa"}
+                    </span>
+                  </div>
+
+                  {isOffline && (
+                    <div className="alert" role="status" style={{ marginBottom: "1rem" }}>
+                      <WifiOff size={16} />
+                      <span>Sin conexión a internet. Los datos se sincronizarán automáticamente al reconectar.</span>
+                    </div>
+                  )}
                   {!detail.propuestas_recibidas || detail.propuestas_recibidas.length === 0 ? (
                     <p>Aún no has recibido propuestas de técnicos para esta licitación.</p>
                   ) : (
                     <div className="client-requests-list">
-                                            {detail.propuestas_recibidas.map((prop) => (
-                        <div key={prop.id} className="client-request-action-row">
-                          <div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: 4 }}>
-                              <strong>{prop.tecnico?.nombre_completo || "Técnico verificado"}</strong>
-                              <span
+                                                                  {detail.propuestas_recibidas.map((prop) => (
+                        <div
+                          key={prop.id}
+                          style={{
+                            background: "#fff",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: "10px",
+                            padding: "1rem 1.25rem",
+                            marginBottom: "0.85rem",
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "flex-start",
+                              flexWrap: "wrap",
+                              gap: "12px",
+                            }}
+                          >
+                            {/* Información del técnico e insignias (CA-02) */}
+                            <div style={{ flex: "1 1 280px" }}>
+                              <div
                                 style={{
-                                  fontSize: "0.75rem",
-                                  padding: "2px 8px",
-                                  borderRadius: 12,
-                                  fontWeight: 600,
-                                  background: prop.tipo === "CONTRAOFERTA" ? "#e0f2fe" : "#f0fdf4",
-                                  color: prop.tipo === "CONTRAOFERTA" ? "#0369a1" : "#166534",
-                                  border: `1px solid ${prop.tipo === "CONTRAOFERTA" ? "#bae6fd" : "#bbf7d0"}`,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "8px",
+                                  flexWrap: "wrap",
+                                  marginBottom: "4px",
                                 }}
                               >
-                                {prop.tipo === "CONTRAOFERTA" ? "Contraoferta" : "Monto publicado"}
-                              </span>
+                                <strong style={{ fontSize: "1.05rem" }}>
+                                  {prop.tecnico?.nombre_completo || "Técnico postulado"}
+                                </strong>
+
+                                {/* Insignia 1: Identidad Verificada */}
+                                {prop.tecnico?.verificado && (
+                                  <span
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "4px",
+                                      fontSize: "0.75rem",
+                                      padding: "2px 8px",
+                                      borderRadius: "12px",
+                                      fontWeight: 600,
+                                      background: "#f0fdf4",
+                                      color: "#166534",
+                                      border: "1px solid #bbf7d0",
+                                    }}
+                                    title="Identidad verificada con DNI y antecedentes"
+                                  >
+                                    <ShieldCheck size={13} />
+                                    Verificado
+                                  </span>
+                                )}
+
+                                {/* Insignia 2: Certificación de Oficio Separada */}
+                                {prop.tecnico?.certificado && (
+                                  <span
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "4px",
+                                      fontSize: "0.75rem",
+                                      padding: "2px 8px",
+                                      borderRadius: "12px",
+                                      fontWeight: 600,
+                                      background: "#eff6ff",
+                                      color: "#1d4ed8",
+                                      border: "1px solid #bfdbfe",
+                                    }}
+                                    title={`Certificación de oficio aprobada (${prop.tecnico.certificaciones_aprobadas_count} cert.)`}
+                                  >
+                                    <Award size={13} />
+                                    Certificado de oficio
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Calificación disponible (CA-02) */}
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "6px",
+                                  fontSize: "0.85rem",
+                                  color: "var(--muted)",
+                                  marginBottom: "6px",
+                                }}
+                              >
+                                {prop.tecnico?.calificacion_promedio != null ? (
+                                  <span
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "3px",
+                                      color: "#b45309",
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    <Star size={14} fill="#f59e0b" color="#f59e0b" />
+                                    {prop.tecnico.calificacion_promedio.toFixed(1)} / 5.0
+                                  </span>
+                                ) : (
+                                  <span>Sin calificaciones previas</span>
+                                )}
+                                <span>•</span>
+                                <span>Enviada: {formatDateTime(prop.creada_en)}</span>
+                              </div>
+
+                              {/* Tipo de propuesta y justificación */}
+                              <div style={{ marginTop: "4px" }}>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    fontSize: "0.75rem",
+                                    padding: "2px 8px",
+                                    borderRadius: "6px",
+                                    fontWeight: 600,
+                                    background: prop.tipo === "CONTRAOFERTA" ? "#fef3c7" : "#f1f5f9",
+                                    color: prop.tipo === "CONTRAOFERTA" ? "#92400e" : "#475569",
+                                    border: `1px solid ${prop.tipo === "CONTRAOFERTA" ? "#fde68a" : "#e2e8f0"}`,
+                                  }}
+                                >
+                                  {prop.tipo === "CONTRAOFERTA" ? "Contraoferta propuesta" : "Aceptó presupuesto publicado"}
+                                </span>
+                                {prop.justificacion && (
+                                  <p style={{ margin: "4px 0 0", fontSize: "0.85rem", fontStyle: "italic", color: "#334155" }}>
+                                    "{prop.justificacion}"
+                                  </p>
+                                )}
+                              </div>
                             </div>
-                            <p>
-                              Monto propuesto: <strong>{formatLempiras(prop.monto)}</strong> · Estado:{" "}
-                              <strong>{formatRequestStateLabel(prop.estado)}</strong> · Enviada:{" "}
-                              {formatDateTime(prop.creada_en)}
-                            </p>
-                            {prop.justificacion && (
-                              <p style={{ margin: "4px 0 0", fontStyle: "italic", color: "var(--muted)", fontSize: "0.85rem" }}>
-                                Justificación: "{prop.justificacion}"
-                              </p>
-                            )}
-                          </div>
-                          {prop.tecnico?.usuario_id && (
-                            <Link
-                              className="client-request-tech-link"
-                              to={`/tecnicos/${prop.tecnico.usuario_id}`}
+
+                            {/* Monto propuesto, estado y enlace al perfil (CA-02, CA-06) */}
+                            <div
+                              style={{
+                                textAlign: "right",
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "flex-end",
+                                gap: "6px",
+                              }}
                             >
-                              Ver perfil <ArrowUpRight size={14} />
-                            </Link>
-                          )}
+                              <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>Monto propuesto</span>
+                              <strong style={{ fontSize: "1.25rem", color: "var(--navy)" }}>
+                                {formatLempiras(prop.monto)}
+                              </strong>
+
+                              {/* Indicador de habilitación y estado (CA-06) */}
+                              {prop.estado === "RECHAZADA" ? (
+                                <span style={{ fontSize: "0.8rem", color: "#b91c1c", fontWeight: 600 }}>
+                                  Propuesta rechazada
+                                </span>
+                              ) : prop.tecnico && !prop.tecnico.habilitado_operativamente ? (
+                                <span style={{ fontSize: "0.8rem", color: "#b45309", fontWeight: 600 }}>
+                                  Técnico no disponible
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: "0.8rem", color: "#15803d", fontWeight: 600 }}>
+                                  Disponible para adjudicar
+                                </span>
+                              )}
+
+                              {confirmRejectId === prop.id ? (
+                                <div
+                                  style={{
+                                    marginTop: "8px",
+                                    padding: "8px 12px",
+                                    borderRadius: "8px",
+                                    background: "#fef2f2",
+                                    border: "1px solid #fecaca",
+                                    textAlign: "left",
+                                    maxWidth: "340px",
+                                  }}
+                                >
+                                  <p style={{ margin: "0 0 8px", fontSize: "0.85rem", color: "#991b1b", fontWeight: 500 }}>
+                                    ¿Rechazar propuesta de <strong>{prop.tecnico?.nombre_completo || "este técnico"}</strong>? La licitación seguirá activa para otras ofertas.
+                                  </p>
+                                  <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                                    <button
+                                      type="button"
+                                      disabled={rejectingProposalId === prop.id}
+                                      onClick={() => setConfirmRejectId(null)}
+                                      style={{
+                                        background: "transparent",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "6px",
+                                        padding: "4px 10px",
+                                        fontSize: "0.8rem",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Cancelar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={rejectingProposalId === prop.id}
+                                      onClick={() => executeRejectProposal(prop.id)}
+                                      style={{
+                                        background: "#dc2626",
+                                        color: "#fff",
+                                        border: "none",
+                                        borderRadius: "6px",
+                                        padding: "4px 12px",
+                                        fontSize: "0.8rem",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      {rejectingProposalId === prop.id ? "Rechazando…" : "Sí, rechazar"}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "8px",
+                                    flexWrap: "wrap",
+                                    marginTop: "6px",
+                                    justifyContent: "flex-end",
+                                  }}
+                                >
+                                  {prop.tecnico?.usuario_id && (
+                                    <Link
+                                      className="button button-outline"
+                                      to={`/tecnicos/${prop.tecnico.usuario_id}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{
+                                        width: "auto",
+                                        fontSize: "0.8rem",
+                                        padding: "4px 10px",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "4px",
+                                      }}
+                                    >
+                                      Ver perfil completo <ArrowUpRight size={13} />
+                                    </Link>
+                                  )}
+                                  {prop.estado === "PENDIENTE" &&
+                                    ["PUBLICADA", "CON OFERTAS", "CON_OFERTAS"].includes(
+                                      (detail.estado || "").toUpperCase()
+                                    ) && (
+                                      <Button
+                                        type="button"
+                                        className="button-outline"
+                                        style={{
+                                          width: "auto",
+                                          fontSize: "0.8rem",
+                                          padding: "4px 10px",
+                                          color: "#dc2626",
+                                          borderColor: "#fca5a5",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px",
+                                        }}
+                                        onClick={() => setConfirmRejectId(prop.id)}
+                                      >
+                                        <X size={13} />
+                                        Rechazar propuesta
+                                      </Button>
+                                    )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>

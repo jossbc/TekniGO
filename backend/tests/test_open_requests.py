@@ -22,6 +22,7 @@ from app.models import (
     Specialty,
     TechnicianProfile,
     TechnicianSpecialty,
+    TradeCertificate,
     User,
     UserRole,
 )
@@ -38,6 +39,8 @@ from app.open_requests import (
     list_open_request_proposals_for_viewer,
     publish_open_request,
     publish_open_request_endpoint,
+    RejectProposalSchema,
+    reject_open_request_proposal_by_owner,
     router,
     validate_technician_can_bid_on_open_request,
     CounterOfferSchema,
@@ -1865,3 +1868,156 @@ class OpenRequestsSt01Tests(unittest.TestCase):
             )
         self.assertEqual(awarded_ctx.exception.status_code, 409)
         self.assertIn("adjudicado", awarded_ctx.exception.detail)
+
+        def test_hu30_st05_privacy_badges_and_rejection_without_closing(self):
+         """HU-30 ST-05: Probar permisos de propietario, insignias separadas, rechazo sin cancelación y habilitación."""
+        # 1. Configurar 2 técnicos habilitados
+        tech1 = User(
+            firebase_uid="tech1-hu30",
+            correo="tech1-hu30@example.com",
+            nombre_completo="Técnico Verificado Sin Cert",
+            dni="0801200000901",
+            telefono="+50490000901",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu30",
+            correo="tech2-hu30@example.com",
+            nombre_completo="Técnico Verificado Con Certificado",
+            dni="0801200000902",
+            telefono="+50490000902",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2])
+        self.db.flush()
+
+        for t in (tech1, tech2):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+
+        # Tech2 cuenta con una certificación de oficio aprobada (CA-02)
+        cert_tech2 = TradeCertificate(
+            usuario_id=tech2.id,
+            titulo="Certificación Técnico en Fontanería Avanzada",
+            ruta_privada="private://cert/tech2_fontaneria.pdf",
+            content_type="application/pdf",
+            estado="APROBADO",
+        )
+        self.db.add(cert_tech2)
+        self.db.commit()
+
+        # Publicar licitación con presupuesto de L. 750.00
+        published = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("750.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = published["id"]
+
+        # 2. Ambos técnicos postulan (Tech 1 acepta presupuesto, Tech 2 envía contraoferta)
+        res_prop1 = accept_published_budget_for_open_request(solicitud_id, {"uid": tech1.firebase_uid}, self.db)
+        prop1_id = res_prop1["propuesta"]["id"]
+
+        res_prop2 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="950.00", justificacion="Incluye empaques de alta presión"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        prop2_id = res_prop2["propuesta"]["id"]
+
+        # CA-04: El primer técnico no recibe adjudicación automática
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertIsNone(req_db.tecnico_id)
+        self.assertEqual(req_db.estado, "Con ofertas")
+
+        # 3. Privacidad y permisos (CA-01)
+        # 3.1 Cliente propietario ve todas las propuestas
+        owner_view = list_open_request_proposals_for_viewer(solicitud_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertTrue(owner_view["es_propietario"])
+        self.assertEqual(len(owner_view["propuestas"]), 2)
+
+        # 3.2 Técnico 1 solo ve su propia propuesta y sin acceso a dirección/teléfono
+        tech1_view = list_open_request_proposals_for_viewer(solicitud_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertFalse(tech1_view["es_propietario"])
+        self.assertEqual(len(tech1_view["propuestas"]), 1)
+        self.assertEqual(tech1_view["propuestas"][0]["id"], prop1_id)
+        self.assertTrue(tech1_view["ubicacion_exacta_protegida"])
+
+        # 3.3 Cliente ajeno es rechazado con 403 Forbidden
+        other_client = User(
+            firebase_uid="client-other-hu30",
+            correo="other@example.com",
+            nombre_completo="Cliente Ajeno",
+            dni="0801200000903",
+            telefono="+50490000903",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(other_client)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=other_client.id, rol="CLIENTE"))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as forbidden_ctx:
+            list_open_request_proposals_for_viewer(solicitud_id, {"uid": other_client.firebase_uid}, self.db)
+        self.assertEqual(forbidden_ctx.exception.status_code, 403)
+
+        # 4. Insignias separadas de verificación y certificación (CA-02)
+        proposals_by_id = {p["id"]: p for p in owner_view["propuestas"]}
+        p1 = proposals_by_id[prop1_id]
+        p2 = proposals_by_id[prop2_id]
+
+        # Tech1: Verificado pero sin certificado de oficio
+        self.assertTrue(p1["tecnico"]["verificado"])
+        self.assertFalse(p1["tecnico"]["certificado"])
+        self.assertEqual(p1["tecnico"]["certificaciones_aprobadas_count"], 0)
+        self.assertTrue(p1["elegible_para_adjudicar"])
+
+        # Tech2: Verificado Y certificado de oficio
+        self.assertTrue(p2["tecnico"]["verificado"])
+        self.assertTrue(p2["tecnico"]["certificado"])
+        self.assertEqual(p2["tecnico"]["certificaciones_aprobadas_count"], 1)
+        self.assertTrue(p2["elegible_para_adjudicar"])
+
+        # 5. Rechazo individual sin cancelar la solicitud (CA-03)
+        reject_res = reject_open_request_proposal_by_owner(
+            solicitud_id,
+            prop1_id,
+            RejectProposalSchema(motivo="Monto o perfil no adecuado para este trabajo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertIn("rechazada", reject_res["mensaje"].lower())
+        self.assertEqual(reject_res["propuesta"]["estado"], "RECHAZADA")
+
+        # La licitación sigue activa (Con ofertas) porque tech2 sigue pendiente
+        req_db_after_1 = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(req_db_after_1.estado, "Con ofertas")
+        self.assertNotEqual(req_db_after_1.estado, "Cancelada")
+
+        # CA-06: Propuesta rechazada no es elegible para adjudicar
+        self.assertFalse(reject_res["propuesta"]["elegible_para_adjudicar"])
+
+        # 6. Rechazar la segunda propuesta: la licitación sigue activa (pasa a Publicada) sin cancelarse
+        reject_res_2 = reject_open_request_proposal_by_owner(
+            solicitud_id,
+            prop2_id,
+            RejectProposalSchema(),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_db_after_2 = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(req_db_after_2.estado, "Publicada")
+        self.assertNotEqual(req_db_after_2.estado, "Cancelada")
