@@ -1,10 +1,53 @@
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+CONFIRMATION_WINDOW_HOURS = 48
+CONFIRMATION_WINDOW = timedelta(hours=CONFIRMATION_WINDOW_HOURS)
+TEGUCIGALPA_TZ_NAME = "America/Tegucigalpa"
+try:
+    TEGUCIGALPA_TZ = ZoneInfo(TEGUCIGALPA_TZ_NAME)
+except ZoneInfoNotFoundError:
+    TEGUCIGALPA_TZ = timezone(timedelta(hours=-6), name=TEGUCIGALPA_TZ_NAME)
+
+
+def ensure_utc_datetime(dt: datetime | None) -> datetime | None:
+    """Normaliza cualquier instante a UTC con referencia horaria inequívoca."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def to_tegucigalpa_datetime(dt: datetime | None) -> datetime | None:
+    """Convierte un instante con zona horaria a America/Tegucigalpa (-06:00)."""
+    utc_dt = ensure_utc_datetime(dt)
+    if utc_dt is None:
+        return None
+    return utc_dt.astimezone(TEGUCIGALPA_TZ)
+
+
+def format_tegucigalpa_iso(dt: datetime | None) -> str | None:
+    """Devuelve el instante en formato ISO-8601 expresado en America/Tegucigalpa."""
+    local_dt = to_tegucigalpa_datetime(dt)
+    return local_dt.isoformat() if local_dt is not None else None
+
+
+def calculate_confirmation_expiration(
+    reported_at: datetime,
+    *,
+    window_hours: int = CONFIRMATION_WINDOW_HOURS,
+) -> datetime:
+    """HU-34 ST-01 (CA-03): Calcula el vencimiento de 48 horas desde el instante reportado."""
+    normalized = ensure_utc_datetime(reported_at)
+    assert normalized is not None
+    return normalized + timedelta(hours=window_hours)
 
 
 class FlexibleUuid(TypeDecorator):
@@ -198,8 +241,70 @@ class CoverageZone(Base):
     sector: Mapped[str] = mapped_column(String(100),nullable=False)
 
 
-class DirectRequest(Base):
+class _CompletionTrackingMixin:
+    """HU-34 ST-01: Propiedades y utilidades compartidas de finalización reportada y vencimiento de confirmación."""
+
+    @property
+    def finalizacion_reportada(self) -> datetime | None:
+        return self.finalizacion_reportada_en
+
+    @finalizacion_reportada.setter
+    def finalizacion_reportada(self, value: datetime | None) -> None:
+        self.finalizacion_reportada_en = ensure_utc_datetime(value)
+
+    @property
+    def vencimiento_confirmacion(self) -> datetime | None:
+        return self.vencimiento_confirmacion_en
+
+    @vencimiento_confirmacion.setter
+    def vencimiento_confirmacion(self, value: datetime | None) -> None:
+        self.vencimiento_confirmacion_en = ensure_utc_datetime(value)
+
+    @property
+    def confirmacion_vence_en(self) -> datetime | None:
+        return self.vencimiento_confirmacion_en
+
+    @confirmacion_vence_en.setter
+    def confirmacion_vence_en(self, value: datetime | None) -> None:
+        self.vencimiento_confirmacion_en = ensure_utc_datetime(value)
+
+    @property
+    def finalizacion_reportada_local(self) -> str | None:
+        return format_tegucigalpa_iso(self.finalizacion_reportada_en)
+
+    @property
+    def vencimiento_confirmacion_local(self) -> str | None:
+        return format_tegucigalpa_iso(self.vencimiento_confirmacion_en)
+
+    def registrar_finalizacion_reportada(
+        self,
+        now: datetime | None = None,
+        *,
+        window_hours: int = CONFIRMATION_WINDOW_HOURS,
+    ) -> bool:
+        """Registra por única vez el instante de finalización y el plazo de 48h sin reiniciar en reintentos."""
+        if self.finalizacion_reportada_en is not None and self.vencimiento_confirmacion_en is not None:
+            self.finalizacion_reportada_en = ensure_utc_datetime(self.finalizacion_reportada_en)
+            self.vencimiento_confirmacion_en = ensure_utc_datetime(self.vencimiento_confirmacion_en)
+            self.pendiente_recepcion = True
+            return False
+
+        instante = ensure_utc_datetime(now or datetime.now(timezone.utc))
+        assert instante is not None
+        self.finalizacion_reportada_en = instante
+        self.vencimiento_confirmacion_en = calculate_confirmation_expiration(
+            instante,
+            window_hours=window_hours,
+        )
+        self.pendiente_recepcion = True
+        return True
+
+
+class DirectRequest(_CompletionTrackingMixin, Base):
     __tablename__ = 'solicitudes_directas'
+    __table_args__ = (
+        Index("ix_solicitudes_directas_vencimiento_confirmacion", "vencimiento_confirmacion_en"),
+    )
 
     id = Column(FlexibleUuid, primary_key=True, default=lambda: str(uuid.uuid4()))
     cliente_id = Column(String, ForeignKey('usuarios.firebase_uid'), nullable=False)
@@ -220,8 +325,13 @@ class DirectRequest(Base):
     monto_base = Column(Numeric(10, 2), nullable=False)
     metodo_pago = Column(String, nullable=False) # 'efectivo' o 'tarjeta'
 
-    estado = Column(String, nullable=False, default="PENDIENTE") # PENDIENTE, ACEPTADA, RECHAZADA, CANCELADA, COMPLETADA
+    estado = Column(String, nullable=False, default="PENDIENTE") # PENDIENTE, ACEPTADA, EN_PROCESO, RECHAZADA, CANCELADA, COMPLETADA
     creada_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # HU-34 ST-01: Finalización reportada y vencimiento de confirmación (48 horas)
+    finalizacion_reportada_en = Column(DateTime(timezone=True), nullable=True, default=None)
+    vencimiento_confirmacion_en = Column(DateTime(timezone=True), nullable=True, default=None)
+    pendiente_recepcion = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Relaciones para facilitar consultas en SQLAlchemy
     cliente = relationship("User", foreign_keys=[cliente_id])
@@ -229,8 +339,11 @@ class DirectRequest(Base):
     servicio = relationship("Service", foreign_keys=[servicio_id])
 
 
-class OpenRequest(Base):
+class OpenRequest(_CompletionTrackingMixin, Base):
     __tablename__ = "solicitudes_abiertas"
+    __table_args__ = (
+        Index("ix_solicitudes_abiertas_vencimiento_confirmacion", "vencimiento_confirmacion_en"),
+    )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     cliente_id = Column(String, ForeignKey("usuarios.firebase_uid"), nullable=False, index=True)
@@ -251,6 +364,11 @@ class OpenRequest(Base):
 
     estado = Column(String(30), nullable=False, default="Publicada", server_default="Publicada")
     creada_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    # HU-34 ST-01: Finalización reportada y vencimiento de confirmación (48 horas)
+    finalizacion_reportada_en = Column(DateTime(timezone=True), nullable=True, default=None)
+    vencimiento_confirmacion_en = Column(DateTime(timezone=True), nullable=True, default=None)
+    pendiente_recepcion = Column(Boolean, nullable=False, default=False, server_default="false")
 
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])

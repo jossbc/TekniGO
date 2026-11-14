@@ -11,7 +11,15 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
-from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User
+from app.models import (
+    DirectRequest,
+    Service,
+    Specialty,
+    TechnicianProfile,
+    User,
+    ensure_utc_datetime,
+    format_tegucigalpa_iso,
+)
 from app.security import get_current_user
 
 router = APIRouter(tags=["Contrataciones del Cliente"])
@@ -24,6 +32,8 @@ ALLOWED_ESTADOS = {
     "CON_OFERTAS",
     "PENDIENTE",
     "ACEPTADA",
+    "EN PROCESO",
+    "EN_PROCESO",
     "RECHAZADA",
     "CANCELADA",
     "COMPLETADA",
@@ -35,6 +45,8 @@ STATE_TIMELINE_DESCRIPTIONS = {
     "CON_OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
     "PENDIENTE": "Solicitud registrada y pendiente de respuesta.",
     "ACEPTADA": "Propuesta aceptada y trabajo programado con el técnico.",
+    "EN PROCESO": "Servicio en ejecución por el técnico seleccionado.",
+    "EN_PROCESO": "Servicio en ejecución por el técnico seleccionado.",
     "RECHAZADA": "Solicitud rechazada por el técnico.",
     "CANCELADA": "Solicitud cancelada.",
     "COMPLETADA": "Trabajo marcado como completado.",
@@ -46,6 +58,8 @@ ALLOWED_ACTIONS_BY_STATE: dict[str, list[str]] = {
     "CON_OFERTAS": ["CANCELAR"],
     "PENDIENTE": ["CANCELAR"],
     "ACEPTADA": ["CANCELAR", "COMPLETAR"],
+    "EN PROCESO": ["COMPLETAR"],
+    "EN_PROCESO": ["COMPLETAR"],
     "RECHAZADA": [],
     "CANCELADA": [],
     "COMPLETADA": [],
@@ -151,6 +165,11 @@ def _serialize_request_summary(
 
     raw_estado = (getattr(record, "estado", None) or "PENDIENTE").strip()
     estado_normalizado = raw_estado.upper()
+    finalizacion_dt = ensure_utc_datetime(getattr(record, "finalizacion_reportada_en", None))
+    vencimiento_dt = ensure_utc_datetime(getattr(record, "vencimiento_confirmacion_en", None))
+    pendiente_recepcion = bool(getattr(record, "pendiente_recepcion", False)) or (
+        finalizacion_dt is not None and estado_normalizado in {"EN PROCESO", "EN_PROCESO"}
+    )
 
     return {
         "id": str(record.id),
@@ -158,6 +177,11 @@ def _serialize_request_summary(
         "estado": estado_normalizado,
         "fecha_hora": _iso(getattr(record, "fecha_hora", None)),
         "creada_en": _iso(getattr(record, "creada_en", None)),
+        "finalizacion_reportada_en": _iso(finalizacion_dt),
+        "vencimiento_confirmacion_en": _iso(vencimiento_dt),
+        "finalizacion_reportada_local": format_tegucigalpa_iso(finalizacion_dt),
+        "vencimiento_confirmacion_local": format_tegucigalpa_iso(vencimiento_dt),
+        "pendiente_recepcion": pendiente_recepcion,
         "presupuesto": presupuesto,
         "monto_base": monto_base if monto_base is not None else presupuesto,
         "cantidad": _to_float(getattr(record, "cantidad", None)),
@@ -440,6 +464,9 @@ def get_client_request_detail(
     summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
 
     proposal_model = getattr(models, "OpenRequestProposal", None)
+    from app.service_completion import get_completion_events
+
+    completion_events = get_completion_events(str(record.id))
     if modalidad == "ABIERTA" and proposal_model is not None:
         from app.open_requests import get_open_request_events, serialize_open_request_proposal
 
@@ -449,10 +476,10 @@ def get_client_request_detail(
             .order_by(proposal_model.creada_en.desc(), proposal_model.id.desc())
         ).all()
         summary["propuestas_recibidas"] = [serialize_open_request_proposal(p, db) for p in proposals]
-        summary["eventos"] = get_open_request_events(str(record.id))
+        summary["eventos"] = [*get_open_request_events(str(record.id)), *completion_events]
     else:
         summary["propuestas_recibidas"] = []
-        summary["eventos"] = []
+        summary["eventos"] = list(completion_events)
 
     return summary
 

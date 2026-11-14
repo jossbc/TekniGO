@@ -26,6 +26,8 @@ from app.models import (
     TechnicianProfile,
     TechnicianSpecialty,
     User,
+    ensure_utc_datetime,
+    format_tegucigalpa_iso,
 )
 from app.permissions import require_enabled_client
 from app.security import get_current_user
@@ -165,11 +167,17 @@ def serialize_open_request_for_owner(
     db: Session | None = None,
 ) -> dict:
     presupuesto_val = float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01")))
+    estado_norm = (record.estado or "Publicada").strip().upper()
+    finalizacion_dt = ensure_utc_datetime(getattr(record, "finalizacion_reportada_en", None))
+    vencimiento_dt = ensure_utc_datetime(getattr(record, "vencimiento_confirmacion_en", None))
+    pendiente_recepcion = bool(getattr(record, "pendiente_recepcion", False)) or (
+        finalizacion_dt is not None and estado_norm in {"EN PROCESO", "EN_PROCESO"}
+    )
     payload = {
         "id": str(record.id),
         "solicitud_id": str(record.id),
         "modalidad": "ABIERTA",
-        "estado": (record.estado or "Publicada").strip().upper(),
+        "estado": estado_norm,
         "cliente_id": record.cliente_id,
         "tecnico_id": record.tecnico_id,
         "especialidad_id": str(record.especialidad_id),
@@ -187,6 +195,11 @@ def serialize_open_request_for_owner(
         "presupuesto": presupuesto_val,
         "monto_base": presupuesto_val,
         "creada_en": record.creada_en.isoformat() if record.creada_en else None,
+        "finalizacion_reportada_en": finalizacion_dt.isoformat() if finalizacion_dt else None,
+        "vencimiento_confirmacion_en": vencimiento_dt.isoformat() if vencimiento_dt else None,
+        "finalizacion_reportada_local": format_tegucigalpa_iso(finalizacion_dt),
+        "vencimiento_confirmacion_local": format_tegucigalpa_iso(vencimiento_dt),
+        "pendiente_recepcion": pendiente_recepcion,
     }
     if db is not None:
         proposals = db.scalars(
@@ -668,7 +681,7 @@ def serialize_open_request_for_technician(
     is_awarded_technician = (
         bool(record.tecnico_id)
         and record.tecnico_id == technician_user.firebase_uid
-        and estado_norm in {"ACEPTADA", "COMPLETADA"}
+        and estado_norm in {"ACEPTADA", "EN PROCESO", "EN_PROCESO", "COMPLETADA"}
     )
 
     spec_uuid: uuid.UUID | None = None
@@ -680,6 +693,11 @@ def serialize_open_request_for_technician(
     client_user = db.scalar(select(User).where(User.firebase_uid == record.cliente_id))
 
     presupuesto_val = float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01")))
+    finalizacion_dt = ensure_utc_datetime(getattr(record, "finalizacion_reportada_en", None))
+    vencimiento_dt = ensure_utc_datetime(getattr(record, "vencimiento_confirmacion_en", None))
+    pendiente_recepcion = bool(getattr(record, "pendiente_recepcion", False)) or (
+        finalizacion_dt is not None and estado_norm in {"EN PROCESO", "EN_PROCESO"}
+    )
     payload = {
         "id": str(record.id),
         "solicitud_id": str(record.id),
@@ -699,6 +717,11 @@ def serialize_open_request_for_technician(
         "presupuesto": presupuesto_val,
         "monto_base": presupuesto_val,
         "creada_en": record.creada_en.isoformat() if record.creada_en else None,
+        "finalizacion_reportada_en": finalizacion_dt.isoformat() if finalizacion_dt else None,
+        "vencimiento_confirmacion_en": vencimiento_dt.isoformat() if vencimiento_dt else None,
+        "finalizacion_reportada_local": format_tegucigalpa_iso(finalizacion_dt),
+        "vencimiento_confirmacion_local": format_tegucigalpa_iso(vencimiento_dt),
+        "pendiente_recepcion": pendiente_recepcion,
         "cliente": {
             "nombre_completo": client_user.nombre_completo if client_user is not None else None,
         },
@@ -973,8 +996,8 @@ def get_open_request_for_viewer(
 
     estado_norm = (record.estado or "Publicada").strip().upper()
 
-    # 3. Si la solicitud ya fue adjudicada a este técnico y está en ACEPTADA o COMPLETADA
-    if record.tecnico_id == user.firebase_uid and estado_norm in {"ACEPTADA", "COMPLETADA"}:
+    # 3. Si la solicitud ya fue adjudicada a este técnico y está en ACEPTADA, EN PROCESO o COMPLETADA
+    if record.tecnico_id == user.firebase_uid and estado_norm in {"ACEPTADA", "EN PROCESO", "EN_PROCESO", "COMPLETADA"}:
         return serialize_open_request_for_technician(record, user, db)
 
     # 4. Técnico postulante: solo puede ver solicitudes en estado PUBLICADA o CON OFERTAS sin adjudicar si es elegible y compatible
@@ -1453,3 +1476,10 @@ def get_open_request_proposals_and_events_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return list_open_request_proposals_for_viewer(solicitud_id, claims, db)
+
+
+from app.service_completion import (  # noqa: E402, F401
+    report_open_request_completion_endpoint,
+    report_service_completion,
+)
+

@@ -8,8 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import DirectRequest, Service, User
+from app.models import (
+    DirectRequest,
+    Service,
+    User,
+    ensure_utc_datetime,
+    format_tegucigalpa_iso,
+)
 from app.security import get_current_user
+from app.service_completion import has_pending_adjustment
 
 router = APIRouter(prefix="/technicians", tags=["Solicitudes Directas del Técnico"])
 
@@ -22,6 +29,13 @@ class TechnicianDirectRequestOut(BaseModel):
     descripcion: str
     estado: str
     total_estimado: float
+    pendiente_recepcion: bool | None = None
+    finalizacion_reportada_en: str | None = None
+    vencimiento_confirmacion_en: str | None = None
+    finalizacion_reportada_local: str | None = None
+    vencimiento_confirmacion_local: str | None = None
+    tiene_ajuste_pendiente: bool | None = None
+    motivo_ajuste_pendiente: str | None = None
 
 
 def _require_technician_user(claims: dict, db: Session) -> User:
@@ -85,7 +99,7 @@ def _serialize_direct_request(
     )
     estado = (row.estado or "PENDIENTE").strip().upper()
 
-    return {
+    payload = {
         "id": str(row.id),
         "cliente_nombre": client.nombre_completo if client is not None else "Cliente",
         "servicio_nombre": service.nombre if service is not None else "Servicio",
@@ -94,6 +108,21 @@ def _serialize_direct_request(
         "estado": estado,
         "total_estimado": total,
     }
+    finalizacion_dt = ensure_utc_datetime(getattr(row, "finalizacion_reportada_en", None))
+    vencimiento_dt = ensure_utc_datetime(getattr(row, "vencimiento_confirmacion_en", None))
+    pendiente_rec = bool(getattr(row, "pendiente_recepcion", False)) or (
+        finalizacion_dt is not None and estado in {"EN PROCESO", "EN_PROCESO"}
+    )
+    has_adj, adj_reason = has_pending_adjustment(row)
+    if finalizacion_dt is not None or vencimiento_dt is not None or pendiente_rec or has_adj:
+        payload["pendiente_recepcion"] = pendiente_rec
+        payload["finalizacion_reportada_en"] = finalizacion_dt.isoformat() if finalizacion_dt else None
+        payload["vencimiento_confirmacion_en"] = vencimiento_dt.isoformat() if vencimiento_dt else None
+        payload["finalizacion_reportada_local"] = format_tegucigalpa_iso(finalizacion_dt)
+        payload["vencimiento_confirmacion_local"] = format_tegucigalpa_iso(vencimiento_dt)
+        payload["tiene_ajuste_pendiente"] = has_adj
+        payload["motivo_ajuste_pendiente"] = adj_reason
+    return payload
 
 
 def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
@@ -218,3 +247,11 @@ def reject_my_direct_request_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return respond_to_direct_request(solicitud_id, "RECHAZADA", claims, db)
+
+
+from app.service_completion import (  # noqa: E402, F401
+    report_direct_request_completion_endpoint,
+    report_service_completion,
+    report_service_completion_endpoint,
+)
+
