@@ -247,7 +247,7 @@ def get_technicians_catalog(
     municipio: str = Query(None, description="Filtrar por municipio"),
     db: Session = Depends(get_db),
     departamento: str | None = None,
-    sector: str | None = Query(None, description="Filtrar por sector o colonia"),
+    sector: str | None = None,
 ):
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.

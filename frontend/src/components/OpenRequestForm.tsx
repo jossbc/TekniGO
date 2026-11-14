@@ -50,17 +50,12 @@ export default function OpenRequestForm({
 
   const [especialidadId, setEspecialidadId] = useState(initialSpecialties?.[0]?.id || "");
   const [descripcion, setDescripcion] = useState("");
-  const [departamento, setDepartamento] = useState("");
   const [municipio, setMunicipio] = useState("");
   const [sectorPreset, setSectorPreset] = useState("");
-  const [customSector, setCustomSector] = useState("");
-  const [coverageCatalog, setCoverageCatalog] = useState<TechnicianCoverageZoneItem[]>([]);
   const [direccionExacta, setDireccionExacta] = useState("");
   const [fechaHora, setFechaHora] = useState("");
   const [metodoPago, setMetodoPago] = useState<"efectivo" | "tarjeta">("efectivo");
   const [presupuesto, setPresupuesto] = useState("");
-
-  const sector = (sectorPreset === "__OTRO__" ? customSector : sectorPreset).trim();
 
   const [suggestedRange, setSuggestedRange] = useState<SuggestedRangeResponse | null>(null);
   const [loadingRange, setLoadingRange] = useState(false);
@@ -68,6 +63,12 @@ export default function OpenRequestForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<PublishedOpenRequestResponse | null>(null);
+
+  const [departamento, setDepartamento] = useState("");
+  const [customSector, setCustomSector] = useState("");
+  const [coverageCatalog, setCoverageCatalog] = useState<TechnicianCoverageZoneItem[]>([]);
+
+  const sector = (sectorPreset === "__OTRO__" ? customSector : sectorPreset).trim();
 
   useEffect(() => {
     if (initialSpecialties !== undefined && initialEligibility !== undefined) return;
@@ -318,7 +319,7 @@ export default function OpenRequestForm({
         {/* Bloque 2 (ST-02 / CA-03): Ubicación parcial visible a técnicos elegibles */}
         <fieldset className="open-request-fieldset open-request-location-public">
           <legend>
-            <Eye size={16} aria-hidden="true" /> 2. Ubicación general en Honduras (visible para técnicos elegibles)
+            <Eye size={16} aria-hidden="true" /> 2. Ubicación general (visible para técnicos elegibles)
           </legend>
           <p className="open-request-privacy-note">
             <MapPin size={15} aria-hidden="true" />
