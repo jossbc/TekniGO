@@ -7,8 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.direct_requests_repository import DirectRequestRepository
-from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse
-from app.models import CoverageZone, User
+from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse, RegisterAdjustmentRequest,UpdatePaymentMethodRequest
+from app.models import CoverageZone, DirectRequest,User
 from app.technician_activation import require_operational_technician
 
 MAX_ESTIMATE_TOTAL = Decimal("99999999.99")
@@ -128,6 +128,9 @@ class DirectRequestService:
             "unidad_cobro": servicio.unidad_cobro,
             "monto_base": total_calculado,
             "metodo_pago": request.metodo_pago,
+            "referencia_pasarela": request.referencia_pasarela,
+            "monto_ajuste": Decimal("0.00"),
+            "monto_total": total_calculado,
             "estado": "PENDIENTE",
         }
 
@@ -138,3 +141,64 @@ class DirectRequestService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se pudo registrar la solicitud con los datos proporcionados.",
             ) from None
+
+    @staticmethod
+    def update_payment_method(
+        db: Session,
+        solicitud_id: str,
+        request: UpdatePaymentMethodRequest,
+        current_user: dict,
+    ) -> DirectRequest:
+        """HU-37 CA-04: Permite actualizar método antes de ser aceptada; bloquea una vez aceptada."""
+        client_uid = current_user.get("uid") if isinstance(current_user, dict) else None
+        if not client_uid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
+        record = DirectRequestRepository.get_request_by_id(db, solicitud_id) if hasattr(DirectRequestRepository, "get_request_by_id") else None
+        if record is None:
+            record = db.scalar(select(DirectRequest).where(DirectRequest.id == solicitud_id))
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
+        if record.cliente_id != client_uid:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes permiso para modificar esta solicitud.")
+        estado_norm = (record.estado or "PENDIENTE").strip().upper()
+        if estado_norm in {"ACEPTADA", "COMPLETADA"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Una contratación ya aceptada conserva el método inicial; no se permite modificarlo (CA-04).",
+            )
+        nuevo_metodo = request.metodo_pago.lower()
+        record.metodo_pago = nuevo_metodo
+        if nuevo_metodo == "tarjeta":
+            if request.referencia_pasarela:
+                record.referencia_pasarela = request.referencia_pasarela
+        else:
+            record.referencia_pasarela = None
+        db.commit()
+        db.refresh(record)
+        return record
+        
+    @staticmethod
+    def register_adjustment(
+        db: Session,
+        solicitud_id: str,
+        request: RegisterAdjustmentRequest,
+        current_user: dict,
+    ) -> DirectRequest:
+        """HU-37 CA-04: Registra ajuste aprobado con medio independiente solo para la diferencia."""
+        user_uid = current_user.get("uid") if isinstance(current_user, dict) else None
+        if not user_uid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
+        record = db.scalar(select(DirectRequest).where(DirectRequest.id == solicitud_id))
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
+        if user_uid not in (record.cliente_id, record.tecnico_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No participas en este acuerdo.")
+        monto_ajuste_dec = Decimal(str(request.monto_ajuste)).quantize(Decimal("0.01"))
+        record.monto_ajuste = monto_ajuste_dec
+        record.metodo_pago_ajuste = request.metodo_pago_ajuste.lower()
+        record.referencia_pasarela_ajuste = request.referencia_pasarela_ajuste
+        base_dec = Decimal(str(record.monto_base or 0)).quantize(Decimal("0.01"))
+        record.monto_total = (base_dec + monto_ajuste_dec).quantize(Decimal("0.01"))
+        db.commit()
+        db.refresh(record)
+        return record

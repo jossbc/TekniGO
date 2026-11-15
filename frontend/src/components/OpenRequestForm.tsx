@@ -5,6 +5,7 @@ import { CheckCircle2, Eye, Info, Lock, MapPin, ShieldAlert } from "lucide-react
 import { Button } from "./ui";
 import { api, errorMessage } from "../lib/api";
 import { formatLempiras, formatUnitLabel } from "../lib/clientRequests";
+import { PaymentMethodSelector } from "./PaymentMethodSelector";
 import {
   fetchCoverageZonesCatalog,
   fetchSpecialtiesForOpenRequest,
@@ -466,14 +467,14 @@ export default function OpenRequestForm({
 
             <div className="field">
               <label htmlFor="open-req-metodo-pago">Método de pago</label>
-              <select
-                id="open-req-metodo-pago"
+              <PaymentMethodSelector
                 value={metodoPago}
-                onChange={(event) => setMetodoPago(event.target.value as "efectivo" | "tarjeta")}
-              >
-                <option value="efectivo">Efectivo</option>
-                <option value="tarjeta">Tarjeta</option>
-              </select>
+                onChange={setMetodoPago}
+                montoBase={presupuesto ? Number(presupuesto) : null}
+                showSummary={Boolean(presupuesto)}
+                disabled={submitting}
+                idPrefix="open-req-metodo-pago"
+              />
             </div>
           </div>
 

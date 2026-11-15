@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -318,13 +319,17 @@ class DirectRequest(_CompletionTrackingMixin, Base):
     fecha_hora = Column(DateTime(timezone=True), nullable=False)
     descripcion = Column(Text, nullable=False)
 
-    # Presupuesto (HU-21 y HU-20)
+    # Presupuesto (HU-21, HU-20 y HU-37)
     cantidad = Column(Numeric(10, 2), nullable=False)
     tarifa_aplicada = Column(Numeric(10, 2), nullable=False)
     unidad_cobro = Column(String, nullable=False)
     monto_base = Column(Numeric(10, 2), nullable=False)
     metodo_pago = Column(String, nullable=False) # 'efectivo' o 'tarjeta'
-
+    referencia_pasarela = Column(String(100), nullable=True)
+    monto_ajuste = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0.00")
+    metodo_pago_ajuste = Column(String(20), nullable=True) # 'efectivo' o 'tarjeta'
+    referencia_pasarela_ajuste = Column(String(100), nullable=True)
+    monto_total = Column(Numeric(10, 2), nullable=True)
     estado = Column(String, nullable=False, default="PENDIENTE") # PENDIENTE, ACEPTADA, EN_PROCESO, RECHAZADA, CANCELADA, COMPLETADA
     creada_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -332,11 +337,28 @@ class DirectRequest(_CompletionTrackingMixin, Base):
     finalizacion_reportada_en = Column(DateTime(timezone=True), nullable=True, default=None)
     vencimiento_confirmacion_en = Column(DateTime(timezone=True), nullable=True, default=None)
     pendiente_recepcion = Column(Boolean, nullable=False, default=False, server_default="false")
-
     # Relaciones para facilitar consultas en SQLAlchemy
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
     servicio = relationship("Service", foreign_keys=[servicio_id])
+
+    @property
+    def desglose_medios(self) -> dict:
+        base = Decimal(str(self.monto_base or 0)).quantize(Decimal("0.01"))
+        ajuste = Decimal(str(self.monto_ajuste or 0)).quantize(Decimal("0.01"))
+        total = (self.monto_total if self.monto_total is not None else (base + ajuste))
+        total_dec = Decimal(str(total)).quantize(Decimal("0.01"))
+        return {
+            "moneda": "HNL",
+            "monto_base": str(base),
+            "metodo_pago_base": self.metodo_pago,
+            "referencia_pasarela_base": self.referencia_pasarela,
+            "monto_ajuste": str(ajuste),
+            "metodo_pago_ajuste": self.metodo_pago_ajuste,
+            "referencia_pasarela_ajuste": self.referencia_pasarela_ajuste,
+            "monto_total": str(total_dec),
+            "permite_cambio_metodo": self.estado in ["PENDIENTE"],
+        }
 
 
 class OpenRequest(_CompletionTrackingMixin, Base):
@@ -361,7 +383,11 @@ class OpenRequest(_CompletionTrackingMixin, Base):
     presupuesto = Column(Numeric(10, 2), nullable=False)
     monto_base = Column(Numeric(10, 2), nullable=False)
     metodo_pago = Column(String(20), nullable=False)  # 'efectivo' o 'tarjeta'
-
+    referencia_pasarela = Column(String(100), nullable=True)
+    monto_ajuste = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0.00")
+    metodo_pago_ajuste = Column(String(20), nullable=True)  # 'efectivo' o 'tarjeta'
+    referencia_pasarela_ajuste = Column(String(100), nullable=True)
+    monto_total = Column(Numeric(10, 2), nullable=True)
     estado = Column(String(30), nullable=False, default="Publicada", server_default="Publicada")
     creada_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
@@ -373,6 +399,24 @@ class OpenRequest(_CompletionTrackingMixin, Base):
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
     especialidad = relationship("Specialty", foreign_keys=[especialidad_id])
+
+    @property
+    def desglose_medios(self) -> dict:
+        base = Decimal(str(self.monto_base or self.presupuesto or 0)).quantize(Decimal("0.01"))
+        ajuste = Decimal(str(self.monto_ajuste or 0)).quantize(Decimal("0.01"))
+        total = (self.monto_total if self.monto_total is not None else (base + ajuste))
+        total_dec = Decimal(str(total)).quantize(Decimal("0.01"))
+        return {
+            "moneda": "HNL",
+            "monto_base": str(base),
+            "metodo_pago_base": self.metodo_pago,
+            "referencia_pasarela_base": self.referencia_pasarela,
+            "monto_ajuste": str(ajuste),
+            "metodo_pago_ajuste": self.metodo_pago_ajuste,
+            "referencia_pasarela_ajuste": self.referencia_pasarela_ajuste,
+            "monto_total": str(total_dec),
+            "permite_cambio_metodo": (self.estado or "").strip().lower().replace("_", " ") in {"publicada", "con ofertas", "negociacion"},
+        }
 
 
 class DiscardedOpenRequest(Base):

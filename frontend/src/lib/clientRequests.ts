@@ -79,12 +79,18 @@ export type ReceivedOpenRequestProposal = {
   justificacion: string | null;
   estado: string;
   activa: boolean;
+  elegible_para_adjudicar?: boolean;
   creada_en: string | null;
   tecnico: {
     usuario_id: string;
     firebase_uid: string;
     nombre_completo: string | null;
     estado_verificacion: string | null;
+    verificado?: boolean;
+    certificado?: boolean;
+    certificaciones_aprobadas_count?: number;
+    disponible?: boolean;
+    habilitado_operativamente?: boolean;
     calificacion_promedio: number | null;
   };
 };
@@ -222,3 +228,52 @@ export {
   formatConfirmationWindowStatus,
   formatTegucigalpaDateTime,
 } from "./directRequests";
+
+export async function rejectProposalApi(
+  user: User,
+  solicitudId: string,
+  proposalId: string,
+  motivo?: string,
+): Promise<{
+  mensaje: string;
+  solicitud_id: string;
+  estado_solicitud: string;
+  propuesta: ReceivedOpenRequestProposal;
+}> {
+  return api(
+    `/open-requests/${encodeURIComponent(solicitudId)}/proposals/${encodeURIComponent(proposalId)}/reject`,
+    user,
+    { motivo: motivo || null },
+    "POST",
+  );
+}
+
+export async function awardProposalApi(
+  user: User,
+  solicitudId: string,
+  proposalId: string,
+  payload: {
+    metodo_pago?: "efectivo" | "tarjeta";
+    referencia_pasarela?: string | null;
+    idempotency_key?: string | null;
+  } = {},
+): Promise<{
+  mensaje: string;
+  reintento_idempotente: boolean;
+  solicitud_id: string;
+  estado_solicitud: string;
+  tecnico_adjudicado_id: string;
+  monto_pactado: number;
+  metodo_pago: string;
+  referencia_pasarela: string | null;
+  propuesta_adjudicada: ReceivedOpenRequestProposal;
+  propuestas_descartadas: ReceivedOpenRequestProposal[];
+  cantidad_propuestas_descartadas: number;
+}> {
+  return api(
+    `/open-requests/${encodeURIComponent(solicitudId)}/proposals/${encodeURIComponent(proposalId)}/award`,
+    user,
+    payload,
+    "POST",
+  );
+}

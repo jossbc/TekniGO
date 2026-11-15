@@ -6,7 +6,7 @@ from unittest.mock import patch
 import uuid
 
 from fastapi import FastAPI, HTTPException, Response
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -22,24 +22,36 @@ from app.models import (
     Specialty,
     TechnicianProfile,
     TechnicianSpecialty,
+    TradeCertificate,
     User,
     UserRole,
 )
 from app.open_requests import (
+    AwardProposalSchema,
     CreateOpenRequestSchema,
     accept_published_budget_endpoint,
     accept_published_budget_for_open_request,
+    award_open_request_proposal_by_owner,
     calculate_suggested_range,
     discard_open_request_for_technician,
+    get_open_request_author_notices,
+    get_open_request_award_audits,
     get_open_request_for_viewer,
+    get_open_request_payment_charges,
     get_suggested_range_endpoint,
     list_available_open_requests_for_technician,
     list_coverage_zones_catalog,
     list_open_request_proposals_for_viewer,
     publish_open_request,
     publish_open_request_endpoint,
+    RejectProposalSchema,
+    reject_open_request_proposal_by_owner,
     router,
     validate_technician_can_bid_on_open_request,
+    CounterOfferSchema,
+    get_open_request_events,
+    submit_counter_offer_for_open_request,
+    validate_counter_offer_amount,
 )
 
 
@@ -1513,3 +1525,730 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         catalog = list_coverage_zones_catalog(self.db, municipio="Tegucigalpa")
         self.assertEqual(len(catalog), 1)
         self.assertEqual(catalog[0]["sector"], "Kennedy")
+
+    def test_hu29_st01_and_st02_counter_offer_persistence_and_uniqueness(self):
+        """HU-29 ST-01 / ST-02: Validaciones decimales, persistencia con autor/fecha y unicidad de contraofertas."""
+        # 1. Validaciones decimales (CA-02)
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount(None)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("no-numerico")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount(0)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("-150.00")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as ctx:
+            validate_counter_offer_amount("1000000.00")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # Monto válido cuantizado a 2 decimales
+        valid_amount = validate_counter_offer_amount("L. 1250.556")
+        self.assertEqual(valid_amount, Decimal("1250.56"))
+
+        # 2. Configurar 2 técnicos habilitados y compatibles con la especialidad
+        tech1 = User(
+            firebase_uid="tech1-hu29",
+            correo="tech1-hu29@example.com",
+            nombre_completo="Técnico Uno HU29",
+            dni="0801200000701",
+            telefono="+50490000701",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu29",
+            correo="tech2-hu29@example.com",
+            nombre_completo="Técnico Dos HU29",
+            dni="0801200000702",
+            telefono="+50490000702",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2])
+        self.db.flush()
+        for t in (tech1, tech2):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        # Publicar licitación con presupuesto base de L. 800.00
+        pub_res = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("800.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = pub_res["id"]
+
+        # 3. Primer técnico envía contraoferta válida por L. 1,200.00 (CA-01, CA-02, CA-04)
+        offer1 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="1200.00", justificacion="Requiere cableado adicional de calibre 8"),
+            {"uid": tech1.firebase_uid},
+            self.db,
+        )
+
+        self.assertEqual(offer1["propuesta"]["monto"], 1200.0)
+        self.assertEqual(offer1["propuesta"]["tipo"], "CONTRAOFERTA")
+        self.assertEqual(offer1["propuesta"]["justificacion"], "Requiere cableado adicional de calibre 8")
+        self.assertEqual(offer1["propuesta"]["estado"], "PENDIENTE")
+        self.assertEqual(offer1["estado_solicitud"], "CON OFERTAS")
+        self.assertFalse(offer1["reintento_idempotente"])
+
+        # Verificar persistencia en base de datos
+        db_prop1 = self.db.scalar(
+            select(OpenRequestProposal).where(
+                OpenRequestProposal.solicitud_id == solicitud_id,
+                OpenRequestProposal.usuario_id == tech1.id,
+            )
+        )
+        self.assertIsNotNone(db_prop1)
+        self.assertEqual(db_prop1.tipo, "CONTRAOFERTA")
+        self.assertEqual(Decimal(str(db_prop1.monto)), Decimal("1200.00"))
+        self.assertEqual(db_prop1.tecnico_id, tech1.firebase_uid)
+        self.assertEqual(db_prop1.justificacion, "Requiere cableado adicional de calibre 8")
+
+        # CA-03: La contraoferta no altera el presupuesto inicial de la solicitud ni adjudica al técnico
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(Decimal(str(req_db.presupuesto)), Decimal("800.00"))
+        self.assertIsNone(req_db.tecnico_id)
+        self.assertEqual(req_db.estado, "Con ofertas")
+
+        # 4. Reintento idempotente: Mismo técnico reenvía idéntica contraoferta (CA-06)
+        retry_offer1 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto=1200.00),
+            {"uid": tech1.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(retry_offer1["reintento_idempotente"])
+        self.assertEqual(retry_offer1["propuesta"]["id"], offer1["propuesta"]["id"])
+
+        # 5. Unicidad: El mismo técnico NO puede enviar otra contraoferta distinta compitiendo contra sí mismo (CA-06)
+        with self.assertRaises(HTTPException) as dup_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1350.00"),
+                {"uid": tech1.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(dup_err.exception.status_code, 409)
+        self.assertIn("no puedes competir contra ti mismo", dup_err.exception.detail)
+
+        # 6. Segundo técnico puede enviar su propia contraoferta (CA-04)
+        offer2 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="950.00", justificacion="Cuento con los materiales listos"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(offer2["propuesta"]["monto"], 950.0)
+        self.assertEqual(offer2["estado_solicitud"], "CON OFERTAS")
+
+        # Total de propuestas para la solicitud: 2 propuestas distintas
+        total_props = self.db.query(OpenRequestProposal).filter_by(solicitud_id=solicitud_id).count()
+        self.assertEqual(total_props, 2)
+
+        # 7. Si la solicitud es adjudicada o cancelada, se rechazan nuevas contraofertas (CA-06)
+        req_db.estado = "Aceptada"
+        req_db.tecnico_id = tech1.firebase_uid
+        self.db.commit()
+
+        tech3 = User(
+            firebase_uid="tech3-hu29",
+            correo="tech3-hu29@example.com",
+            nombre_completo="Técnico Tres HU29",
+            dni="0801200000703",
+            telefono="+50490000703",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech3)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech3.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech3.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add(TechnicianSpecialty(usuario_id=tech3.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech3.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as closed_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="900.00"),
+                {"uid": tech3.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(closed_err.exception.status_code, 409)
+        self.assertIn("adjudicado", closed_err.exception.detail)
+
+    def test_hu29_st05_invalid_amounts_events_and_concurrent_awarding(self):
+        """HU-29 ST-05: Probar importes inválidos, eventos en tiempo real, protección de privacidad y adjudicación concurrente."""
+        tech = User(
+            firebase_uid="tech-hu29-st05",
+            correo="tech-hu29-st05@example.com",
+            nombre_completo="Técnico ST05",
+            dni="0801200000801",
+            telefono="+50490000801",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech.id, rol="TECNICO"))
+        tech_profile = TechnicianProfile(usuario_id=tech.id, disponible=True, estado_verificacion="VERIFICADO")
+        self.db.add(tech_profile)
+        self.db.add(TechnicianSpecialty(usuario_id=tech.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        # Publicar licitación
+        published = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("900.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = published["id"]
+
+        # 1. Importes inválidos vía servicio (CA-02)
+        invalid_amounts = [
+            (None, 400, "obligatorio"),
+            ("", 400, "obligatorio"),
+            ("   ", 400, "obligatorio"),
+            (0, 400, "mayor a cero"),
+            (-100, 400, "mayor a cero"),
+            ("cien", 400, "número válido"),
+            (1000000, 400, "no puede exceder"),
+        ]
+        for bad_monto, expected_status, expected_phrase in invalid_amounts:
+            with self.assertRaises(HTTPException) as ctx:
+                submit_counter_offer_for_open_request(
+                    solicitud_id,
+                    CounterOfferSchema(monto=bad_monto),
+                    {"uid": tech.firebase_uid},
+                    self.db,
+                )
+            self.assertEqual(ctx.exception.status_code, expected_status)
+            self.assertIn(expected_phrase, ctx.exception.detail)
+
+        # 2. Condición transversal: Si el técnico pasa a no disponible, se bloquea la contraoferta
+        tech_profile.disponible = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as unavail_err:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(unavail_err.exception.status_code, 403)
+        self.assertIn("Disponible", unavail_err.exception.detail)
+
+        # Restaurar disponibilidad
+        tech_profile.disponible = True
+        self.db.commit()
+
+        # 3. Envío exitoso y emisión de evento en tiempo real (CA-05)
+        res = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="1350.50", justificacion="Incluye repuestos importados"),
+            {"uid": tech.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(res["propuesta"]["monto"], 1350.50)
+        self.assertEqual(res["propuesta"]["tipo"], "CONTRAOFERTA")
+        self.assertEqual(res["estado_solicitud"], "CON OFERTAS")
+
+        # Verificar evento generado
+        event = res.get("evento")
+        self.assertIsNotNone(event)
+        self.assertEqual(event["tipo"], "NUEVA_OFERTA")
+        self.assertEqual(event["tipo_propuesta"], "CONTRAOFERTA")
+        self.assertTrue(event["ubicacion_exacta_protegida"])
+        self.assertIn("Nueva contraoferta recibida por L. 1350.50", event["mensaje"])
+        # CA-05: No expone dirección exacta ni teléfono del cliente
+        self.assertNotIn("direccion_exacta", event)
+        self.assertNotIn("telefono", event)
+
+        # Eventos almacenados para la solicitud
+        events_list = get_open_request_events(solicitud_id)
+        self.assertTrue(len(events_list) >= 1)
+
+        # 4. Vista del cliente: ve la contraoferta, perfil del técnico, pero no se adjudica ni cambia monto base (CA-03)
+        client_feed = list_open_request_proposals_for_viewer(solicitud_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertEqual(len(client_feed["propuestas"]), 1)
+        prop_client = client_feed["propuestas"][0]
+        self.assertEqual(prop_client["monto"], 1350.50)
+        self.assertEqual(prop_client["tipo"], "CONTRAOFERTA")
+        self.assertEqual(prop_client["justificacion"], "Incluye repuestos importados")
+        self.assertEqual(prop_client["tecnico"]["nombre_completo"], "Técnico ST05")
+
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(Decimal(str(req_db.presupuesto)), Decimal("900.00"))
+        self.assertIsNone(req_db.tecnico_id)
+
+        # 5. Adjudicación concurrente / solicitud cancelada rechaza nuevas contraofertas (CA-06)
+        # 5.1 Caso cancelación
+        req_db.estado = "Cancelada"
+        self.db.commit()
+
+        tech_other = User(
+            firebase_uid="tech-hu29-other",
+            correo="tech-hu29-other@example.com",
+            nombre_completo="Técnico Otro",
+            dni="0801200000802",
+            telefono="+50490000802",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(tech_other)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=tech_other.id, rol="TECNICO"))
+        self.db.add(TechnicianProfile(usuario_id=tech_other.id, disponible=True, estado_verificacion="VERIFICADO"))
+        self.db.add(TechnicianSpecialty(usuario_id=tech_other.id, especialidad_id=self.specialty.id))
+        self.db.add(
+            CoverageZone(
+                usuario_id=tech_other.id,
+                departamento="Francisco Morazán",
+                municipio="Distrito Central",
+                sector="Col. Palmira",
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as cancel_ctx:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech_other.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(cancel_ctx.exception.status_code, 409)
+        self.assertIn("cancelada", cancel_ctx.exception.detail)
+
+        # 5.2 Caso adjudicación concurrente a otro técnico
+        req_db.estado = "Aceptada"
+        req_db.tecnico_id = tech.firebase_uid
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as awarded_ctx:
+            submit_counter_offer_for_open_request(
+                solicitud_id,
+                CounterOfferSchema(monto="1100.00"),
+                {"uid": tech_other.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(awarded_ctx.exception.status_code, 409)
+        self.assertIn("adjudicado", awarded_ctx.exception.detail)
+
+    def test_hu30_st05_privacy_badges_and_rejection_without_closing(self):
+        """HU-30 ST-05: Probar permisos de propietario, insignias separadas, rechazo sin cancelación y habilitación."""
+        # 1. Configurar 2 técnicos habilitados
+        tech1 = User(
+            firebase_uid="tech1-hu30",
+            correo="tech1-hu30@example.com",
+            nombre_completo="Técnico Verificado Sin Cert",
+            dni="0801200000901",
+            telefono="+50490000901",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu30",
+            correo="tech2-hu30@example.com",
+            nombre_completo="Técnico Verificado Con Certificado",
+            dni="0801200000902",
+            telefono="+50490000902",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2])
+        self.db.flush()
+
+        for t in (tech1, tech2):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            self.db.add(TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO"))
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+
+        # Tech2 cuenta con una certificación de oficio aprobada (CA-02)
+        cert_tech2 = TradeCertificate(
+            usuario_id=tech2.id,
+            titulo="Certificación Técnico en Fontanería Avanzada",
+            ruta_privada="private://cert/tech2_fontaneria.pdf",
+            content_type="application/pdf",
+            estado="APROBADO",
+        )
+        self.db.add(cert_tech2)
+        self.db.commit()
+
+        # Publicar licitación con presupuesto de L. 750.00
+        published = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("750.00")),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        solicitud_id = published["id"]
+
+        # 2. Ambos técnicos postulan (Tech 1 acepta presupuesto, Tech 2 envía contraoferta)
+        res_prop1 = accept_published_budget_for_open_request(solicitud_id, {"uid": tech1.firebase_uid}, self.db)
+        prop1_id = res_prop1["propuesta"]["id"]
+
+        res_prop2 = submit_counter_offer_for_open_request(
+            solicitud_id,
+            CounterOfferSchema(monto="950.00", justificacion="Incluye empaques de alta presión"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        prop2_id = res_prop2["propuesta"]["id"]
+
+        # CA-04: El primer técnico no recibe adjudicación automática
+        req_db = self.db.get(OpenRequest, solicitud_id)
+        self.assertIsNone(req_db.tecnico_id)
+        self.assertEqual(req_db.estado, "Con ofertas")
+
+        # 3. Privacidad y permisos (CA-01)
+        # 3.1 Cliente propietario ve todas las propuestas
+        owner_view = list_open_request_proposals_for_viewer(solicitud_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertTrue(owner_view["es_propietario"])
+        self.assertEqual(len(owner_view["propuestas"]), 2)
+
+        # 3.2 Técnico 1 solo ve su propia propuesta y sin acceso a dirección/teléfono
+        tech1_view = list_open_request_proposals_for_viewer(solicitud_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertFalse(tech1_view["es_propietario"])
+        self.assertEqual(len(tech1_view["propuestas"]), 1)
+        self.assertEqual(tech1_view["propuestas"][0]["id"], prop1_id)
+        self.assertTrue(tech1_view["ubicacion_exacta_protegida"])
+
+        # 3.3 Cliente ajeno es rechazado con 403 Forbidden
+        other_client = User(
+            firebase_uid="client-other-hu30",
+            correo="other@example.com",
+            nombre_completo="Cliente Ajeno",
+            dni="0801200000903",
+            telefono="+50490000903",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(other_client)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=other_client.id, rol="CLIENTE"))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as forbidden_ctx:
+            list_open_request_proposals_for_viewer(solicitud_id, {"uid": other_client.firebase_uid}, self.db)
+        self.assertEqual(forbidden_ctx.exception.status_code, 403)
+
+        # 4. Insignias separadas de verificación y certificación (CA-02)
+        proposals_by_id = {p["id"]: p for p in owner_view["propuestas"]}
+        p1 = proposals_by_id[prop1_id]
+        p2 = proposals_by_id[prop2_id]
+
+        # Tech1: Verificado pero sin certificado de oficio
+        self.assertTrue(p1["tecnico"]["verificado"])
+        self.assertFalse(p1["tecnico"]["certificado"])
+        self.assertEqual(p1["tecnico"]["certificaciones_aprobadas_count"], 0)
+        self.assertTrue(p1["elegible_para_adjudicar"])
+
+        # Tech2: Verificado Y certificado de oficio
+        self.assertTrue(p2["tecnico"]["verificado"])
+        self.assertTrue(p2["tecnico"]["certificado"])
+        self.assertEqual(p2["tecnico"]["certificaciones_aprobadas_count"], 1)
+        self.assertTrue(p2["elegible_para_adjudicar"])
+
+        # 5. Rechazo individual sin cancelar la solicitud (CA-03)
+        reject_res = reject_open_request_proposal_by_owner(
+            solicitud_id,
+            prop1_id,
+            RejectProposalSchema(motivo="Monto o perfil no adecuado para este trabajo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertIn("rechazada", reject_res["mensaje"].lower())
+        self.assertEqual(reject_res["propuesta"]["estado"], "RECHAZADA")
+
+        # La licitación sigue activa (Con ofertas) porque tech2 sigue pendiente
+        req_db_after_1 = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(req_db_after_1.estado, "Con ofertas")
+        self.assertNotEqual(req_db_after_1.estado, "Cancelada")
+
+        # CA-06: Propuesta rechazada no es elegible para adjudicar
+        self.assertFalse(reject_res["propuesta"]["elegible_para_adjudicar"])
+
+        # 6. Rechazar la segunda propuesta: la licitación sigue activa (pasa a Publicada) sin cancelarse
+        reject_res_2 = reject_open_request_proposal_by_owner(
+            solicitud_id,
+            prop2_id,
+            RejectProposalSchema(),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req_db_after_2 = self.db.get(OpenRequest, solicitud_id)
+        self.assertEqual(req_db_after_2.estado, "Publicada")
+        self.assertNotEqual(req_db_after_2.estado, "Cancelada")
+
+    def test_hu31_st05_award_cash_card_failed_payment_concurrency_and_privacy(self):
+        """HU-31 ST-05 (CA-01 a CA-06): Probar adjudicación en efectivo y tarjeta, pago fallido, selección concurrente, elegibilidad en vivo y privacidad."""
+        tech1 = User(
+            firebase_uid="tech1-hu31",
+            correo="tech1-hu31@example.com",
+            nombre_completo="Técnico Uno HU31",
+            dni="0801200001001",
+            telefono="+50490001001",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu31",
+            correo="tech2-hu31@example.com",
+            nombre_completo="Técnico Dos HU31",
+            dni="0801200001002",
+            telefono="+50490001002",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech3 = User(
+            firebase_uid="tech3-hu31",
+            correo="tech3-hu31@example.com",
+            nombre_completo="Técnico Tres HU31",
+            dni="0801200001003",
+            telefono="+50490001003",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        other_client = User(
+            firebase_uid="client-other-hu31",
+            correo="other-hu31@example.com",
+            nombre_completo="Cliente No Propietario",
+            dni="0801200001004",
+            telefono="+50490001004",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2, tech3, other_client])
+        self.db.flush()
+
+        self.db.add(UserRole(usuario_id=other_client.id, rol="CLIENTE"))
+        profiles: dict[str, TechnicianProfile] = {}
+        for t in (tech1, tech2, tech3):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            prof = TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO")
+            self.db.add(prof)
+            profiles[t.firebase_uid] = prof
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        # Publicar licitación #1 (para probar tarjeta, fallo de pago, concurrencia y privacidad)
+        pub1 = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("800.00"), metodo_pago="tarjeta"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req1_id = pub1["id"]
+
+        p1_res = accept_published_budget_for_open_request(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        prop1_id = p1_res["propuesta"]["id"]
+        p2_res = submit_counter_offer_for_open_request(
+            req1_id,
+            CounterOfferSchema(monto="950.00", justificacion="Incluye materiales"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        prop2_id = p2_res["propuesta"]["id"]
+
+        # CA-01: Usuario no propietario no puede adjudicar (403)
+        with self.assertRaises(HTTPException) as non_owner_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": other_client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(non_owner_ctx.exception.status_code, 403)
+
+        # CA-01 y Condición transversal: Si tech1 pasa a No disponible antes de adjudicar, se bloquea en tiempo real (409)
+        profiles[tech1.firebase_uid].disponible = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ineligible_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(ineligible_ctx.exception.status_code, 409)
+        profiles[tech1.firebase_uid].disponible = True
+        self.db.commit()
+
+        # CA-03: Con tarjeta, un pago fallido NO cierra la licitación ni descarta las otras propuestas
+        with self.assertRaises(HTTPException) as failed_pay_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop2_id,
+                AwardProposalSchema(
+                    metodo_pago="tarjeta",
+                    referencia_pasarela="FAIL-DECLINED-001",
+                ),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(failed_pay_ctx.exception.status_code, 402)
+
+        req1_after_fail = self.db.get(OpenRequest, req1_id)
+        self.assertEqual(req1_after_fail.estado, "Con ofertas")
+        self.assertIsNone(req1_after_fail.tecnico_id)
+        p1_after_fail = self.db.get(OpenRequestProposal, prop1_id)
+        p2_after_fail = self.db.get(OpenRequestProposal, prop2_id)
+        self.assertEqual(p1_after_fail.estado, "PENDIENTE")
+        self.assertTrue(p1_after_fail.activa)
+        self.assertEqual(p2_after_fail.estado, "PENDIENTE")
+        self.assertTrue(p2_after_fail.activa)
+
+        # CA-03 y CA-04: Cobro con tarjeta confirmado adjudica a tech2, pasa a Aceptada y descarta a tech1 con aviso
+        award_card_res = award_open_request_proposal_by_owner(
+            req1_id,
+            prop2_id,
+            AwardProposalSchema(
+                metodo_pago="tarjeta",
+                referencia_pasarela="TKGO-GW-OK-777888",
+                idempotency_key="idem-req1-prop2",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertFalse(award_card_res["reintento_idempotente"])
+        self.assertEqual(award_card_res["estado_solicitud"], "ACEPTADA")
+        self.assertEqual(award_card_res["tecnico_adjudicado_id"], tech2.firebase_uid)
+        self.assertEqual(award_card_res["monto_pactado"], 950.0)
+        self.assertEqual(award_card_res["metodo_pago"], "tarjeta")
+        self.assertEqual(award_card_res["referencia_pasarela"], "TKGO-GW-OK-777888")
+        self.assertEqual(award_card_res["cantidad_propuestas_descartadas"], 1)
+
+        # CA-04: Propuesta de tech1 quedó descartada y tiene aviso para su autor
+        self.db.refresh(p1_after_fail)
+        self.assertEqual(p1_after_fail.estado, "RECHAZADA")
+        self.assertFalse(p1_after_fail.activa)
+        notices_tech1 = get_open_request_author_notices(req1_id, tecnico_id=tech1.firebase_uid)
+        self.assertEqual(len(notices_tech1), 1)
+        self.assertEqual(notices_tech1[0]["tipo"], "PROPUESTA_DESCARTADA_POR_ADJUDICACION")
+        self.assertNotIn("direccion_exacta", notices_tech1[0])
+        self.assertNotIn("telefono", notices_tech1[0])
+
+        # CA-06: Confirmación simultánea / duplicada para la misma propuesta no duplica cobro ni adjudicación
+        retry_award = award_open_request_proposal_by_owner(
+            req1_id,
+            prop2_id,
+            AwardProposalSchema(
+                metodo_pago="tarjeta",
+                referencia_pasarela="TKGO-GW-OK-777888",
+                idempotency_key="idem-req1-prop2",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(retry_award["reintento_idempotente"])
+        charges = get_open_request_payment_charges(req1_id)
+        self.assertEqual(len(charges), 1)
+
+        # CA-06: Segunda confirmación simultánea intentando adjudicar a tech1 falla con 409 y conserva auditoría
+        with self.assertRaises(HTTPException) as second_tech_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(second_tech_ctx.exception.status_code, 409)
+        audits = get_open_request_award_audits(req1_id)
+        self.assertTrue(any(a["resultado"] == "ADJUDICADA" for a in audits))
+        self.assertTrue(any(a["resultado"] == "RECHAZADA_YA_ADJUDICADA" for a in audits))
+
+        # CA-05: Solo el técnico adjudicado (tech2) obtiene dirección exacta y teléfono; los demás no pueden postular ni acceder
+        winner_detail = get_open_request_for_viewer(req1_id, {"uid": tech2.firebase_uid}, self.db)
+        self.assertFalse(winner_detail["ubicacion_exacta_protegida"])
+        self.assertEqual(winner_detail["direccion_exacta"], "Avenida República de Panamá, casa #24")
+        self.assertEqual(winner_detail["cliente"]["telefono"], "+50498765432")
+
+        with self.assertRaises(HTTPException) as discarded_tech_detail_ctx:
+            get_open_request_for_viewer(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertEqual(discarded_tech_detail_ctx.exception.status_code, 403)
+
+        tech1_proposals_view = list_open_request_proposals_for_viewer(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertTrue(tech1_proposals_view["ubicacion_exacta_protegida"])
+        self.assertNotIn("direccion_exacta", tech1_proposals_view)
+        self.assertNotIn("cliente", tech1_proposals_view)
+
+        with self.assertRaises(HTTPException) as late_bid_ctx:
+            accept_published_budget_for_open_request(req1_id, {"uid": tech3.firebase_uid}, self.db)
+        self.assertEqual(late_bid_ctx.exception.status_code, 409)
+
+        # CA-02: Licitación #2 adjudicada con efectivo pasa a Aceptada en la misma operación sin pasarela
+        pub2 = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("600.00"), metodo_pago="efectivo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req2_id = pub2["id"]
+        p_cash = accept_published_budget_for_open_request(req2_id, {"uid": tech1.firebase_uid}, self.db)
+        award_cash = award_open_request_proposal_by_owner(
+            req2_id,
+            p_cash["propuesta"]["id"],
+            AwardProposalSchema(metodo_pago="efectivo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(award_cash["estado_solicitud"], "ACEPTADA")
+        self.assertEqual(award_cash["metodo_pago"], "efectivo")
+        self.assertIsNone(award_cash["referencia_pasarela"])
+        self.assertFalse(award_cash["cobro"]["cobro_digital_ejecutado"])
