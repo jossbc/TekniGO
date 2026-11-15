@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.direct_requests_router import create_request, get_budget_estimate
-from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest
+from app.direct_requests_router import create_request, get_budget_estimate,register_adjustment,update_payment_method
+from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, RegisterAdjustmentRequest, UpdatePaymentMethodRequest
 from app.main import app as fastapi_app
 from app.models import (
     CoverageZone,
@@ -166,7 +166,7 @@ class DirectRequestsEndpointTests(unittest.TestCase):
 
     def test_create_direct_request_persists_pendiente_and_reaches_technician_panel(self):
         response = Response()
-        payload = self._valid_form_payload(metodo_pago="Transferencia")
+        payload = self._valid_form_payload(metodo_pago="efectivo")
         result = create_request(
             request=payload,
             response=response,
@@ -184,7 +184,7 @@ class DirectRequestsEndpointTests(unittest.TestCase):
         self.assertEqual(created.tecnico_id, self.tech_user.firebase_uid)
         self.assertEqual(created.estado, "PENDIENTE")
         self.assertEqual(created.monto_base, Decimal("500.00"))
-        self.assertEqual(created.metodo_pago, "Transferencia")
+        self.assertEqual(created.metodo_pago, "efectivo")
 
         tech_list = get_my_direct_requests_endpoint(
             response=Response(),
@@ -255,6 +255,156 @@ class DirectRequestsEndpointTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             self._valid_form_payload(direccion_exacta="   ")
+
+        def test_hu37_cash_flow_creates_and_accepts_without_digital_charge(self):
+         """HU-37 CA-01 & CA-03: Con efectivo no se invoca cobro digital y el técnico puede aceptar directamente."""
+        payload = self._valid_form_payload(metodo_pago="efectivo")
+        result = create_request(
+            request=payload,
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+        solicitud_id = result["id"]
+
+        # El técnico acepta sin necesidad de pasarela previa
+        accepted = accept_my_direct_request_endpoint(
+            solicitud_id=solicitud_id,
+            response=Response(),
+            claims={"uid": self.tech_user.firebase_uid},
+            db=self.db,
+        )
+        self.assertEqual(accepted["estado"], "ACEPTADA")
+        self.assertEqual(accepted["metodo_pago"], "efectivo")
+        self.assertIsNone(accepted["referencia_pasarela"])
+        self.assertEqual(accepted["desglose_medios"]["metodo_pago_base"], "efectivo")
+
+    def test_hu37_card_flow_requires_gateway_reference_before_accepted(self):
+        """HU-37 CA-03 & CA-05: Con tarjeta se requiere pasarela antes de Aceptada y no persiste datos de tarjeta."""
+        payload = self._valid_form_payload(metodo_pago="tarjeta")
+        result = create_request(
+            request=payload,
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+        solicitud_id = result["id"]
+
+        # Intento de aceptar sin pago con tarjeta previo debe arrojar 402 Payment Required
+        with self.assertRaises(HTTPException) as pay_err:
+            accept_my_direct_request_endpoint(
+                solicitud_id=solicitud_id,
+                response=Response(),
+                claims={"uid": self.tech_user.firebase_uid},
+                db=self.db,
+            )
+        self.assertEqual(pay_err.exception.status_code, 402)
+        self.assertIn("pasarela", pay_err.exception.detail.lower())
+
+        # Cliente autoriza pago en pasarela segura y actualiza referencia
+        update_payment_method(
+            solicitud_id=solicitud_id,
+            request=UpdatePaymentMethodRequest(
+                metodo_pago="tarjeta",
+                referencia_pasarela="TKGO-GW-AUTH-999888",
+            ),
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+
+        # Ahora el técnico sí puede aceptar
+        accepted = accept_my_direct_request_endpoint(
+            solicitud_id=solicitud_id,
+            response=Response(),
+            claims={"uid": self.tech_user.firebase_uid},
+            db=self.db,
+        )
+        self.assertEqual(accepted["estado"], "ACEPTADA")
+        self.assertEqual(accepted["referencia_pasarela"], "TKGO-GW-AUTH-999888")
+        self.assertEqual(accepted["desglose_medios"]["referencia_pasarela_base"], "TKGO-GW-AUTH-999888")
+
+    def test_hu37_invalid_and_empty_methods_rejected(self):
+        """HU-37 CA-02: No se permite método vacío, desconocido o no autorizado."""
+        with self.assertRaises(ValidationError):
+            self._valid_form_payload(metodo_pago="")
+
+        with self.assertRaises(ValidationError):
+            self._valid_form_payload(metodo_pago="Transferencia")
+
+        with self.assertRaises(ValidationError):
+            self._valid_form_payload(metodo_pago="cripto")
+
+    def test_hu37_cannot_change_payment_method_after_accepted(self):
+        """HU-37 CA-04: Una contratación ya aceptada conserva el método inicial."""
+        payload = self._valid_form_payload(metodo_pago="efectivo")
+        result = create_request(
+            request=payload,
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+        solicitud_id = result["id"]
+
+        # Se acepta la solicitud
+        accept_my_direct_request_endpoint(
+            solicitud_id=solicitud_id,
+            response=Response(),
+            claims={"uid": self.tech_user.firebase_uid},
+            db=self.db,
+        )
+
+        # Intento de cambiar método base tras ser aceptada debe fallar con 409 Conflict
+        with self.assertRaises(HTTPException) as conflict_err:
+            update_payment_method(
+                solicitud_id=solicitud_id,
+                request=UpdatePaymentMethodRequest(metodo_pago="tarjeta"),
+                response=Response(),
+                db=self.db,
+                current_user={"uid": self.client_user.firebase_uid},
+            )
+        self.assertEqual(conflict_err.exception.status_code, 409)
+        self.assertIn("conserva el método inicial", conflict_err.exception.detail)
+
+    def test_hu37_approved_adjustment_can_have_distinct_method_with_decimal_arithmetic(self):
+        """HU-37 CA-04 y Dinero: El ajuste puede registrar un medio distinto solo para su diferencia aprobada."""
+        payload = self._valid_form_payload(metodo_pago="efectivo")
+        result = create_request(
+            request=payload,
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+        solicitud_id = result["id"]
+
+        # Se acepta el acuerdo base por L. 500.00 en efectivo
+        accept_my_direct_request_endpoint(
+            solicitud_id=solicitud_id,
+            response=Response(),
+            claims={"uid": self.tech_user.firebase_uid},
+            db=self.db,
+        )
+
+        # Se registra un ajuste aprobado por L. 150.50 pagadero con tarjeta
+        adj_result = register_adjustment(
+            solicitud_id=solicitud_id,
+            request=RegisterAdjustmentRequest(
+                monto_ajuste=Decimal("150.50"),
+                metodo_pago_ajuste="tarjeta",
+                referencia_pasarela_ajuste="TKGO-GW-ADJ-CENTAVOS-150",
+            ),
+            response=Response(),
+            db=self.db,
+            current_user={"uid": self.client_user.firebase_uid},
+        )
+
+        desglose = adj_result["desglose_medios"]
+        self.assertEqual(desglose["monto_base"], "500.00")
+        self.assertEqual(desglose["metodo_pago_base"], "efectivo")
+        self.assertEqual(desglose["monto_ajuste"], "150.50")
+        self.assertEqual(desglose["metodo_pago_ajuste"], "tarjeta")
+        self.assertEqual(desglose["referencia_pasarela_ajuste"], "TKGO-GW-ADJ-CENTAVOS-150")
+        self.assertEqual(desglose["monto_total"], "650.50")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,12 @@ class TechnicianDirectRequestOut(BaseModel):
     descripcion: str
     estado: str
     total_estimado: float
+    metodo_pago: str | None = None
+    referencia_pasarela: str | None = None
+    monto_ajuste: float | None = None
+    metodo_pago_ajuste: str | None = None
+    monto_total: float | None = None
+    desglose_medios: dict | None = None
 
 
 def _require_technician_user(claims: dict, db: Session) -> User:
@@ -93,6 +99,12 @@ def _serialize_direct_request(
         "descripcion": row.descripcion or "",
         "estado": estado,
         "total_estimado": total,
+        "metodo_pago": row.metodo_pago,
+        "referencia_pasarela": row.referencia_pasarela,
+        "monto_ajuste": float(row.monto_ajuste or 0.0),
+        "metodo_pago_ajuste": row.metodo_pago_ajuste,
+        "monto_total": float(row.monto_total or row.monto_base or 0.0),
+        "desglose_medios": row.desglose_medios,
     }
 
 
@@ -160,7 +172,14 @@ def respond_to_direct_request(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Solo puedes responder solicitudes en estado PENDIENTE (estado actual: {current_state}).",
         )
-
+    # HU-37 CA-03: Con efectivo no se invoca cobro digital; con tarjeta se solicita pago antes de Aceptada
+    if target_estado == "ACEPTADA":
+        metodo = (record.metodo_pago or "").strip().lower()
+        if metodo == "tarjeta" and not record.referencia_pasarela:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Con tarjeta se requiere confirmación y referencia de pago de pasarela antes de aceptar la solicitud (CA-03).",
+            )
     record.estado = target_estado
     db.commit()
     db.refresh(record)

@@ -149,6 +149,10 @@ def _serialize_request_summary(
     if presupuesto is None:
         presupuesto = monto_base
 
+    desglose = getattr(record, "desglose_medios", None)
+    monto_ajuste_val = _to_float(getattr(record, "monto_ajuste", 0.0))
+    monto_total_val = _to_float(getattr(record, "monto_total", None)) or (presupuesto + (monto_ajuste_val or 0.0))
+
     raw_estado = (getattr(record, "estado", None) or "PENDIENTE").strip()
     estado_normalizado = raw_estado.upper()
 
@@ -160,6 +164,11 @@ def _serialize_request_summary(
         "creada_en": _iso(getattr(record, "creada_en", None)),
         "presupuesto": presupuesto,
         "monto_base": monto_base if monto_base is not None else presupuesto,
+        "monto_ajuste": monto_ajuste_val,
+        "metodo_pago_ajuste": getattr(record, "metodo_pago_ajuste", None),
+        "monto_total": monto_total_val,
+        "referencia_pasarela": getattr(record, "referencia_pasarela", None),
+        "desglose_medios": desglose,
         "cantidad": _to_float(getattr(record, "cantidad", None)),
         "tarifa_aplicada": _to_float(getattr(record, "tarifa_aplicada", None)),
         "unidad_cobro": getattr(record, "unidad_cobro", None),
@@ -435,6 +444,7 @@ def get_client_request_detail(
         "unidad_cobro": summary["unidad_cobro"],
         "monto_pactado": summary["presupuesto"],
         "metodo_pago": summary["metodo_pago"],
+        "desglose_medios": summary.get("desglose_medios"),
     }
     summary["linea_tiempo"] = _build_request_timeline(record, estado_normalizado)
     summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
