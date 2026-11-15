@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "020_finalizacion_confirmacion"
-down_revision = "019_certificaciones_oficio"
+revision = "021_finalizacion_confirmacion"
+down_revision = "020_metodo_pago_desglose"
 branch_labels = None
 depends_on = None
 

@@ -4,8 +4,11 @@ import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, 
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
+  formatConfirmationWindowStatus,
+  formatTegucigalpaDateTime,
   listTechnicianDirectRequests,
   rejectTechnicianDirectRequest,
+  reportTechnicianRequestCompletion,
   type TechnicianDirectRequest,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
@@ -13,7 +16,7 @@ import { Button } from "./ui";
 
 export type DirectRequest = TechnicianDirectRequest;
 
-type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "RECHAZADA";
+type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "RECHAZADA" | "COMPLETADA";
 
 const estadoConfig: Record<
   string,
@@ -21,13 +24,16 @@ const estadoConfig: Record<
 > = {
   PENDIENTE: { label: "Pendiente", bg: "#fff7ed", color: "#9a3412", border: "#fed7aa", icon: Clock3 },
   ACEPTADA: { label: "Aceptada", bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", icon: CheckCircle2 },
+  EN_PROCESO: { label: "En proceso", bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe", icon: Clock3 },
   RECHAZADA: { label: "Rechazada", bg: "#f8fafc", color: "#475569", border: "#cbd5e1", icon: XCircle },
   CANCELADA: { label: "Cancelada", bg: "#f8fafc", color: "#475569", border: "#cbd5e1", icon: XCircle },
   COMPLETADA: { label: "Completada", bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", icon: CheckCircle2 },
 };
 
 function normalizeEstado(estado?: string): string {
-  return (estado || "PENDIENTE").trim().toUpperCase();
+  const raw = (estado || "PENDIENTE").trim().toUpperCase();
+  if (raw === "EN PROCESO") return "EN_PROCESO";
+  return raw;
 }
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -115,6 +121,40 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     return handleDecision(id, "reject");
   }
 
+  // HU-34: Reportar trabajo finalizado (conserva En proceso con pendiente_recepcion e inicia plazo de 48h)
+  async function handleReportCompletion(id: string) {
+    setActionLoading(id);
+    setActionError("");
+    setActionNotice("");
+
+    try {
+      const res = await reportTechnicianRequestCompletion(user, id);
+      setRequests((prev) =>
+        prev.map((req) =>
+          req.id === id
+            ? {
+                ...req,
+                estado: "EN_PROCESO",
+                pendiente_recepcion: true,
+                finalizacion_reportada_en: res.finalizacion_reportada_en,
+                vencimiento_confirmacion_en: res.vencimiento_confirmacion_en,
+                finalizacion_reportada_local: res.finalizacion_reportada_local,
+                vencimiento_confirmacion_local: res.vencimiento_confirmacion_local,
+              }
+            : req,
+        ),
+      );
+      setActionNotice(
+        res.mensaje ||
+          "Finalización reportada exitosamente. El servicio permanece En proceso pendiente de recepción y se inició el plazo de 48 horas.",
+      );
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   if (loading) {
     return (
       <LoadingState
@@ -168,7 +208,9 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
               <option value="TODOS">Todas ({requests.length})</option>
               <option value="PENDIENTE">Pendientes ({pendingCount})</option>
               <option value="ACEPTADA">Aceptadas ({countByState("ACEPTADA")})</option>
+              <option value="EN_PROCESO">En proceso ({countByState("EN_PROCESO")})</option>
               <option value="RECHAZADA">Rechazadas ({countByState("RECHAZADA")})</option>
+              <option value="COMPLETADA">Completadas ({countByState("COMPLETADA")})</option>
             </select>
           </div>
         </div>
@@ -247,6 +289,13 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const StatusIcon = config.icon;
             const clientName = req.cliente_nombre || "Cliente";
             const totalEstimado = Number(req.total_estimado ?? 0);
+            const isPendingReception =
+              normalizedState === "EN_PROCESO" &&
+              Boolean(req.pendiente_recepcion || req.finalizacion_reportada_en || req.finalizacion_reportada_local);
+            const hasPendingAdjustment = Boolean(req.tiene_ajuste_pendiente);
+            const reportedAtIso = req.finalizacion_reportada_local || req.finalizacion_reportada_en;
+            const deadlineIso = req.vencimiento_confirmacion_local || req.vencimiento_confirmacion_en;
+            const deadlineStatus = isPendingReception ? formatConfirmationWindowStatus(deadlineIso) : null;
 
             return (
               <div key={req.id} className="client-request-item">
@@ -284,7 +333,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                       }}
                     >
                       <StatusIcon size={14} />
-                      {config.label}
+                      {isPendingReception ? "En proceso · Pendiente de recepción" : config.label}
                     </span>
                   </div>
 
@@ -324,6 +373,64 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                       L. {Number.isFinite(totalEstimado) ? totalEstimado.toFixed(2) : "0.00"}
                     </strong>
                   </div>
+
+                  {/* HU-34 CA-02 & CA-03: Visualización de pendiente de recepción y vencimiento de 48h en America/Tegucigalpa */}
+                  {isPendingReception && (
+                    <div
+                      role="region"
+                      aria-label="Plazo de confirmación del servicio"
+                      style={{
+                        margin: "12px 0 0 48px",
+                        padding: "12px 14px",
+                        background: "#eff6ff",
+                        border: "1px solid #bfdbfe",
+                        borderRadius: "10px",
+                        fontSize: "13px",
+                        color: "#1e3a8a",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                        Trabajo reportado como finalizado · Pendiente de recepción del cliente
+                      </div>
+                      <div>
+                        El servicio permanece En proceso y los fondos continúan retenidos hasta la confirmación o el cierre del plazo.
+                      </div>
+                      {reportedAtIso && (
+                        <div>
+                          <strong>Finalización reportada:</strong> {formatTegucigalpaDateTime(reportedAtIso)}
+                        </div>
+                      )}
+                      {deadlineIso && (
+                        <div>
+                          <strong>Vencimiento de confirmación (48 h):</strong> {formatTegucigalpaDateTime(deadlineIso)}
+                        </div>
+                      )}
+                      {deadlineStatus && (
+                        <div style={{ marginTop: "4px", fontWeight: 600 }}>{deadlineStatus.etiqueta}</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* HU-34 CA-05: Aviso si existe un ajuste pendiente de aprobación */}
+                  {normalizedState === "EN_PROCESO" && !isPendingReception && hasPendingAdjustment && (
+                    <div
+                      role="note"
+                      style={{
+                        margin: "12px 0 0 48px",
+                        padding: "10px 14px",
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
+                        borderRadius: "10px",
+                        fontSize: "13px",
+                        color: "#92400e",
+                      }}
+                    >
+                      <strong>Ajuste pendiente de aprobación:</strong>{" "}
+                      {req.motivo_ajuste_pendiente ||
+                        "No se permite reportar el servicio como terminado hasta resolver el ajuste pendiente."}
+                    </div>
+                  )}
                 </div>
 
                 {/* Botones de acción */}
@@ -362,6 +469,29 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     >
                       <X size={16} strokeWidth={2.5} />
                       {actionLoading === req.id ? "Procesando…" : "Rechazar"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado desde En proceso */}
+                {normalizedState === "EN_PROCESO" && !isPendingReception && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() => handleReportCompletion(req.id)}
+                      disabled={actionLoading === req.id || hasPendingAdjustment}
+                      style={{
+                        background: hasPendingAdjustment ? "#f1f5f9" : "#eff6ff",
+                        color: hasPendingAdjustment ? "#64748b" : "#1d4ed8",
+                        border: `1px solid ${hasPendingAdjustment ? "#cbd5e1" : "#bfdbfe"}`,
+                        gap: "8px",
+                        minWidth: "170px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <CheckCircle2 size={16} />
+                      {actionLoading === req.id ? "Reportando…" : "Reportar trabajo finalizado"}
                     </Button>
                   </div>
                 )}

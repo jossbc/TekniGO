@@ -59,6 +59,11 @@ export type PublishedOpenRequestResponse = {
   presupuesto: number;
   monto_base: number;
   creada_en: string | null;
+  finalizacion_reportada_en?: string | null;
+  vencimiento_confirmacion_en?: string | null;
+  finalizacion_reportada_local?: string | null;
+  vencimiento_confirmacion_local?: string | null;
+  pendiente_recepcion?: boolean;
   mensaje?: string;
 };
 

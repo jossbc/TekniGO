@@ -223,10 +223,10 @@ class Hu34St01CompletionFieldsTests(unittest.TestCase):
         self.assertEqual(tech_open_detail["vencimiento_confirmacion_local"], "2026-11-14T12:00:00-06:00")
         self.assertEqual(format_tegucigalpa_iso(None), None)
 
-    def test_migration_020_revision_chain_and_operations(self):
-        migration = importlib.import_module("migrations.versions.020_finalizacion_confirmacion")
-        self.assertEqual(migration.revision, "020_finalizacion_confirmacion")
-        self.assertEqual(migration.down_revision, "019_certificaciones_oficio")
+    def test_migration_021_revision_chain_and_operations(self):
+        migration = importlib.import_module("migrations.versions.021_finalizacion_confirmacion")
+        self.assertEqual(migration.revision, "021_finalizacion_confirmacion")
+        self.assertEqual(migration.down_revision, "020_metodo_pago_desglose")
         self.assertLessEqual(len(migration.revision), 32)
 
         with patch.object(migration, "op") as mock_op:

@@ -336,3 +336,64 @@ test('HU-28 ST-04 & ST-05 (CA-05): open request in CON OFERTAS state renders rec
   assert.ok(html.includes('Técnico Concurrente 2'))
   assert.ok(html.includes('Con ofertas'))
 })
+
+test('HU-34 ST-03 (CA-02 & CA-03): EN_PROCESO request with reported completion shows pending reception badge and 48h deadline in America/Tegucigalpa', () => {
+  mockPage = {
+    total: 1,
+    offset: 0,
+    limit: 10,
+    modalidad: 'DIRECTA',
+    estado: 'EN_PROCESO',
+    solicitudes: [
+      {
+        id: 'req-hu34-1',
+        modalidad: 'DIRECTA',
+        estado: 'EN_PROCESO',
+        fecha_hora: '2026-11-12T15:00:00Z',
+        creada_en: '2026-11-10T10:00:00Z',
+        finalizacion_reportada_en: '2026-11-12T20:30:00+00:00',
+        vencimiento_confirmacion_en: '2026-11-14T20:30:00+00:00',
+        finalizacion_reportada_local: '2026-11-12T14:30:00-06:00',
+        vencimiento_confirmacion_local: '2026-11-14T14:30:00-06:00',
+        pendiente_recepcion: true,
+        presupuesto: 650,
+        monto_base: 650,
+        cantidad: 1,
+        tarifa_aplicada: 650,
+        unidad_cobro: 'POR_SERVICIO',
+        metodo_pago: 'tarjeta',
+        municipio: 'Distrito Central',
+        sector: 'Col. Palmira',
+        direccion_exacta: 'Casa 18',
+        descripcion: 'Revisión de panel principal',
+        servicio: { id: 'srv-1', nombre: 'Mantenimiento de panel eléctrico', especialidad_id: 'esp-1' },
+        tecnico: { usuario_id: 'tech-uuid-1', firebase_uid: 'tech-1', nombre_completo: 'Ricardo Técnico' },
+      },
+    ],
+  }
+  mockSelectedId = 'req-hu34-1'
+  mockDetailError = ''
+  mockDetail = {
+    ...mockPage.solicitudes[0],
+    propuesta: {
+      servicio_id: 'srv-1',
+      servicio_nombre: 'Mantenimiento de panel eléctrico',
+      cantidad: 1,
+      tarifa_aplicada: 650,
+      unidad_cobro: 'POR_SERVICIO',
+      monto_pactado: 650,
+      metodo_pago: 'tarjeta',
+    },
+    linea_tiempo: [
+      { estado: 'PENDIENTE', descripcion: 'Solicitud registrada.', fecha: '2026-11-10T10:00:00Z' },
+      { estado: 'EN_PROCESO', descripcion: 'Servicio en ejecución.', fecha: '2026-11-12T15:00:00Z' },
+    ],
+    acciones_permitidas: ['COMPLETAR'],
+  }
+
+  const html = renderManager()
+  assert.ok(html.includes('En proceso · Pendiente de recepción'))
+  assert.ok(html.includes('Trabajo reportado como finalizado · Pendiente de recepción'))
+  assert.ok(html.includes('Vencimiento de confirmación (48 h):'))
+  assert.ok(html.includes('America/Tegucigalpa'))
+})
