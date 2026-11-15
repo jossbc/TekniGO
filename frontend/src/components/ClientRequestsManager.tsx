@@ -19,9 +19,11 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
+import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
   MODALIDAD_OPTIONS,
+  awardProposalApi,
   executeMyRequestAction,
   formatLempiras,
   formatRequestModalityLabel,
@@ -34,6 +36,7 @@ import {
   type ClientRequestsPageResponse,
   type EstadoFiltro,
   type ModalidadFiltro,
+  type ReceivedOpenRequestProposal
 } from "../lib/clientRequests";
 
 const PAGE_SIZE = 10;
@@ -312,11 +315,15 @@ export default function ClientRequestsManager({
     }
   }
 
-      const [confirmRejectId, setConfirmRejectId] = useState<string | null>(null);
+        const [confirmRejectId, setConfirmRejectId] = useState<string | null>(null);
   const [rejectingProposalId, setRejectingProposalId] = useState<string>("");
+  const [confirmAwardProp, setConfirmAwardProp] = useState<ReceivedOpenRequestProposal | null>(null);
+  const [awardPaymentMethod, setAwardPaymentMethod] = useState<"efectivo" | "tarjeta">("efectivo");
+  const [showAwardGateway, setShowAwardGateway] = useState(false);
+  const [awardingProposalId, setAwardingProposalId] = useState<string>("");
 
   async function executeRejectProposal(proposalId: string) {
-    if (!detail || rejectingProposalId) return;
+    if (!detail || rejectingProposalId || awardingProposalId) return;
     setRejectingProposalId(proposalId);
     setDetailError("");
     setActionNotice("");
@@ -340,6 +347,63 @@ export default function ClientRequestsManager({
     } finally {
       setRejectingProposalId("");
     }
+  }
+
+  function startAwardConfirmation(prop: ReceivedOpenRequestProposal) {
+    setConfirmRejectId(null);
+    setDetailError("");
+    const initialMethod =
+      (detail?.metodo_pago || "efectivo").toLowerCase() === "tarjeta" ? "tarjeta" : "efectivo";
+    setAwardPaymentMethod(initialMethod);
+    setConfirmAwardProp(prop);
+  }
+
+  async function executeAwardProposal(
+    prop: ReceivedOpenRequestProposal,
+    metodo: "efectivo" | "tarjeta",
+    referenciaPasarela?: string | null,
+  ) {
+    if (!detail || awardingProposalId) return;
+    setAwardingProposalId(prop.id);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const idempotencyKey = `award-${detail.id}-${prop.id}-${metodo}`;
+      const res = await awardProposalApi(user, detail.id, prop.id, {
+        metodo_pago: metodo,
+        referencia_pasarela: referenciaPasarela || null,
+        idempotency_key: idempotencyKey,
+      });
+      setActionNotice(
+        res.mensaje ||
+          `Técnico adjudicado por ${formatLempiras(res.monto_pactado)} (${res.metodo_pago}).`,
+      );
+      setConfirmAwardProp(null);
+      setShowAwardGateway(false);
+      const updatedDetail = await getMyRequestDetail(user, detail.id);
+      setDetail(updatedDetail);
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+      setShowAwardGateway(false);
+    } finally {
+      setAwardingProposalId("");
+    }
+  }
+
+  function handleConfirmAwardClick() {
+    if (!confirmAwardProp) return;
+    if (awardPaymentMethod === "tarjeta") {
+      setShowAwardGateway(true);
+      return;
+    }
+    void executeAwardProposal(confirmAwardProp, "efectivo", null);
+  }
+
+  function handleAwardCardSuccess(result: CardPaymentResult) {
+    if (!confirmAwardProp) return;
+    setShowAwardGateway(false);
+    void executeAwardProposal(confirmAwardProp, "tarjeta", result.referenciaPasarela);
   }
 
   return (
@@ -799,10 +863,14 @@ export default function ClientRequestsManager({
                                 {formatLempiras(prop.monto)}
                               </strong>
 
-                              {/* Indicador de habilitación y estado (CA-06) */}
-                              {prop.estado === "RECHAZADA" ? (
+                                                            {/* Indicador de habilitación y estado (CA-06) */}
+                              {prop.estado === "ACEPTADA" ? (
+                                <span style={{ fontSize: "0.8rem", color: "#15803d", fontWeight: 700 }}>
+                                  Propuesta adjudicada ✓
+                                </span>
+                              ) : prop.estado === "RECHAZADA" ? (
                                 <span style={{ fontSize: "0.8rem", color: "#b91c1c", fontWeight: 600 }}>
-                                  Propuesta rechazada
+                                  Propuesta descartada / rechazada
                                 </span>
                               ) : prop.tecnico && !prop.tecnico.habilitado_operativamente ? (
                                 <span style={{ fontSize: "0.8rem", color: "#b45309", fontWeight: 600 }}>
@@ -814,7 +882,92 @@ export default function ClientRequestsManager({
                                 </span>
                               )}
 
-                              {confirmRejectId === prop.id ? (
+                              {confirmAwardProp?.id === prop.id ? (
+                                <div
+                                  style={{
+                                    marginTop: "8px",
+                                    padding: "10px 12px",
+                                    borderRadius: "8px",
+                                    background: "#f0fdf4",
+                                    border: "1px solid #bbf7d0",
+                                    textAlign: "left",
+                                    maxWidth: "360px",
+                                  }}
+                                >
+                                  <p style={{ margin: "0 0 8px", fontSize: "0.85rem", color: "#14532d", fontWeight: 600 }}>
+                                    Confirmar adjudicación a {prop.tecnico?.nombre_completo || "este técnico"} por{" "}
+                                    {formatLempiras(prop.monto)}
+                                  </p>
+                                  <label
+                                    style={{
+                                      display: "block",
+                                      fontSize: "0.8rem",
+                                      color: "#166534",
+                                      marginBottom: "8px",
+                                    }}
+                                  >
+                                    Método de pago:
+                                    <select
+                                      value={awardPaymentMethod}
+                                      disabled={Boolean(awardingProposalId)}
+                                      onChange={(e) =>
+                                        setAwardPaymentMethod(e.target.value as "efectivo" | "tarjeta")
+                                      }
+                                      style={{
+                                        marginLeft: "8px",
+                                        padding: "3px 8px",
+                                        borderRadius: "6px",
+                                        border: "1px solid #86efac",
+                                        fontSize: "0.8rem",
+                                      }}
+                                    >
+                                      <option value="efectivo">Efectivo (pasa a Aceptada al instante)</option>
+                                      <option value="tarjeta">Tarjeta (requiere cobro en pasarela)</option>
+                                    </select>
+                                  </label>
+                                  <p style={{ margin: "0 0 8px", fontSize: "0.75rem", color: "#15803d" }}>
+                                    Las demás propuestas pendientes se descartarán y solo este técnico recibirá tu dirección exacta y teléfono.
+                                  </p>
+                                  <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(awardingProposalId)}
+                                      onClick={() => setConfirmAwardProp(null)}
+                                      style={{
+                                        background: "transparent",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "6px",
+                                        padding: "4px 10px",
+                                        fontSize: "0.8rem",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Cancelar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(awardingProposalId)}
+                                      onClick={handleConfirmAwardClick}
+                                      style={{
+                                        background: "#16a34a",
+                                        color: "#fff",
+                                        border: "none",
+                                        borderRadius: "6px",
+                                        padding: "4px 12px",
+                                        fontSize: "0.8rem",
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      {awardingProposalId === prop.id
+                                        ? "Adjudicando…"
+                                        : awardPaymentMethod === "tarjeta"
+                                          ? "Continuar al pago"
+                                          : "Confirmar adjudicación"}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : confirmRejectId === prop.id ? (
                                 <div
                                   style={{
                                     marginTop: "8px",
@@ -894,6 +1047,29 @@ export default function ClientRequestsManager({
                                     </Link>
                                   )}
                                   {prop.estado === "PENDIENTE" &&
+                                    ["CON OFERTAS", "CON_OFERTAS"].includes(
+                                      (detail.estado || "").toUpperCase()
+                                    ) &&
+                                    prop.tecnico?.habilitado_operativamente !== false && (
+                                      <Button
+                                        type="button"
+                                        style={{
+                                          width: "auto",
+                                          fontSize: "0.8rem",
+                                          padding: "4px 12px",
+                                          background: "#16a34a",
+                                          color: "#fff",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: "4px",
+                                        }}
+                                        onClick={() => startAwardConfirmation(prop)}
+                                      >
+                                        <UserCheck size={13} />
+                                        Seleccionar técnico
+                                      </Button>
+                                    )}
+                                  {prop.estado === "PENDIENTE" &&
                                     ["PUBLICADA", "CON OFERTAS", "CON_OFERTAS"].includes(
                                       (detail.estado || "").toUpperCase()
                                     ) && (
@@ -910,7 +1086,10 @@ export default function ClientRequestsManager({
                                           alignItems: "center",
                                           gap: "4px",
                                         }}
-                                        onClick={() => setConfirmRejectId(prop.id)}
+                                        onClick={() => {
+                                          setConfirmAwardProp(null);
+                                          setConfirmRejectId(prop.id);
+                                        }}
                                       >
                                         <X size={13} />
                                         Rechazar propuesta
@@ -986,6 +1165,14 @@ export default function ClientRequestsManager({
                 )}
               </section>
             </section>
+          )}
+          {showAwardGateway && confirmAwardProp && (
+            <SecurePaymentGatewayModal
+              monto={confirmAwardProp.monto}
+              titulo="Confirmar cobro para adjudicar licitación"
+              onSuccess={handleAwardCardSuccess}
+              onCancel={() => setShowAwardGateway(false)}
+            />
           )}
         </RequestDetailModal>
       )}

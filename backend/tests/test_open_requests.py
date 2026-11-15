@@ -27,12 +27,17 @@ from app.models import (
     UserRole,
 )
 from app.open_requests import (
+    AwardProposalSchema,
     CreateOpenRequestSchema,
     accept_published_budget_endpoint,
     accept_published_budget_for_open_request,
+    award_open_request_proposal_by_owner,
     calculate_suggested_range,
     discard_open_request_for_technician,
+    get_open_request_author_notices,
+    get_open_request_award_audits,
     get_open_request_for_viewer,
+    get_open_request_payment_charges,
     get_suggested_range_endpoint,
     list_available_open_requests_for_technician,
     list_coverage_zones_catalog,
@@ -1869,8 +1874,8 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         self.assertEqual(awarded_ctx.exception.status_code, 409)
         self.assertIn("adjudicado", awarded_ctx.exception.detail)
 
-        def test_hu30_st05_privacy_badges_and_rejection_without_closing(self):
-         """HU-30 ST-05: Probar permisos de propietario, insignias separadas, rechazo sin cancelación y habilitación."""
+    def test_hu30_st05_privacy_badges_and_rejection_without_closing(self):
+        """HU-30 ST-05: Probar permisos de propietario, insignias separadas, rechazo sin cancelación y habilitación."""
         # 1. Configurar 2 técnicos habilitados
         tech1 = User(
             firebase_uid="tech1-hu30",
@@ -2021,3 +2026,229 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         req_db_after_2 = self.db.get(OpenRequest, solicitud_id)
         self.assertEqual(req_db_after_2.estado, "Publicada")
         self.assertNotEqual(req_db_after_2.estado, "Cancelada")
+
+    def test_hu31_st05_award_cash_card_failed_payment_concurrency_and_privacy(self):
+        """HU-31 ST-05 (CA-01 a CA-06): Probar adjudicación en efectivo y tarjeta, pago fallido, selección concurrente, elegibilidad en vivo y privacidad."""
+        tech1 = User(
+            firebase_uid="tech1-hu31",
+            correo="tech1-hu31@example.com",
+            nombre_completo="Técnico Uno HU31",
+            dni="0801200001001",
+            telefono="+50490001001",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech2 = User(
+            firebase_uid="tech2-hu31",
+            correo="tech2-hu31@example.com",
+            nombre_completo="Técnico Dos HU31",
+            dni="0801200001002",
+            telefono="+50490001002",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        tech3 = User(
+            firebase_uid="tech3-hu31",
+            correo="tech3-hu31@example.com",
+            nombre_completo="Técnico Tres HU31",
+            dni="0801200001003",
+            telefono="+50490001003",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        other_client = User(
+            firebase_uid="client-other-hu31",
+            correo="other-hu31@example.com",
+            nombre_completo="Cliente No Propietario",
+            dni="0801200001004",
+            telefono="+50490001004",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add_all([tech1, tech2, tech3, other_client])
+        self.db.flush()
+
+        self.db.add(UserRole(usuario_id=other_client.id, rol="CLIENTE"))
+        profiles: dict[str, TechnicianProfile] = {}
+        for t in (tech1, tech2, tech3):
+            self.db.add(UserRole(usuario_id=t.id, rol="TECNICO"))
+            prof = TechnicianProfile(usuario_id=t.id, disponible=True, estado_verificacion="VERIFICADO")
+            self.db.add(prof)
+            profiles[t.firebase_uid] = prof
+            self.db.add(TechnicianSpecialty(usuario_id=t.id, especialidad_id=self.specialty.id))
+            self.db.add(
+                CoverageZone(
+                    usuario_id=t.id,
+                    departamento="Francisco Morazán",
+                    municipio="Distrito Central",
+                    sector="Col. Palmira",
+                )
+            )
+        self.db.commit()
+
+        # Publicar licitación #1 (para probar tarjeta, fallo de pago, concurrencia y privacidad)
+        pub1 = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("800.00"), metodo_pago="tarjeta"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req1_id = pub1["id"]
+
+        p1_res = accept_published_budget_for_open_request(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        prop1_id = p1_res["propuesta"]["id"]
+        p2_res = submit_counter_offer_for_open_request(
+            req1_id,
+            CounterOfferSchema(monto="950.00", justificacion="Incluye materiales"),
+            {"uid": tech2.firebase_uid},
+            self.db,
+        )
+        prop2_id = p2_res["propuesta"]["id"]
+
+        # CA-01: Usuario no propietario no puede adjudicar (403)
+        with self.assertRaises(HTTPException) as non_owner_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": other_client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(non_owner_ctx.exception.status_code, 403)
+
+        # CA-01 y Condición transversal: Si tech1 pasa a No disponible antes de adjudicar, se bloquea en tiempo real (409)
+        profiles[tech1.firebase_uid].disponible = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ineligible_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(ineligible_ctx.exception.status_code, 409)
+        profiles[tech1.firebase_uid].disponible = True
+        self.db.commit()
+
+        # CA-03: Con tarjeta, un pago fallido NO cierra la licitación ni descarta las otras propuestas
+        with self.assertRaises(HTTPException) as failed_pay_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop2_id,
+                AwardProposalSchema(
+                    metodo_pago="tarjeta",
+                    referencia_pasarela="FAIL-DECLINED-001",
+                ),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(failed_pay_ctx.exception.status_code, 402)
+
+        req1_after_fail = self.db.get(OpenRequest, req1_id)
+        self.assertEqual(req1_after_fail.estado, "Con ofertas")
+        self.assertIsNone(req1_after_fail.tecnico_id)
+        p1_after_fail = self.db.get(OpenRequestProposal, prop1_id)
+        p2_after_fail = self.db.get(OpenRequestProposal, prop2_id)
+        self.assertEqual(p1_after_fail.estado, "PENDIENTE")
+        self.assertTrue(p1_after_fail.activa)
+        self.assertEqual(p2_after_fail.estado, "PENDIENTE")
+        self.assertTrue(p2_after_fail.activa)
+
+        # CA-03 y CA-04: Cobro con tarjeta confirmado adjudica a tech2, pasa a Aceptada y descarta a tech1 con aviso
+        award_card_res = award_open_request_proposal_by_owner(
+            req1_id,
+            prop2_id,
+            AwardProposalSchema(
+                metodo_pago="tarjeta",
+                referencia_pasarela="TKGO-GW-OK-777888",
+                idempotency_key="idem-req1-prop2",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertFalse(award_card_res["reintento_idempotente"])
+        self.assertEqual(award_card_res["estado_solicitud"], "ACEPTADA")
+        self.assertEqual(award_card_res["tecnico_adjudicado_id"], tech2.firebase_uid)
+        self.assertEqual(award_card_res["monto_pactado"], 950.0)
+        self.assertEqual(award_card_res["metodo_pago"], "tarjeta")
+        self.assertEqual(award_card_res["referencia_pasarela"], "TKGO-GW-OK-777888")
+        self.assertEqual(award_card_res["cantidad_propuestas_descartadas"], 1)
+
+        # CA-04: Propuesta de tech1 quedó descartada y tiene aviso para su autor
+        self.db.refresh(p1_after_fail)
+        self.assertEqual(p1_after_fail.estado, "RECHAZADA")
+        self.assertFalse(p1_after_fail.activa)
+        notices_tech1 = get_open_request_author_notices(req1_id, tecnico_id=tech1.firebase_uid)
+        self.assertEqual(len(notices_tech1), 1)
+        self.assertEqual(notices_tech1[0]["tipo"], "PROPUESTA_DESCARTADA_POR_ADJUDICACION")
+        self.assertNotIn("direccion_exacta", notices_tech1[0])
+        self.assertNotIn("telefono", notices_tech1[0])
+
+        # CA-06: Confirmación simultánea / duplicada para la misma propuesta no duplica cobro ni adjudicación
+        retry_award = award_open_request_proposal_by_owner(
+            req1_id,
+            prop2_id,
+            AwardProposalSchema(
+                metodo_pago="tarjeta",
+                referencia_pasarela="TKGO-GW-OK-777888",
+                idempotency_key="idem-req1-prop2",
+            ),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(retry_award["reintento_idempotente"])
+        charges = get_open_request_payment_charges(req1_id)
+        self.assertEqual(len(charges), 1)
+
+        # CA-06: Segunda confirmación simultánea intentando adjudicar a tech1 falla con 409 y conserva auditoría
+        with self.assertRaises(HTTPException) as second_tech_ctx:
+            award_open_request_proposal_by_owner(
+                req1_id,
+                prop1_id,
+                AwardProposalSchema(metodo_pago="efectivo"),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(second_tech_ctx.exception.status_code, 409)
+        audits = get_open_request_award_audits(req1_id)
+        self.assertTrue(any(a["resultado"] == "ADJUDICADA" for a in audits))
+        self.assertTrue(any(a["resultado"] == "RECHAZADA_YA_ADJUDICADA" for a in audits))
+
+        # CA-05: Solo el técnico adjudicado (tech2) obtiene dirección exacta y teléfono; los demás no pueden postular ni acceder
+        winner_detail = get_open_request_for_viewer(req1_id, {"uid": tech2.firebase_uid}, self.db)
+        self.assertFalse(winner_detail["ubicacion_exacta_protegida"])
+        self.assertEqual(winner_detail["direccion_exacta"], "Avenida República de Panamá, casa #24")
+        self.assertEqual(winner_detail["cliente"]["telefono"], "+50498765432")
+
+        with self.assertRaises(HTTPException) as discarded_tech_detail_ctx:
+            get_open_request_for_viewer(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertEqual(discarded_tech_detail_ctx.exception.status_code, 403)
+
+        tech1_proposals_view = list_open_request_proposals_for_viewer(req1_id, {"uid": tech1.firebase_uid}, self.db)
+        self.assertTrue(tech1_proposals_view["ubicacion_exacta_protegida"])
+        self.assertNotIn("direccion_exacta", tech1_proposals_view)
+        self.assertNotIn("cliente", tech1_proposals_view)
+
+        with self.assertRaises(HTTPException) as late_bid_ctx:
+            accept_published_budget_for_open_request(req1_id, {"uid": tech3.firebase_uid}, self.db)
+        self.assertEqual(late_bid_ctx.exception.status_code, 409)
+
+        # CA-02: Licitación #2 adjudicada con efectivo pasa a Aceptada en la misma operación sin pasarela
+        pub2 = publish_open_request(
+            self._valid_payload(presupuesto=Decimal("600.00"), metodo_pago="efectivo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        req2_id = pub2["id"]
+        p_cash = accept_published_budget_for_open_request(req2_id, {"uid": tech1.firebase_uid}, self.db)
+        award_cash = award_open_request_proposal_by_owner(
+            req2_id,
+            p_cash["propuesta"]["id"],
+            AwardProposalSchema(metodo_pago="efectivo"),
+            {"uid": self.client.firebase_uid},
+            self.db,
+        )
+        self.assertEqual(award_cash["estado_solicitud"], "ACEPTADA")
+        self.assertEqual(award_cash["metodo_pago"], "efectivo")
+        self.assertIsNone(award_cash["referencia_pasarela"])
+        self.assertFalse(award_cash["cobro"]["cobro_digital_ejecutado"])

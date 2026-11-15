@@ -3,6 +3,7 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import json
 import os
 import re
 from typing import Any
@@ -206,13 +207,18 @@ def validate_open_request_data(
         "monto_base": presupuesto,
     }
 
-
 def serialize_open_request_for_owner(
     record: OpenRequest,
     specialty: Specialty | None = None,
     db: Session | None = None,
 ) -> dict:
     presupuesto_val = float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01")))
+    monto_base_val = float(Decimal(str(record.monto_base or record.presupuesto)).quantize(Decimal("0.01")))
+    monto_total_val = float(
+        Decimal(str(record.monto_total if record.monto_total is not None else record.presupuesto)).quantize(
+            Decimal("0.01")
+        )
+    )
     payload = {
         "id": str(record.id),
         "solicitud_id": str(record.id),
@@ -232,8 +238,11 @@ def serialize_open_request_for_owner(
         "direccion_exacta": record.direccion_exacta,
         "fecha_hora": record.fecha_hora.isoformat() if record.fecha_hora else None,
         "metodo_pago": record.metodo_pago,
+        "referencia_pasarela": record.referencia_pasarela,
         "presupuesto": presupuesto_val,
-        "monto_base": presupuesto_val,
+        "monto_base": monto_base_val,
+        "monto_total": monto_total_val,
+        "desglose_medios": getattr(record, "desglose_medios", None),
         "creada_en": record.creada_en.isoformat() if record.creada_en else None,
     }
     if db is not None:
@@ -244,6 +253,7 @@ def serialize_open_request_for_owner(
         ).all()
         payload["propuestas"] = [serialize_open_request_proposal(p, db) for p in proposals]
         payload["eventos"] = get_open_request_events(str(record.id))
+        payload["auditoria_adjudicacion"] = get_open_request_award_audits(str(record.id))
     return payload
 
 
@@ -753,17 +763,19 @@ def serialize_open_request_for_technician(
         "ubicacion_exacta_protegida": not is_awarded_technician,
     }
 
-    # CA-03: Solo el técnico adjudicado en estado ACEPTADA (o COMPLETADA) recibe dirección exacta y teléfono
+    # HU-31_CA-05 y Condición transversal: Solo el técnico adjudicado en estado ACEPTADA (o COMPLETADA) recibe dirección exacta y teléfono
+    payload["es_tecnico_adjudicado"] = is_awarded_technician
     if is_awarded_technician:
         payload["direccion_exacta"] = record.direccion_exacta
         payload["cliente"]["telefono"] = client_user.telefono if client_user is not None else None
 
     my_proposal = db.scalar(
-        select(OpenRequestProposal).where(
+        select(OpenRequestProposal)
+        .where(
             OpenRequestProposal.solicitud_id == str(record.id),
             OpenRequestProposal.usuario_id == technician_user.id,
-            OpenRequestProposal.activa.is_(True),
         )
+        .order_by(OpenRequestProposal.actualizada_en.desc())
     )
     payload["mi_propuesta"] = (
         {
@@ -772,10 +784,15 @@ def serialize_open_request_for_technician(
             "monto": float(Decimal(str(my_proposal.monto)).quantize(Decimal("0.01"))),
             "justificacion": my_proposal.justificacion,
             "estado": (my_proposal.estado or "PENDIENTE").strip().upper(),
+            "activa": bool(my_proposal.activa),
             "creada_en": my_proposal.creada_en.isoformat() if my_proposal.creada_en else None,
         }
         if my_proposal is not None
         else None
+    )
+    payload["mis_avisos"] = get_open_request_author_notices(
+        str(record.id),
+        tecnico_id=technician_user.firebase_uid,
     )
 
     return payload
@@ -1711,7 +1728,7 @@ def list_open_request_proposals_for_viewer(
     claims: dict,
     db: Session,
 ) -> dict:
-    """HU-28 ST-04 / HU-30 ST-01 (CA-01): El cliente propietario consulta todas las propuestas para comparación; cada técnico ve solo la suya."""
+    """HU-28 ST-04 / HU-30 ST-01 / HU-31 ST-04 (CA-01, CA-05): Permisos de propuestas, avisos y privacidad tras adjudicar."""
     uid = claims.get("uid") if isinstance(claims, dict) else None
     if not uid:
         raise HTTPException(401, "Sesión inválida o expirada")
@@ -1725,7 +1742,9 @@ def list_open_request_proposals_for_viewer(
     if record is None:
         raise HTTPException(404, "No se encontró la solicitud abierta")
 
-    # CA-01: Propietario consulta todas las propuestas para comparación
+    estado_norm = (record.estado or "Publicada").strip().upper()
+
+    # CA-01: Propietario consulta todas las propuestas para comparación y auditoría
     if record.cliente_id == user.firebase_uid:
         proposals = db.scalars(
             select(OpenRequestProposal)
@@ -1735,11 +1754,14 @@ def list_open_request_proposals_for_viewer(
         return {
             "solicitud_id": str(record.id),
             "presupuesto_base": float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01"))),
-            "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+            "estado_solicitud": estado_norm,
             "es_propietario": True,
+            "tecnico_adjudicado_id": record.tecnico_id,
             "total": len(proposals),
             "propuestas": [serialize_open_request_proposal(p, db) for p in proposals],
             "eventos": get_open_request_events(str(record.id)),
+            "avisos_autores": get_open_request_author_notices(str(record.id)),
+            "auditoria_adjudicacion": get_open_request_award_audits(str(record.id)),
         }
 
     # CA-01: Si no es el propietario, solo un técnico con rol puede consultar su propia propuesta
@@ -1754,34 +1776,34 @@ def list_open_request_proposals_for_viewer(
         )
         .order_by(OpenRequestProposal.creada_en.desc())
     ).all()
-    return {
+
+    # HU-31 ST-04 (CA-05): Solo el técnico seleccionado en estado ACEPTADA/COMPLETADA recibe dirección exacta y teléfono
+    is_awarded_tech = (
+        bool(record.tecnico_id)
+        and record.tecnico_id == user.firebase_uid
+        and estado_norm in {"ACEPTADA", "COMPLETADA"}
+    )
+    payload = {
         "solicitud_id": str(record.id),
         "presupuesto_base": float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01"))),
-        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
+        "estado_solicitud": estado_norm,
         "es_propietario": False,
-        "ubicacion_exacta_protegida": True,
+        "es_tecnico_adjudicado": is_awarded_tech,
+        "ubicacion_exacta_protegida": not is_awarded_tech,
+        "municipio": record.municipio,
+        "sector": record.sector,
         "total": len(own_proposals),
         "propuestas": [serialize_open_request_proposal(p, db, tech_user=user) for p in own_proposals],
+        "avisos": get_open_request_author_notices(str(record.id), tecnico_id=user.firebase_uid),
     }
-
-    if not any(role.rol == "TECNICO" for role in user.roles):
-        raise HTTPException(403, "No tienes permiso para consultar las propuestas de esta solicitud")
-
-    own_proposals = db.scalars(
-        select(OpenRequestProposal)
-        .where(
-            OpenRequestProposal.solicitud_id == str(record.id),
-            OpenRequestProposal.usuario_id == user.id,
-        )
-        .order_by(OpenRequestProposal.creada_en.desc())
-    ).all()
-    return {
-        "solicitud_id": str(record.id),
-        "estado_solicitud": (record.estado or "Publicada").strip().upper(),
-        "ubicacion_exacta_protegida": True,
-        "total": len(own_proposals),
-        "propuestas": [serialize_open_request_proposal(p, db, tech_user=user) for p in own_proposals],
-    }
+    if is_awarded_tech:
+        client_user = db.scalar(select(User).where(User.firebase_uid == record.cliente_id))
+        payload["direccion_exacta"] = record.direccion_exacta
+        payload["cliente"] = {
+            "nombre_completo": client_user.nombre_completo if client_user is not None else None,
+            "telefono": client_user.telefono if client_user is not None else None,
+        }
+    return payload
 
 
 @router.get("/{solicitud_id}/proposals")
@@ -1796,7 +1818,7 @@ def get_open_request_proposals_and_events_endpoint(
     return list_open_request_proposals_for_viewer(solicitud_id, claims, db)
 
 
-# --- HU-29 ST-04: Endpoint SSE en tiempo real ---
+# --- HU-29 ST-04 / HU-31 ST-04: Endpoint SSE en tiempo real con control de privacidad ---
 
 @router.get("/{solicitud_id}/events/stream")
 async def stream_open_request_events(
@@ -1805,7 +1827,7 @@ async def stream_open_request_events(
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """HU-29 ST-04 (CA-05): Stream de eventos SSE en tiempo real para actualización de propuestas sin exponer datos privados."""
+    """HU-29 ST-04 / HU-31 ST-04 (CA-05): Stream SSE en tiempo real aplicando permisos de contacto y dirección."""
     user = db.scalar(select(User).where(User.firebase_uid == claims.get("uid")))
     if not user:
         raise HTTPException(401, "Usuario no autenticado")
@@ -1820,25 +1842,55 @@ async def stream_open_request_events(
     if not is_owner and not is_tech:
         raise HTTPException(403, "No tienes permiso para escuchar eventos de esta solicitud")
 
+    estado_norm = (record.estado or "Con ofertas").strip().upper()
+    is_awarded_tech = (
+        bool(record.tecnico_id)
+        and record.tecnico_id == user.firebase_uid
+        and estado_norm in {"ACEPTADA", "COMPLETADA"}
+    )
+    if not is_owner and estado_norm in {"ACEPTADA", "COMPLETADA"} and not is_awarded_tech:
+        has_own_proposal = db.scalar(
+            select(OpenRequestProposal.id).where(
+                OpenRequestProposal.solicitud_id == clean_id,
+                OpenRequestProposal.usuario_id == user.id,
+            )
+        )
+        if not has_own_proposal:
+            raise HTTPException(
+                403,
+                "Esta licitación ya fue adjudicada a otro técnico y no tienes acceso a sus eventos ni datos privados.",
+            )
+
     queue: asyncio.Queue = asyncio.Queue()
     _OPEN_REQUEST_SUBSCRIBERS[clean_id].append(queue)
 
     async def event_generator():
         try:
-            init_data = json.dumps({
+            init_payload: dict[str, Any] = {
                 "tipo": "CONECTADO",
                 "solicitud_id": clean_id,
-                "estado_solicitud": (record.estado or "Con ofertas").strip().upper(),
-                "ubicacion_exacta_protegida": True,
-            })
-            yield f"event: conexion\ndata: {init_data}\n\n"
+                "estado_solicitud": estado_norm,
+                "ubicacion_exacta_protegida": not (is_owner or is_awarded_tech),
+            }
+            if is_owner or is_awarded_tech:
+                init_payload["direccion_exacta"] = record.direccion_exacta
+            yield f"event: conexion\ndata: {json.dumps(init_payload)}\n\n"
 
             while True:
                 if await request.is_disconnected():
                     break
                 try:
                     event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"event: propuesta_actualizada\ndata: {json.dumps(event_data)}\n\n"
+                    sanitized_event = dict(event_data)
+                    can_view_private = is_owner or (
+                        sanitized_event.get("tecnico_adjudicado_id") == user.firebase_uid
+                        and sanitized_event.get("estado_solicitud") in {"ACEPTADA", "COMPLETADA"}
+                    )
+                    if not can_view_private:
+                        sanitized_event.pop("direccion_exacta", None)
+                        sanitized_event.pop("telefono", None)
+                        sanitized_event["ubicacion_exacta_protegida"] = True
+                    yield f"event: propuesta_actualizada\ndata: {json.dumps(sanitized_event)}\n\n"
                 except asyncio.TimeoutError:
                     yield "event: ping\ndata: {}\n\n"
         finally:
@@ -1854,7 +1906,6 @@ async def stream_open_request_events(
             "X-Accel-Buffering": "no",
         },
     )
-
 # --- HU-30 ST-03: Rechazo individual de propuestas por el cliente ---
 class RejectProposalSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1971,6 +2022,679 @@ def reject_open_request_proposal_by_owner(
         "propuesta": serialize_open_request_proposal(proposal, db),
     }
 
+# --- HU-31 ST-01: Adjudicación transaccional con bloqueo y unicidad de técnico seleccionado ---
+
+_OPEN_REQUEST_AWARD_AUDITS: dict[str, list[dict]] = defaultdict(list)
+
+
+def get_open_request_award_audits(solicitud_id: str) -> list[dict]:
+    """HU-31 (CA-06): Consulta la auditoría conservada de decisiones de adjudicación para la licitación."""
+    return list(_OPEN_REQUEST_AWARD_AUDITS.get(str(solicitud_id), []))
+
+
+def _record_award_decision_audit(
+    *,
+    solicitud_id: str,
+    propuesta_id: str | None,
+    cliente_id: str | None,
+    tecnico_id: str | None,
+    monto_pactado: float | None,
+    metodo_pago: str | None,
+    resultado: str,
+    motivo: str,
+    referencia_pasarela: str | None = None,
+    idempotency_key: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    entry = {
+        "auditoria_id": str(uuid.uuid4()),
+        "solicitud_id": str(solicitud_id),
+        "propuesta_id": str(propuesta_id) if propuesta_id else None,
+        "cliente_id": cliente_id,
+        "tecnico_id": tecnico_id,
+        "monto_pactado": monto_pactado,
+        "metodo_pago": metodo_pago,
+        "referencia_pasarela": referencia_pasarela,
+        "idempotency_key": idempotency_key,
+        "resultado": resultado,
+        "motivo": motivo,
+        "registrado_en": (now or datetime.now(timezone.utc)).isoformat(),
+    }
+    _OPEN_REQUEST_AWARD_AUDITS[str(solicitud_id)].append(entry)
+    return entry
+
+
+class AwardProposalSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metodo_pago: str | None = Field(
+        default=None,
+        description="Método de pago confirmado para la contratación ('efectivo' o 'tarjeta'). Si se omite, conserva el de la solicitud.",
+    )
+    referencia_pasarela: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Referencia o token de autorización de la pasarela cuando el método es tarjeta.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Clave de idempotencia opcional para evitar doble adjudicación o cobros duplicados.",
+    )
+    simular_fallo_pago: bool = Field(
+        default=False,
+        description="Permite simular un rechazo de pasarela en pruebas para verificar que el fallo no cierra la licitación (CA-03).",
+    )
+
+
+# --- HU-31 ST-02: Confirmación del método de pago y adaptador de cobro idempotente ---
+
+_IDEMPOTENT_PAYMENT_CHARGES: dict[str, dict] = {}
+_FAILED_GATEWAY_PREFIXES = ("FAIL", "ERROR", "DECLINED", "RECHAZAD")
+
+
+def get_open_request_payment_charges(solicitud_id: str | None = None) -> list[dict]:
+    """HU-31 ST-02 (CA-03, CA-06): Consulta los cobros confirmados registrados por el adaptador idempotente."""
+    charges = list(_IDEMPOTENT_PAYMENT_CHARGES.values())
+    if solicitud_id is not None:
+        return [c for c in charges if c.get("solicitud_id") == str(solicitud_id)]
+    return charges
+
+
+def process_idempotent_award_payment(
+    *,
+    solicitud_id: str,
+    propuesta_id: str,
+    cliente_id: str,
+    tecnico_id: str,
+    monto_pactado: Decimal,
+    metodo_pago: str,
+    referencia_pasarela: str | None = None,
+    idempotency_key: str | None = None,
+    simular_fallo_pago: bool = False,
+    now: datetime | None = None,
+) -> dict:
+    """
+    HU-31 ST-02 (CA-02, CA-03, CA-06):
+    - Con efectivo: no ejecuta cobro digital y confirma inmediatamente en la misma operación.
+    - Con tarjeta: valida/autoriza el cobro de forma idempotente; si falla, no confirma la adjudicación.
+    - Evita cobros duplicados ante confirmaciones simultáneas o reintentos con la misma clave/solicitud.
+    """
+    timestamp = (now or datetime.now(timezone.utc)).isoformat()
+    monto_float = float(monto_pactado.quantize(Decimal("0.01")))
+    clean_method = (metodo_pago or "").strip().lower()
+
+    if clean_method == "efectivo":
+        return {
+            "confirmado": True,
+            "metodo_pago": "efectivo",
+            "cobro_digital_ejecutado": False,
+            "reutilizado_idempotente": False,
+            "monto": monto_float,
+            "moneda": "HNL",
+            "referencia_pasarela": None,
+            "idempotency_key": idempotency_key,
+            "procesado_en": timestamp,
+            "motivo": "Pago en efectivo confirmado; no requiere cobro por pasarela.",
+        }
+
+    # Clave determinista por licitación/propuesta o idempotency_key explícita (CA-06)
+    effective_key = (
+        idempotency_key.strip()
+        if idempotency_key and idempotency_key.strip()
+        else f"award-charge:{solicitud_id}:{propuesta_id}:{monto_pactado:.2f}"
+    )
+
+    # Si ya existe un cobro confirmado para esta clave o para esta solicitud, reutilizar sin cobrar dos veces
+    existing_charge = _IDEMPOTENT_PAYMENT_CHARGES.get(effective_key)
+    if existing_charge is None:
+        existing_charge = next(
+            (
+                c
+                for c in _IDEMPOTENT_PAYMENT_CHARGES.values()
+                if c.get("solicitud_id") == str(solicitud_id)
+                and c.get("propuesta_id") == str(propuesta_id)
+                and c.get("confirmado") is True
+            ),
+            None,
+        )
+    if existing_charge is not None:
+        reused = dict(existing_charge)
+        reused["reutilizado_idempotente"] = True
+        return reused
+
+    clean_ref = (referencia_pasarela or "").strip()
+    if simular_fallo_pago:
+        return {
+            "confirmado": False,
+            "metodo_pago": "tarjeta",
+            "cobro_digital_ejecutado": False,
+            "reutilizado_idempotente": False,
+            "monto": monto_float,
+            "moneda": "HNL",
+            "referencia_pasarela": clean_ref or None,
+            "idempotency_key": effective_key,
+            "procesado_en": timestamp,
+            "motivo": "El cobro con tarjeta fue rechazado por la pasarela de pago. La licitación continúa abierta.",
+        }
+
+    if not clean_ref:
+        return {
+            "confirmado": False,
+            "metodo_pago": "tarjeta",
+            "cobro_digital_ejecutado": False,
+            "reutilizado_idempotente": False,
+            "monto": monto_float,
+            "moneda": "HNL",
+            "referencia_pasarela": None,
+            "idempotency_key": effective_key,
+            "procesado_en": timestamp,
+            "motivo": "Con tarjeta se requiere confirmación y referencia de cobro de la pasarela antes de adjudicar (CA-03).",
+        }
+
+    if clean_ref.upper().startswith(_FAILED_GATEWAY_PREFIXES):
+        return {
+            "confirmado": False,
+            "metodo_pago": "tarjeta",
+            "cobro_digital_ejecutado": False,
+            "reutilizado_idempotente": False,
+            "monto": monto_float,
+            "moneda": "HNL",
+            "referencia_pasarela": clean_ref,
+            "idempotency_key": effective_key,
+            "procesado_en": timestamp,
+            "motivo": f"El cobro con tarjeta ({clean_ref}) falló en la pasarela. No se cerró la licitación ni se descartaron propuestas.",
+        }
+
+    charge_record = {
+        "cobro_id": str(uuid.uuid4()),
+        "solicitud_id": str(solicitud_id),
+        "propuesta_id": str(propuesta_id),
+        "cliente_id": cliente_id,
+        "tecnico_id": tecnico_id,
+        "confirmado": True,
+        "metodo_pago": "tarjeta",
+        "cobro_digital_ejecutado": True,
+        "reutilizado_idempotente": False,
+        "monto": monto_float,
+        "moneda": "HNL",
+        "referencia_pasarela": clean_ref,
+        "idempotency_key": effective_key,
+        "procesado_en": timestamp,
+        "motivo": f"Cobro con tarjeta confirmado exitosamente (ref: {clean_ref}).",
+    }
+    _IDEMPOTENT_PAYMENT_CHARGES[effective_key] = charge_record
+    return charge_record
+
+# --- HU-31 ST-03: Descarte de propuestas restantes y emisión de avisos/eventos de cierre ---
+
+_OPEN_REQUEST_AUTHOR_NOTICES: dict[str, list[dict]] = defaultdict(list)
+
+
+def get_open_request_author_notices(
+    solicitud_id: str,
+    *,
+    tecnico_id: str | None = None,
+) -> list[dict]:
+    """HU-31 ST-03 (CA-04): Consulta los avisos generados para los autores de propuestas tras adjudicar."""
+    notices = list(_OPEN_REQUEST_AUTHOR_NOTICES.get(str(solicitud_id), []))
+    if tecnico_id is not None:
+        return [n for n in notices if n.get("autor_tecnico_id") == tecnico_id]
+    return notices
+
+
+def emit_open_request_award_closing_events(
+    record: OpenRequest,
+    winning_proposal: OpenRequestProposal,
+    discarded_proposals: list[OpenRequestProposal],
+    *,
+    emitted_at: datetime | None = None,
+) -> tuple[dict, list[dict]]:
+    """
+    HU-31 ST-03 (CA-04, CA-05):
+    - Genera avisos individuales para cada autor cuya propuesta fue descartada y para el técnico adjudicado.
+    - Emite el evento de cierre de licitación a los suscriptores SSE sin exponer dirección exacta ni teléfono en el canal compartido.
+    """
+    timestamp = (emitted_at or datetime.now(timezone.utc)).isoformat()
+    monto_ganador = float(Decimal(str(winning_proposal.monto)).quantize(Decimal("0.01")))
+    notices: list[dict] = []
+
+    # Aviso para el técnico adjudicado
+    winner_notice = {
+        "aviso_id": str(uuid.uuid4()),
+        "tipo": "PROPUESTA_ADJUDICADA",
+        "solicitud_id": str(record.id),
+        "propuesta_id": str(winning_proposal.id),
+        "autor_usuario_id": str(winning_proposal.usuario_id),
+        "autor_tecnico_id": winning_proposal.tecnico_id,
+        "estado_propuesta": "ACEPTADA",
+        "estado_solicitud": "ACEPTADA",
+        "monto_pactado": monto_ganador,
+        "metodo_pago": record.metodo_pago,
+        "emitido_en": timestamp,
+        "mensaje": (
+            f"Tu propuesta por L. {monto_ganador:.2f} fue seleccionada por el cliente. "
+            "La contratación ha pasado a estado Aceptada."
+        ),
+    }
+    notices.append(winner_notice)
+
+    # CA-04: Avisos para los autores de las demás propuestas descartadas (sin dirección exacta ni teléfono)
+    for disc in discarded_proposals:
+        monto_disc = float(Decimal(str(disc.monto)).quantize(Decimal("0.01")))
+        discard_notice = {
+            "aviso_id": str(uuid.uuid4()),
+            "tipo": "PROPUESTA_DESCARTADA_POR_ADJUDICACION",
+            "solicitud_id": str(record.id),
+            "propuesta_id": str(disc.id),
+            "autor_usuario_id": str(disc.usuario_id),
+            "autor_tecnico_id": disc.tecnico_id,
+            "estado_propuesta": (disc.estado or "RECHAZADA").strip().upper(),
+            "estado_solicitud": "ACEPTADA",
+            "monto_propuesto": monto_disc,
+            "ubicacion_exacta_protegida": True,
+            "emitido_en": timestamp,
+            "mensaje": (
+                f"La licitación fue adjudicada a otro técnico y tu propuesta por L. {monto_disc:.2f} "
+                "ha sido descartada."
+            ),
+        }
+        notices.append(discard_notice)
+
+    _OPEN_REQUEST_AUTHOR_NOTICES[str(record.id)].extend(notices)
+
+    closing_event = {
+        "evento_id": str(uuid.uuid4()),
+        "tipo": "LICITACION_ADJUDICADA",
+        "solicitud_id": str(record.id),
+        "cliente_id": record.cliente_id,
+        "tecnico_adjudicado_id": winning_proposal.tecnico_id,
+        "propuesta_adjudicada_id": str(winning_proposal.id),
+        "propuestas_descartadas_ids": [str(p.id) for p in discarded_proposals],
+        "cantidad_propuestas_descartadas": len(discarded_proposals),
+        "monto_pactado": monto_ganador,
+        "metodo_pago": record.metodo_pago,
+        "estado_solicitud": "ACEPTADA",
+        "municipio": record.municipio,
+        "sector": record.sector,
+        "ubicacion_exacta_protegida": True,
+        "emitido_en": timestamp,
+        "mensaje": f"Licitación cerrada y adjudicada por L. {monto_ganador:.2f}.",
+    }
+    _OPEN_REQUEST_EVENTS[str(record.id)].append(closing_event)
+
+    for queue in list(_OPEN_REQUEST_SUBSCRIBERS.get(str(record.id), [])):
+        try:
+            queue.put_nowait(closing_event)
+        except Exception:
+            pass
+
+    return closing_event, notices
+
+
+def award_open_request_proposal_by_owner(
+    solicitud_id: str,
+    proposal_id: str,
+    payload: AwardProposalSchema | None = None,
+    claims: dict | None = None,
+    db: Session | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """HU-31 ST-01 (CA-01, CA-02, CA-06): Adjudicación transaccional con bloqueo pesimista y unicidad de técnico."""
+    if db is None:
+        raise HTTPException(500, "Sesión de base de datos no disponible")
+
+    payload = payload or AwardProposalSchema()
+    reference_now = now or datetime.now(timezone.utc)
+
+    uid = claims.get("uid") if isinstance(claims, dict) else None
+    if not uid:
+        raise HTTPException(401, "Sesión inválida o expirada")
+
+    client_user = db.scalar(
+        select(User)
+        .where(User.firebase_uid == uid)
+        .execution_options(populate_existing=True)
+    )
+    if client_user is None:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+
+    clean_solicitud_id = (solicitud_id or "").strip()
+    clean_prop_id = (proposal_id or "").strip()
+
+    # ST-01: Bloqueo pesimista sobre la solicitud abierta para serializar confirmaciones concurrentes
+    record = db.scalar(
+        select(OpenRequest)
+        .where(OpenRequest.id == clean_solicitud_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta")
+
+    # CA-01: Solo el propietario puede seleccionar una propuesta
+    if record.cliente_id != client_user.firebase_uid:
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=clean_prop_id,
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=None,
+            monto_pactado=None,
+            metodo_pago=payload.metodo_pago,
+            resultado="RECHAZADA_NO_PROPIETARIO",
+            motivo="Intento de adjudicación por un usuario distinto al cliente propietario.",
+            idempotency_key=payload.idempotency_key,
+            now=reference_now,
+        )
+        raise HTTPException(403, "Solo el cliente propietario puede adjudicar una propuesta de esta licitación")
+
+    if getattr(client_user, "suspendido", False):
+        raise HTTPException(403, "Tu cuenta presenta una suspensión activa y no puede adjudicar contrataciones")
+
+    # Bloqueo de todas las propuestas de la solicitud
+    all_proposals = list(
+        db.scalars(
+            select(OpenRequestProposal)
+            .where(OpenRequestProposal.solicitud_id == str(record.id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    proposal = next((p for p in all_proposals if str(p.id) == clean_prop_id), None)
+    if proposal is None:
+        raise HTTPException(404, "No se encontró la propuesta seleccionada en esta licitación")
+
+    agreed_amount = Decimal(str(proposal.monto)).quantize(Decimal("0.01"))
+    agreed_amount_float = float(agreed_amount)
+
+    raw_method = (payload.metodo_pago if payload.metodo_pago is not None else record.metodo_pago) or ""
+    metodo_pago = raw_method.strip().lower()
+    if metodo_pago not in VALID_PAYMENT_METHODS:
+        raise HTTPException(400, "Método de pago inválido. Elige efectivo o tarjeta")
+
+    state_key = _canonical_state_key(record.estado)
+    prop_state = (proposal.estado or "PENDIENTE").strip().upper()
+
+    # CA-06: Unicidad e idempotencia ante confirmaciones simultáneas
+    if record.tecnico_id is not None or state_key in {"ACEPTADA", "ADJUDICADA"}:
+        if record.tecnico_id == proposal.tecnico_id and prop_state == "ACEPTADA":
+            audit_entry = _record_award_decision_audit(
+                solicitud_id=str(record.id),
+                propuesta_id=str(proposal.id),
+                cliente_id=client_user.firebase_uid,
+                tecnico_id=proposal.tecnico_id,
+                monto_pactado=agreed_amount_float,
+                metodo_pago=record.metodo_pago,
+                referencia_pasarela=record.referencia_pasarela,
+                idempotency_key=payload.idempotency_key,
+                resultado="REINTENTO_IDEMPOTENTE",
+                motivo="Confirmación repetida sobre la misma propuesta ya adjudicada; se evita duplicar adjudicación y cobro.",
+                now=reference_now,
+            )
+            spec_uuid = uuid.UUID(str(record.especialidad_id)) if record.especialidad_id else None
+            specialty = db.get(Specialty, spec_uuid) if spec_uuid else None
+            return {
+                "mensaje": "Esta propuesta ya había sido adjudicada exitosamente.",
+                "reintento_idempotente": True,
+                "solicitud_id": str(record.id),
+                "estado_solicitud": (record.estado or "Aceptada").strip().upper(),
+                "tecnico_adjudicado_id": record.tecnico_id,
+                "monto_pactado": float(Decimal(str(record.presupuesto)).quantize(Decimal("0.01"))),
+                "metodo_pago": record.metodo_pago,
+                "referencia_pasarela": record.referencia_pasarela,
+                "propuesta_adjudicada": serialize_open_request_proposal(proposal, db),
+                "solicitud": serialize_open_request_for_owner(record, specialty, db),
+                "auditoria": audit_entry,
+            }
+
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            idempotency_key=payload.idempotency_key,
+            resultado="RECHAZADA_YA_ADJUDICADA",
+            motivo=f"Licitación previamente adjudicada al técnico {record.tecnico_id}; se impide doble adjudicación.",
+            now=reference_now,
+        )
+        raise HTTPException(
+            409,
+            "Esta licitación ya fue adjudicada a otro técnico y no admite una segunda adjudicación.",
+        )
+
+    # CA-01: Solo se puede adjudicar cuando la solicitud se encuentra en estado Con ofertas
+    if state_key != "CON_OFERTAS":
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            idempotency_key=payload.idempotency_key,
+            resultado="RECHAZADA_ESTADO_SOLICITUD_INVALIDO",
+            motivo=f"La solicitud está en estado {(record.estado or '').strip()} y requiere estar Con ofertas.",
+            now=reference_now,
+        )
+        raise HTTPException(
+            409,
+            f"Solo se puede adjudicar una solicitud en estado Con ofertas (estado actual: {(record.estado or '').strip()}).",
+        )
+
+    # CA-01: La propuesta debe estar pendiente y activa
+    if not proposal.activa or prop_state != "PENDIENTE":
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            idempotency_key=payload.idempotency_key,
+            resultado="RECHAZADA_PROPUESTA_NO_PENDIENTE",
+            motivo=f"La propuesta seleccionada no está pendiente (estado: {prop_state}).",
+            now=reference_now,
+        )
+        raise HTTPException(
+            409,
+            f"Solo puedes adjudicar una propuesta pendiente y activa (estado actual de la propuesta: {prop_state}).",
+        )
+
+    # CA-01 y Condición transversal: Re-evaluar en tiempo real que el técnico siga elegible
+    tech_user = db.scalar(
+        select(User)
+        .where(User.id == proposal.usuario_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if tech_user is None:
+        raise HTTPException(404, "No se encontró la cuenta del técnico postulante")
+
+    try:
+        tech_profile = require_eligible_technician_for_bidding(
+            tech_user,
+            db,
+            proceso_responsable="ADJUDICACION_LICITACION_ABIERTA",
+        )
+    except HTTPException as exc:
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            idempotency_key=payload.idempotency_key,
+            resultado="RECHAZADA_TECNICO_NO_ELEGIBLE",
+            motivo=f"Técnico ya no elegible al momento de adjudicar: {exc.detail}",
+            now=reference_now,
+        )
+        raise HTTPException(
+            409,
+            f"El técnico seleccionado ya no se encuentra elegible para adjudicación: {exc.detail}",
+        ) from None
+
+    if not is_technician_compatible_with_open_request(tech_user.id, record, db):
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            idempotency_key=payload.idempotency_key,
+            resultado="RECHAZADA_INCOMPATIBILIDAD_COBERTURA",
+            motivo="El técnico ya no mantiene la especialidad o zona de cobertura compatible con la solicitud.",
+            now=reference_now,
+        )
+        raise HTTPException(
+            409,
+            "El técnico seleccionado ya no mantiene cobertura o especialidad compatible con esta solicitud.",
+        )
+
+    # CA-02: Conservar técnico, monto pactado y método de pago; pasar a Aceptada
+    # HU-31_ST-02 (CA-02, CA-03, CA-06): Confirmar método de pago y ejecutar cobro idempotente si es tarjeta
+    effective_gateway_ref = (
+        payload.referencia_pasarela
+        if payload.referencia_pasarela is not None
+        else (record.referencia_pasarela if metodo_pago == "tarjeta" else None)
+    )
+    payment_result = process_idempotent_award_payment(
+        solicitud_id=str(record.id),
+        propuesta_id=str(proposal.id),
+        cliente_id=client_user.firebase_uid,
+        tecnico_id=proposal.tecnico_id,
+        monto_pactado=agreed_amount,
+        metodo_pago=metodo_pago,
+        referencia_pasarela=effective_gateway_ref,
+        idempotency_key=payload.idempotency_key,
+        simular_fallo_pago=bool(payload.simular_fallo_pago),
+        now=reference_now,
+    )
+
+    # CA-03: Si el pago con tarjeta falla, no se cierra la licitación ni se descartan las otras propuestas
+    if not payment_result["confirmado"]:
+        _record_award_decision_audit(
+            solicitud_id=str(record.id),
+            propuesta_id=str(proposal.id),
+            cliente_id=client_user.firebase_uid,
+            tecnico_id=proposal.tecnico_id,
+            monto_pactado=agreed_amount_float,
+            metodo_pago=metodo_pago,
+            referencia_pasarela=effective_gateway_ref,
+            idempotency_key=payload.idempotency_key,
+            resultado="PAGO_FALLIDO_SIN_CIERRE",
+            motivo=payment_result["motivo"],
+            now=reference_now,
+        )
+        raise HTTPException(402, payment_result["motivo"])
+
+    # CA-02 y CA-03: Conservar técnico, monto pactado, método de pago y referencia; pasar a Aceptada
+    record.tecnico_id = proposal.tecnico_id
+    record.presupuesto = agreed_amount
+    record.monto_base = agreed_amount
+    ajuste_actual = Decimal(str(record.monto_ajuste or Decimal("0.00"))).quantize(Decimal("0.01"))
+    record.monto_total = (agreed_amount + ajuste_actual).quantize(Decimal("0.01"))
+    record.metodo_pago = metodo_pago
+    record.referencia_pasarela = payment_result["referencia_pasarela"]
+    record.estado = "Aceptada"
+
+    proposal.estado = "ACEPTADA"
+    proposal.activa = True
+    proposal.actualizada_en = reference_now
+
+    # ST-03 (CA-04): Descartar automáticamente todas las demás propuestas pendientes de la licitación
+    discarded_proposals: list[OpenRequestProposal] = []
+    for other_prop in all_proposals:
+        if str(other_prop.id) == str(proposal.id):
+            continue
+        other_state = (other_prop.estado or "PENDIENTE").strip().upper()
+        if other_prop.activa or other_state == "PENDIENTE":
+            other_prop.estado = "RECHAZADA"
+            other_prop.activa = False
+            other_prop.actualizada_en = reference_now
+            motivo_cierre = "Descartada automáticamente por adjudicación de la licitación a otro técnico"
+            if not other_prop.justificacion:
+                other_prop.justificacion = motivo_cierre
+            elif motivo_cierre not in other_prop.justificacion:
+                other_prop.justificacion = f"{other_prop.justificacion} | {motivo_cierre}"
+            discarded_proposals.append(other_prop)
+
+    db.commit()
+    db.refresh(record)
+    db.refresh(proposal)
+    for disc_prop in discarded_proposals:
+        db.refresh(disc_prop)
+
+    # ST-03 (CA-04): Emitir avisos para los autores de propuestas descartadas y evento de cierre
+    closing_event, author_notices = emit_open_request_award_closing_events(
+        record,
+        proposal,
+        discarded_proposals,
+        emitted_at=reference_now,
+    )
+
+    audit_entry = _record_award_decision_audit(
+        solicitud_id=str(record.id),
+        propuesta_id=str(proposal.id),
+        cliente_id=client_user.firebase_uid,
+        tecnico_id=proposal.tecnico_id,
+        monto_pactado=agreed_amount_float,
+        metodo_pago=record.metodo_pago,
+        referencia_pasarela=record.referencia_pasarela,
+        idempotency_key=payload.idempotency_key,
+        resultado="ADJUDICADA",
+        motivo=f"Propuesta adjudicada exitosamente por L. {agreed_amount_float:.2f} con método {record.metodo_pago}.",
+        now=reference_now,
+    )
+
+    spec_uuid: uuid.UUID | None = None
+    try:
+        spec_uuid = uuid.UUID(str(record.especialidad_id))
+    except ValueError:
+        spec_uuid = None
+    specialty = db.get(Specialty, spec_uuid) if spec_uuid else None
+
+    return {
+        "mensaje": "Licitación adjudicada exitosamente. La contratación ha pasado a estado Aceptada.",
+        "reintento_idempotente": False,
+        "solicitud_id": str(record.id),
+        "estado_solicitud": (record.estado or "Aceptada").strip().upper(),
+        "tecnico_adjudicado_id": record.tecnico_id,
+        "monto_pactado": agreed_amount_float,
+        "metodo_pago": record.metodo_pago,
+        "referencia_pasarela": record.referencia_pasarela,
+        "cobro": payment_result,
+        "propuesta_adjudicada": serialize_open_request_proposal(
+            proposal,
+            db,
+            tech_user=tech_user,
+            tech_profile=tech_profile,
+        ),
+        "propuestas_descartadas": [serialize_open_request_proposal(p, db) for p in discarded_proposals],
+        "cantidad_propuestas_descartadas": len(discarded_proposals),
+        "avisos_autores": author_notices,
+        "evento_cierre": closing_event,
+        "solicitud": serialize_open_request_for_owner(record, specialty, db),
+        "auditoria": audit_entry,
+    }
+
+
+@router.post("/{solicitud_id}/proposals/{proposal_id}/award", status_code=200)
+@router.post("/{solicitud_id}/award/{proposal_id}", status_code=200)
+def award_proposal_endpoint(
+    solicitud_id: str,
+    proposal_id: str,
+    response: Response,
+    payload: AwardProposalSchema = AwardProposalSchema(),
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return award_open_request_proposal_by_owner(solicitud_id, proposal_id, payload, claims, db)
 
 @router.post("/{solicitud_id}/proposals/{proposal_id}/reject", status_code=200)
 def reject_proposal_endpoint(
