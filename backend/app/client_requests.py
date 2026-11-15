@@ -451,7 +451,12 @@ def get_client_request_detail(
 
     proposal_model = getattr(models, "OpenRequestProposal", None)
     if modalidad == "ABIERTA" and proposal_model is not None:
-        from app.open_requests import get_open_request_events, serialize_open_request_proposal
+        from app.open_requests import (
+            get_open_request_author_notices,
+            get_open_request_award_audits,
+            get_open_request_events,
+            serialize_open_request_proposal,
+        )
 
         proposals = db.scalars(
             select(proposal_model)
@@ -460,9 +465,13 @@ def get_client_request_detail(
         ).all()
         summary["propuestas_recibidas"] = [serialize_open_request_proposal(p, db) for p in proposals]
         summary["eventos"] = get_open_request_events(str(record.id))
+        summary["avisos_autores"] = get_open_request_author_notices(str(record.id))
+        summary["auditoria_adjudicacion"] = get_open_request_award_audits(str(record.id))
     else:
         summary["propuestas_recibidas"] = []
         summary["eventos"] = []
+        summary["avisos_autores"] = []
+        summary["auditoria_adjudicacion"] = []
 
     return summary
 

@@ -298,7 +298,7 @@ class OpenRequest(Base):
             "metodo_pago_ajuste": self.metodo_pago_ajuste,
             "referencia_pasarela_ajuste": self.referencia_pasarela_ajuste,
             "monto_total": str(total_dec),
-            "permite_cambio_metodo": self.estado in ["Publicada", "Negociacion"],
+            "permite_cambio_metodo": (self.estado or "").strip().lower().replace("_", " ") in {"publicada", "con ofertas", "negociacion"},
         }
 
 

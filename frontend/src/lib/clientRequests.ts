@@ -220,3 +220,33 @@ export async function rejectProposalApi(
     "POST",
   );
 }
+
+export async function awardProposalApi(
+  user: User,
+  solicitudId: string,
+  proposalId: string,
+  payload: {
+    metodo_pago?: "efectivo" | "tarjeta";
+    referencia_pasarela?: string | null;
+    idempotency_key?: string | null;
+  } = {},
+): Promise<{
+  mensaje: string;
+  reintento_idempotente: boolean;
+  solicitud_id: string;
+  estado_solicitud: string;
+  tecnico_adjudicado_id: string;
+  monto_pactado: number;
+  metodo_pago: string;
+  referencia_pasarela: string | null;
+  propuesta_adjudicada: ReceivedOpenRequestProposal;
+  propuestas_descartadas: ReceivedOpenRequestProposal[];
+  cantidad_propuestas_descartadas: number;
+}> {
+  return api(
+    `/open-requests/${encodeURIComponent(solicitudId)}/proposals/${encodeURIComponent(proposalId)}/award`,
+    user,
+    payload,
+    "POST",
+  );
+}
