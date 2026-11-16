@@ -6,7 +6,7 @@ import { api } from '../lib/api'
 import { sendPhoneCode, confirmPhoneCode, phoneVerificationErrorMessage, type PhoneStatus } from '../lib/phoneVerification'
 import { Button, Field } from './ui'
 
-export default function PhoneVerification({ user }: { user: User }) {
+export default function PhoneVerification({ user, hideWhenVerified = false }: { user: User; hideWhenVerified?: boolean }) {
   const [status, setStatus] = useState<PhoneStatus | null>(null)
   const [verificationId, setVerificationId] = useState('')
   const [code, setCode] = useState('')
@@ -78,6 +78,8 @@ export default function PhoneVerification({ user }: { user: User }) {
     catch (err) { setError(phoneVerificationErrorMessage(err)) }
     finally { setBusy(false) }
   }
+
+  if (hideWhenVerified && (status?.telefono_verificado || (!status && !error && !busy))) return null
 
   return <section className="account-card" style={{ marginBottom: 24 }} aria-label="Verificación de teléfono">
     <h2>Verifica tu teléfono</h2>

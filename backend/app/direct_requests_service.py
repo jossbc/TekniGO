@@ -7,8 +7,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.direct_requests_repository import DirectRequestRepository
-from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse, RegisterAdjustmentRequest,UpdatePaymentMethodRequest
-from app.models import CoverageZone, DirectRequest,User
+from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse, RegisterAdjustmentRequest, UpdatePaymentMethodRequest
+from app.models import CoverageZone, DirectRequest, User
+from app.request_states import state_key
+from app.specialties import require_active_specialty
 from app.technician_activation import require_operational_technician
 
 MAX_ESTIMATE_TOTAL = Decimal("99999999.99")
@@ -41,6 +43,7 @@ class DirectRequestService:
                 detail="No se puede calcular un presupuesto para un servicio inactivo.",
             )
 
+        require_active_specialty(db, servicio.especialidad_id)
         total_estimado = DirectRequestService._compute_total(servicio.tarifa_base, request.cantidad)
 
         return EstimateResponse(
@@ -91,6 +94,7 @@ class DirectRequestService:
                 detail="Servicio inválido o inactivo.",
             )
 
+        require_active_specialty(db, servicio.especialidad_id)
         # El perfil público usa el UUID; las solicitudes se guardan con el UID de Firebase.
         tecnico = db.get(User, servicio.usuario_id)
         if not tecnico or request.tecnico_id not in (str(tecnico.id), tecnico.firebase_uid):
@@ -153,15 +157,15 @@ class DirectRequestService:
         client_uid = current_user.get("uid") if isinstance(current_user, dict) else None
         if not client_uid:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
-        record = DirectRequestRepository.get_request_by_id(db, solicitud_id) if hasattr(DirectRequestRepository, "get_request_by_id") else None
-        if record is None:
-            record = db.scalar(select(DirectRequest).where(DirectRequest.id == solicitud_id))
+        record = db.scalar(
+            select(DirectRequest).where(DirectRequest.id == solicitud_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
         if record.cliente_id != client_uid:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes permiso para modificar esta solicitud.")
-        estado_norm = (record.estado or "PENDIENTE").strip().upper()
-        if estado_norm in {"ACEPTADA", "COMPLETADA"}:
+        if state_key(record.estado or "PENDIENTE") in {"ACEPTADA", "ASIGNADA", "EN PROCESO", "COMPLETADA"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Una contratación ya aceptada conserva el método inicial; no se permite modificarlo (CA-04).",
@@ -176,7 +180,7 @@ class DirectRequestService:
         db.commit()
         db.refresh(record)
         return record
-        
+
     @staticmethod
     def register_adjustment(
         db: Session,

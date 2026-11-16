@@ -20,56 +20,16 @@ from app.models import (
     ensure_utc_datetime,
     format_tegucigalpa_iso,
 )
+from app.request_states import client_actions, request_timeline, state_key, transition_request
 from app.security import get_current_user
 
 router = APIRouter(tags=["Contrataciones del Cliente"])
 
 ALLOWED_MODALIDADES = {"TODOS", "DIRECTA", "ABIERTA"}
 ALLOWED_ESTADOS = {
-    "TODOS",
-    "PUBLICADA",
-    "CON OFERTAS",
-    "CON_OFERTAS",
-    "PENDIENTE",
-    "ACEPTADA",
-    "EN PROCESO",
-    "EN_PROCESO",
-    "RECHAZADA",
-    "EN PROCESO",
-    "EN_PROCESO",
-    "CANCELADA",
-    "COMPLETADA",
-}
-
-STATE_TIMELINE_DESCRIPTIONS = {
-    "PUBLICADA": "Solicitud abierta publicada y disponible para recibir propuestas.",
-    "CON OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
-    "CON_OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
-    "PENDIENTE": "Solicitud registrada y pendiente de respuesta.",
-    "ACEPTADA": "Propuesta aceptada y trabajo programado con el técnico.",
-    "EN PROCESO": "Servicio en ejecución por el técnico seleccionado.",
-    "EN_PROCESO": "Servicio en ejecución por el técnico seleccionado.",
-    "RECHAZADA": "Solicitud rechazada por el técnico.",
-    "CANCELADA": "Solicitud cancelada.",
-    "COMPLETADA": "Trabajo marcado como completado.",
-}
-
-ALLOWED_ACTIONS_BY_STATE: dict[str, list[str]] = {
-    "PUBLICADA": ["CANCELAR"],
-    "CON OFERTAS": ["CANCELAR"],
-    "CON_OFERTAS": ["CANCELAR"],
-    "PENDIENTE": ["CANCELAR"],
-    "ACEPTADA": ["CANCELAR", "COMPLETAR"],
-    "EN PROCESO": [],
-    "EN_PROCESO": [],
-    "RECHAZADA": [],
-    "CANCELADA": [],
-    "COMPLETADA": [],
-}
-
-ACTION_TARGET_STATE: dict[str, str] = {
-    "CANCELAR": "Cancelada",
-    "COMPLETAR": "Completada",
+    "TODOS", "PUBLICADA", "CON OFERTAS", "PENDIENTE", "ACEPTADA",
+    "EN PROCESO", "RECHAZADA", "CANCELADA", "COMPLETADA",
+    "CON_OFERTAS", "EN_PROCESO", "TRABAJOS", "SOLICITUDES",
 }
 
 
@@ -101,13 +61,27 @@ def _normalize_modalidad(modalidad: str | None) -> str:
 
 
 def _normalize_estado(estado: str | None) -> str:
-    value = (estado or "TODOS").strip().upper()
+    value = state_key(estado or "TODOS")
     if value not in ALLOWED_ESTADOS:
         raise HTTPException(
             400,
-            "Estado inválido. Usa TODOS, PENDIENTE, ACEPTADA, RECHAZADA, CANCELADA o COMPLETADA.",
+            "Estado de solicitud inválido.",
         )
     return value
+
+
+JOB_STATES = ("ACEPTADA", "EN PROCESO", "COMPLETADA")
+
+
+def _filter_request_state(query, column, state):
+    if state == "TODOS":
+        return query
+    normalized = func.replace(func.upper(func.trim(column)), "_", " ")
+    if state == "TRABAJOS":
+        return query.where(normalized.in_(JOB_STATES))
+    if state == "SOLICITUDES":
+        return query.where(normalized.not_in(JOB_STATES))
+    return query.where(normalized == state)
 
 
 def _to_float(value: Decimal | float | int | None) -> float | None:
@@ -170,14 +144,14 @@ def _serialize_request_summary(
     monto_total_val = _to_float(getattr(record, "monto_total", None)) or (presupuesto + (monto_ajuste_val or 0.0))
 
     raw_estado = (getattr(record, "estado", None) or "PENDIENTE").strip()
-    estado_normalizado = raw_estado.upper()
+    estado_normalizado = state_key(raw_estado)
     finalizacion_dt = ensure_utc_datetime(getattr(record, "finalizacion_reportada_en", None))
     vencimiento_dt = ensure_utc_datetime(getattr(record, "vencimiento_confirmacion_en", None))
     from app.service_reception import get_service_reception_tracking
 
     reception_tracking = get_service_reception_tracking(str(record.id), record=record)
     incidencia_abierta = bool(reception_tracking.get("incidencia_abierta"))
-    es_en_proceso = estado_normalizado in {"EN PROCESO", "EN_PROCESO"}
+    es_en_proceso = estado_normalizado == "EN PROCESO"
     pendiente_recepcion = (
         es_en_proceso
         and not incidencia_abierta
@@ -187,7 +161,7 @@ def _serialize_request_summary(
     return {
         "id": str(record.id),
         "modalidad": modalidad,
-        "estado": estado_normalizado,
+        "estado": "EN_PROCESO" if estado_normalizado == "EN PROCESO" else estado_normalizado,
         "fecha_hora": _iso(getattr(record, "fecha_hora", None)),
         "creada_en": _iso(getattr(record, "creada_en", None)),
         "finalizacion_reportada_en": _iso(finalizacion_dt),
@@ -252,8 +226,7 @@ def list_client_requests(
     # Caso 1: Solo solicitudes directas 
     if norm_modalidad == "DIRECTA" or (norm_modalidad == "TODOS" and open_request_model is None):
         query = select(DirectRequest).where(DirectRequest.cliente_id == user.firebase_uid)
-        if norm_estado != "TODOS":
-            query = query.where(func.upper(DirectRequest.estado) == norm_estado)
+        query = _filter_request_state(query, DirectRequest.estado, norm_estado)
 
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
         rows = db.scalars(
@@ -297,15 +270,13 @@ def list_client_requests(
     combined: list[tuple[str, Any]] = []
     if norm_modalidad in {"TODOS", "DIRECTA"}:
         dq = select(DirectRequest).where(DirectRequest.cliente_id == user.firebase_uid)
-        if norm_estado != "TODOS":
-            dq = dq.where(func.upper(DirectRequest.estado) == norm_estado)
+        dq = _filter_request_state(dq, DirectRequest.estado, norm_estado)
         for row in db.scalars(dq).all():
             combined.append(("DIRECTA", row))
 
     if norm_modalidad in {"TODOS", "ABIERTA"} and open_request_model is not None:
         oq = select(open_request_model).where(open_request_model.cliente_id == user.firebase_uid)
-        if norm_estado != "TODOS":
-            oq = oq.where(func.upper(open_request_model.estado) == norm_estado)
+        oq = _filter_request_state(oq, open_request_model.estado, norm_estado)
         for row in db.scalars(oq).all():
             combined.append(("ABIERTA", row))
 
@@ -351,7 +322,7 @@ def list_client_requests(
 def list_my_requests_endpoint(
     response: Response,
     modalidad: str = Query("TODOS", description="Filtro por modalidad: TODOS, DIRECTA o ABIERTA"),
-    estado: str = Query("TODOS", description="Filtro por estado: TODOS, PENDIENTE, ACEPTADA, RECHAZADA, CANCELADA o COMPLETADA"),
+    estado: str = Query("TODOS", description="Filtro por estado de la solicitud"),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     claims: dict = Depends(get_current_user),
@@ -368,69 +339,36 @@ def list_my_requests_endpoint(
     )
 
 
-def _find_request_by_id(db: Session, solicitud_id: str) -> tuple[str, Any] | tuple[None, None]:
+def _find_request_by_id(db: Session, solicitud_id: str, *, lock: bool = False) -> tuple[str, Any] | tuple[None, None]:
     clean_id = (solicitud_id or "").strip()
     if not clean_id:
         return None, None
 
-    direct_row = db.scalar(select(DirectRequest).where(DirectRequest.id == clean_id))
+    # Las solicitudes directas usan UUID en PostgreSQL, las abiertas usan texto.
+    direct_id = clean_id
+    if db.get_bind().dialect.name == "postgresql":
+        try:
+            direct_id = str(uuid.UUID(clean_id))
+        except ValueError:
+            direct_id = None
+
+    direct_query = select(DirectRequest).where(DirectRequest.id == direct_id)
+    if lock:
+        direct_query = direct_query.with_for_update().execution_options(populate_existing=True)
+    direct_row = db.scalar(direct_query) if direct_id is not None else None
     if direct_row is not None:
         return "DIRECTA", direct_row
 
     open_request_model = getattr(models, "OpenRequest", None)
     if open_request_model is not None:
-        open_row = db.scalar(select(open_request_model).where(open_request_model.id == clean_id))
+        open_query = select(open_request_model).where(open_request_model.id == clean_id)
+        if lock:
+            open_query = open_query.with_for_update().execution_options(populate_existing=True)
+        open_row = db.scalar(open_query)
         if open_row is not None:
             return "ABIERTA", open_row
 
     return None, None
-
-
-def _build_request_timeline(record: Any, estado_normalizado: str) -> list[dict]:
-    creada_en = _iso(getattr(record, "creada_en", None))
-    custom_history = getattr(record, "historial", None) or getattr(record, "linea_tiempo", None)
-    if isinstance(custom_history, list) and custom_history:
-        return [
-            {
-                "estado": (getattr(ev, "estado", None) or (ev.get("estado") if isinstance(ev, dict) else "PENDIENTE")).strip().upper(),
-                "descripcion": getattr(ev, "descripcion", None)
-                or (ev.get("descripcion") if isinstance(ev, dict) else None)
-                or STATE_TIMELINE_DESCRIPTIONS.get(
-                    (getattr(ev, "estado", None) or (ev.get("estado") if isinstance(ev, dict) else "PENDIENTE")).strip().upper(),
-                    "Cambio de estado registrado.",
-                ),
-                "fecha": _iso(getattr(ev, "creado_en", None) or getattr(ev, "fecha", None))
-                if not isinstance(ev, dict)
-                else ev.get("fecha"),
-            }
-            for ev in custom_history
-        ]
-
-    timeline = [
-        {
-            "estado": "PUBLICADA" if getattr(record, "modalidad", None) == "ABIERTA" else "PENDIENTE",
-            "descripcion": (
-                STATE_TIMELINE_DESCRIPTIONS["PUBLICADA"]
-                if getattr(record, "modalidad", None) == "ABIERTA"
-                else STATE_TIMELINE_DESCRIPTIONS["PENDIENTE"]
-            ),
-            "fecha": creada_en,
-        }
-    ]
-    initial_state = timeline[0]["estado"]
-    if estado_normalizado != initial_state:
-        updated_at = _iso(getattr(record, "actualizada_en", None)) or creada_en
-        timeline.append(
-            {
-                "estado": estado_normalizado,
-                "descripcion": STATE_TIMELINE_DESCRIPTIONS.get(
-                    estado_normalizado,
-                    f"Estado actualizado a {estado_normalizado}.",
-                ),
-                "fecha": updated_at,
-            }
-        )
-    return timeline
 
 
 def get_client_request_detail(
@@ -469,7 +407,6 @@ def get_client_request_detail(
             _to_float(tech_profile.calificacion_promedio) if tech_profile is not None else None
         )
 
-    estado_normalizado = summary["estado"]
     summary["propuesta"] = {
         "servicio_id": summary["servicio"]["id"] if summary["servicio"] else None,
         "servicio_nombre": summary["servicio"]["nombre"] if summary["servicio"] else None,
@@ -481,8 +418,8 @@ def get_client_request_detail(
         "desglose_medios": summary.get("desglose_medios"),
     }
     from app.service_reception import get_service_reception_tracking
-    summary["linea_tiempo"] = _build_request_timeline(record, estado_normalizado)
-    summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
+    summary["linea_tiempo"] = request_timeline(db, record)
+    summary["acciones_permitidas"] = [] if summary["incidencia_abierta"] else client_actions(record)
     summary["seguimiento_recepcion"] = get_service_reception_tracking(str(record.id), record=record)
     proposal_model = getattr(models, "OpenRequestProposal", None)
     from app.service_completion import get_completion_events
@@ -535,25 +472,21 @@ def apply_client_request_action(
     """HU-25 ST-04: Ejecuta una acción permitida para el cliente según el estado actual en el backend."""
     user = _require_client_user(claims, db)
     norm_accion = (accion or "").strip().upper()
-    if norm_accion not in ACTION_TARGET_STATE:
-        raise HTTPException(400, "Acción inválida. Usa CANCELAR o COMPLETAR.")
+    if norm_accion not in {"CANCELAR", "COMPLETAR"}:
+        raise HTTPException(400, "Acción de solicitud inválida.")
 
-    modalidad, record = _find_request_by_id(db, solicitud_id)
+    modalidad, record = _find_request_by_id(db, solicitud_id, lock=True)
     if record is None or modalidad is None:
         raise HTTPException(404, "No se encontró la solicitud")
 
-    if getattr(record, "cliente_id", None) != user.firebase_uid:
+    if record.cliente_id != user.firebase_uid:
         raise HTTPException(403, "No tienes permiso para modificar esta solicitud")
 
-    estado_actual = (getattr(record, "estado", None) or "PENDIENTE").strip().upper()
-    permitidas = ALLOWED_ACTIONS_BY_STATE.get(estado_actual, [])
-    if norm_accion not in permitidas:
-        raise HTTPException(
-            409,
-            f"La acción '{norm_accion}' no está permitida cuando la solicitud está en estado {estado_actual}.",
-        )
-
-    record.estado = ACTION_TARGET_STATE[norm_accion]
+    if norm_accion == "COMPLETAR":
+        raise HTTPException(409, "El servicio se completa desde el flujo de confirmación de recepción.")
+    if (record.seguimiento_recepcion or {}).get("incidencia_abierta"):
+        raise HTTPException(409, "Una incidencia abierta requiere resolución administrativa.")
+    transition_request(db, record, "CANCELADA", role="CLIENTE", uid=user.firebase_uid)
     db.commit()
     db.refresh(record)
     return get_client_request_detail(solicitud_id, claims, db)

@@ -272,6 +272,7 @@ def get_technicians_catalog(
         query = (
             query.join(TechnicianSpecialty, User.id == TechnicianSpecialty.usuario_id)
             .join(Specialty, TechnicianSpecialty.especialidad_id == Specialty.id)
+            .where(Specialty.activa.is_(True))
             .where(*(Specialty.nombre.icontains(term, autoescape=True) for term in specialty_terms))
         )
 
@@ -310,7 +311,7 @@ def get_technicians_catalog(
         specs_query = (
             select(Specialty.nombre)
             .join(TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id)
-            .where(TechnicianSpecialty.usuario_id == user.id)
+            .where(TechnicianSpecialty.usuario_id == user.id, Specialty.activa.is_(True))
         )
         specs = db.scalars(specs_query).all()
 
@@ -388,12 +389,14 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
     # 1. Obtener Especialidades
     specs_query = select(Specialty.nombre).join(
         TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id
-    ).where(TechnicianSpecialty.usuario_id == user.id)
+    ).where(TechnicianSpecialty.usuario_id == user.id, Specialty.activa.is_(True))
     specs = db.scalars(specs_query).all()
 
     # 2. Obtener Servicios Activos (CA-05 de HU-13)
     from app.models import Service 
-    services_query = select(Service).where(Service.usuario_id == user.id, Service.activo == True)
+    services_query = select(Service).join(Specialty, Specialty.id == Service.especialidad_id).where(
+        Service.usuario_id == user.id, Service.activo.is_(True), Specialty.activa.is_(True)
+    )
     services = db.scalars(services_query).all()
     coverage_zones = db.scalars(
         select(CoverageZone)

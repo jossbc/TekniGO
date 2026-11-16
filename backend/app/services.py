@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Service, Specialty, TechnicianSpecialty
 from app.security import get_current_user
-from app.specialties import get_technician
+from app.specialties import get_technician, require_active_specialty
 from app.models import Service, Specialty, TechnicianProfile, TechnicianSpecialty
 
 router = APIRouter()
@@ -77,6 +77,7 @@ def check_specialty(db, user_id, especialidad_id):
     ))
     if registered is None:
         raise HTTPException(400, "Elige una de las especialidades que tienes registradas en tu perfil")
+    require_active_specialty(db, especialidad_id)
 
 
 def check_duplicate(db, user_id, nombre, especialidad_id, exclude_id=None):
@@ -160,7 +161,7 @@ def update_service(service_id: uuid.UUID, data: ServiceUpdate,
     nombre = clean_name(changes["nombre"]) if "nombre" in changes else service.nombre
     descripcion = clean_description(changes["descripcion"]) if "descripcion" in changes else service.descripcion
     especialidad_id = changes.get("especialidad_id", service.especialidad_id)
-    if especialidad_id != service.especialidad_id:
+    if especialidad_id != service.especialidad_id or changes.get("activo") is True:
         check_specialty(db, technician.usuario_id, especialidad_id)
     check_duplicate(db, technician.usuario_id, nombre, especialidad_id, exclude_id=service.id)
 
@@ -184,7 +185,8 @@ def public_services(usuario_id: uuid.UUID, claims=Depends(get_current_user), db:
         raise HTTPException(404, "No se encontró al técnico")
     rows = db.scalars(
         select(Service)
-        .where(Service.usuario_id == usuario_id, Service.activo.is_(True))
+        .join(Specialty, Specialty.id == Service.especialidad_id)
+        .where(Service.usuario_id == usuario_id, Service.activo.is_(True), Specialty.activa.is_(True))
         .order_by(Service.nombre)
     ).all()
     result = []

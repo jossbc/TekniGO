@@ -144,7 +144,7 @@ test('dashboard card renders friendly empty message when API returns no pending 
           servicio_nombre: 'Pintura',
           fecha_hora: '2026-11-16T10:00:00Z',
           descripcion: 'Sala',
-          estado: 'RECHAZADA',
+          estado: 'CANCELADA',
           total_estimado: 500,
         },
       ]),

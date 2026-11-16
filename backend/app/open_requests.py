@@ -26,6 +26,7 @@ from app.models import (
     OpenRequestProposal,
     Service,
     Specialty,
+    SuggestedTariff,
     TechnicianProfile,
     TechnicianSpecialty,
     TradeCertificate,
@@ -34,8 +35,10 @@ from app.models import (
     format_tegucigalpa_iso,
 )
 from app.permissions import require_enabled_client
+from app.request_states import CONTACT_STATES, record_creation, request_timeline, start_request_service, state_key, transition_request
 from app.security import get_current_user
 from app.services import VALID_UNITS
+from app.specialties import require_active_specialty
 from app.technician_activation import is_operationally_enabled, require_operational_technician
 
 router = APIRouter(prefix="/open-requests", tags=["Solicitudes Abiertas"])
@@ -146,9 +149,7 @@ def validate_open_request_data(
     now: datetime | None = None,
 ) -> tuple[Specialty, dict]:
     """CA-01 y CA-07: Valida los datos obligatorios antes de publicar la solicitud abierta."""
-    specialty = db.get(Specialty, payload.especialidad_id)
-    if specialty is None:
-        raise HTTPException(400, "La especialidad seleccionada no existe")
+    specialty = require_active_specialty(db, payload.especialidad_id)
 
     descripcion = (payload.descripcion or "").strip()
     if len(descripcion) < 10:
@@ -266,6 +267,7 @@ def serialize_open_request_for_owner(
         ).all()
         payload["propuestas"] = [serialize_open_request_proposal(p, db) for p in proposals]
         payload["eventos"] = get_open_request_events(str(record.id))
+        payload["linea_tiempo"] = request_timeline(db, record)
         payload["auditoria_adjudicacion"] = get_open_request_award_audits(str(record.id))
     return payload
 
@@ -291,6 +293,7 @@ def publish_open_request(
         **validated,
     )
     db.add(record)
+    record_creation(db, record)
     db.commit()
     db.refresh(record)
 
@@ -330,21 +333,22 @@ def _configured_range_margin() -> Decimal:
     return DEFAULT_RANGE_MARGIN
 
 
-def _compute_unit_stats(unit: str, tariffs: list[Decimal], margin: Decimal) -> dict:
+def _compute_unit_stats(unit: str, tariffs: list[Decimal], margin: Decimal, configured_average: Decimal | None = None) -> dict:
     count = len(tariffs)
-    avg = (sum(tariffs, Decimal("0")) / Decimal(count)).quantize(Decimal("0.01"))
-    min_t = min(tariffs).quantize(Decimal("0.01"))
-    max_t = max(tariffs).quantize(Decimal("0.01"))
+    avg = configured_average if configured_average is not None else (
+        sum(tariffs, Decimal("0")) / Decimal(count)
+    ).quantize(Decimal("0.01"))
     suggested_min = (avg * (Decimal("1") - margin)).quantize(Decimal("0.01"))
     suggested_max = (avg * (Decimal("1") + margin)).quantize(Decimal("0.01"))
     return {
         "unidad_cobro": unit,
         "tarifa_promedio": float(avg),
-        "tarifa_minima": float(min_t),
-        "tarifa_maxima": float(max_t),
+        "tarifa_minima": float(min(tariffs)) if tariffs else None,
+        "tarifa_maxima": float(max(tariffs)) if tariffs else None,
         "rango_sugerido_min": float(suggested_min),
         "rango_sugerido_max": float(suggested_max),
         "cantidad_servicios": count,
+        "origen_tarifa": "CONFIGURADA" if configured_average is not None else "SERVICIOS_ACTIVOS",
     }
 
 
@@ -358,7 +362,7 @@ def calculate_suggested_range(
 ) -> dict:
     """HU-26 ST-03 (CA-05, CA-06): Calcula el rango sugerido basado en tarifas promedio por categoría y unidad."""
     specialty = db.get(Specialty, especialidad_id)
-    if specialty is None:
+    if specialty is None or not specialty.activa:
         raise HTTPException(404, "No se encontró la especialidad solicitada")
 
     normalized_unit: str | None = None
@@ -403,6 +407,14 @@ def calculate_suggested_range(
     eligible_units = {
         unit: tariffs for unit, tariffs in by_unit.items() if len(tariffs) >= required_count
     }
+    configured = select(SuggestedTariff).where(SuggestedTariff.especialidad_id == especialidad_id)
+    if normalized_unit:
+        configured = configured.where(SuggestedTariff.unidad == normalized_unit)
+    averages = {row.unidad: row.promedio for row in db.scalars(configured)}
+    for unit in averages:
+        eligible_units[unit] = by_unit[unit]
+    margin_percent = format((applied_margin * 100).normalize(), "f")
+    rule = f"Tarifa promedio ± {margin_percent}%."
 
     if not eligible_units:
         return {
@@ -418,15 +430,16 @@ def calculate_suggested_range(
             "servicios_comparables": 0,
             "mensaje": "No hay referencia suficiente de tarifas comparables en esta categoría.",
             "unidades": [],
+            "regla_calculo": rule,
         }
 
     # Ordenar unidades por mayor cantidad de servicios comparables y luego alfabéticamente
     sorted_units = sorted(
         eligible_units.items(),
-        key=lambda item: (-len(item[1]), item[0]),
+        key=lambda item: (item[0] not in averages, -len(item[1]), item[0]),
     )
     unit_summaries = [
-        _compute_unit_stats(unit, tariffs, applied_margin)
+        _compute_unit_stats(unit, tariffs, applied_margin, averages.get(unit))
         for unit, tariffs in sorted_units
     ]
     primary = unit_summaries[0]
@@ -442,6 +455,8 @@ def calculate_suggested_range(
         "rango_sugerido_min": primary["rango_sugerido_min"],
         "rango_sugerido_max": primary["rango_sugerido_max"],
         "servicios_comparables": primary["cantidad_servicios"],
+        "origen_tarifa": primary["origen_tarifa"],
+        "regla_calculo": rule,
         "mensaje": (
             f"Rango sugerido calculado con {primary['cantidad_servicios']} "
             f"{'tarifa comparable' if primary['cantidad_servicios'] == 1 else 'tarifas comparables'} "
@@ -735,11 +750,11 @@ def serialize_open_request_for_technician(
     db: Session,
 ) -> dict:
     """CA-03 y Condición transversal: Protege dirección exacta y teléfono antes de Aceptada."""
-    estado_norm = (record.estado or "Publicada").strip().upper()
+    estado_norm = state_key(record.estado)
     is_awarded_technician = (
         bool(record.tecnico_id)
         and record.tecnico_id == technician_user.firebase_uid
-        and estado_norm in {"ACEPTADA", "EN PROCESO", "EN_PROCESO", "COMPLETADA"}
+        and estado_norm in CONTACT_STATES
     )
 
     spec_uuid: uuid.UUID | None = None
@@ -789,8 +804,10 @@ def serialize_open_request_for_technician(
     # HU-31_CA-05 y Condición transversal: Solo el técnico adjudicado en estado ACEPTADA (o COMPLETADA) recibe dirección exacta y teléfono
     payload["es_tecnico_adjudicado"] = is_awarded_technician
     if is_awarded_technician:
+        payload["pago_tarjeta_confirmado"] = bool(record.referencia_pasarela)
         payload["direccion_exacta"] = record.direccion_exacta
         payload["cliente"]["telefono"] = client_user.telefono if client_user is not None else None
+        payload["linea_tiempo"] = request_timeline(db, record)
 
     my_proposal = db.scalar(
         select(OpenRequestProposal)
@@ -1060,11 +1077,13 @@ def get_open_request_for_viewer(
     if not any(role.rol == "TECNICO" for role in user.roles):
         raise HTTPException(403, "No tienes permiso para acceder a esta solicitud")
 
-    estado_norm = (record.estado or "Publicada").strip().upper()
+    estado_norm = state_key(record.estado)
 
-    # 3. Si la solicitud ya fue adjudicada a este técnico y está en ACEPTADA, EN PROCESO o COMPLETADA
-    if record.tecnico_id == user.firebase_uid and estado_norm in {"ACEPTADA", "EN PROCESO", "EN_PROCESO", "COMPLETADA"}:
-        return serialize_open_request_for_technician(record, user, db)
+    if record.tecnico_id == user.firebase_uid and estado_norm in CONTACT_STATES | {"CANCELADA"}:
+        detail = serialize_open_request_for_technician(record, user, db)
+        if estado_norm == "CANCELADA":
+            detail["linea_tiempo"] = request_timeline(db, record)
+        return detail
 
     # 4. Técnico postulante: solo puede ver solicitudes en estado PUBLICADA o CON OFERTAS sin adjudicar si es elegible y compatible
     require_eligible_technician_for_bidding(user, db)
@@ -1154,6 +1173,29 @@ def discard_open_request_for_technician(
         "estado_solicitud": (record.estado or "Publicada").strip().upper(),
         "mensaje": "Publicación descartada de tu listado personal",
     }
+
+
+@router.post("/{solicitud_id}/start")
+def start_open_request_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(select(User).where(User.firebase_uid == claims.get("uid")))
+    if user is None or not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "Solo el técnico seleccionado puede iniciar este servicio.")
+    record = db.scalar(
+        select(OpenRequest).where(OpenRequest.id == solicitud_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if record is None:
+        raise HTTPException(404, "No se encontró la solicitud abierta.")
+    if record.tecnico_id != user.firebase_uid:
+        raise HTTPException(403, "Solo el técnico seleccionado puede iniciar este servicio.")
+    start_request_service(db, record, user.firebase_uid)
+    response.headers["Cache-Control"] = "no-store, private"
+    return serialize_open_request_for_technician(record, user, db)
 
 
 @router.post("/{solicitud_id}/discard")
@@ -1418,7 +1460,7 @@ def accept_published_budget_for_open_request(
             and existing_amount == published_budget
         ):
             if _canonical_state_key(record.estado) == "PUBLICADA":
-                record.estado = "Con ofertas"
+                transition_request(db, record, "CON OFERTAS", role="TECNICO", uid=user.firebase_uid, now=reference_now)
                 db.commit()
                 db.refresh(record)
             serialized_existing = serialize_open_request_proposal(
@@ -1466,8 +1508,8 @@ def accept_published_budget_for_open_request(
         db.add(proposal)
 
     # CA-02 y CA-03: La primera propuesta cambia Publicada a Con ofertas; las siguientes mantienen Con ofertas; no adjudica técnico
-    record.estado = "Con ofertas"
-    record.tecnico_id = None
+    if state_key == "PUBLICADA":
+        transition_request(db, record, "CON OFERTAS", role="TECNICO", uid=user.firebase_uid, now=reference_now)
 
     try:
         db.commit()
@@ -1629,7 +1671,7 @@ def submit_counter_offer_for_open_request(
             and existing_amount == counter_amount
         ):
             if _canonical_state_key(record.estado) == "PUBLICADA":
-                record.estado = "Con ofertas"
+                transition_request(db, record, "CON OFERTAS", role="TECNICO", uid=uid, now=reference_now)
                 db.commit()
                 db.refresh(record)
             serialized_existing = serialize_open_request_proposal(
@@ -1678,7 +1720,8 @@ def submit_counter_offer_for_open_request(
         db.add(proposal)
 
     # CA-03 & CA-04: Pasa a "Con ofertas" y continúa disponible sin adjudicar
-    record.estado = "Con ofertas"
+    if state_key == "PUBLICADA":
+        transition_request(db, record, "CON OFERTAS", role="TECNICO", uid=uid, now=reference_now)
     record.tecnico_id = None
 
     try:
@@ -2015,7 +2058,8 @@ def reject_open_request_proposal_by_owner(
         )
     ) or 0
 
-    record.estado = "Con ofertas" if active_count > 0 else "Publicada"
+    if not active_count and state_key == "CON_OFERTAS":
+        transition_request(db, record, "PUBLICADA", role="CLIENTE", uid=uid, now=reference_now)
     db.commit()
     db.refresh(record)
     db.refresh(proposal)
@@ -2623,7 +2667,7 @@ def award_open_request_proposal_by_owner(
     record.monto_total = (agreed_amount + ajuste_actual).quantize(Decimal("0.01"))
     record.metodo_pago = metodo_pago
     record.referencia_pasarela = payment_result["referencia_pasarela"]
-    record.estado = "Aceptada"
+    transition_request(db, record, "ACEPTADA", role="CLIENTE", uid=uid, now=reference_now)
 
     proposal.estado = "ACEPTADA"
     proposal.activa = True

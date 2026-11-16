@@ -1,3 +1,4 @@
+import type { ClientRequestTimelineItem } from "./clientRequests";
 import { getAuth, type User } from "firebase/auth";
 import { api, resolveApiUrl } from "./api";
 
@@ -181,8 +182,14 @@ export const createDirectRequest = async (requestData: {
 export const listTechnicianDirectRequests = (user: User) =>
   api<TechnicianDirectRequest[]>(TECHNICIAN_DIRECT_REQUESTS_PATH, user);
 
+export type TechnicianDirectRequestDetail = TechnicianDirectRequest & {
+  metodo_pago: string;
+  modalidad: "DIRECTA";
+  linea_tiempo: ClientRequestTimelineItem[];
+};
+
 export const getTechnicianDirectRequest = (user: User, solicitudId: string) =>
-  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}`, user);
+  api<TechnicianDirectRequestDetail>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}`, user);
 
 export const acceptTechnicianDirectRequest = (user: User, solicitudId: string) =>
   api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/accept`, user, undefined, "PATCH");

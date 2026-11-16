@@ -67,6 +67,7 @@ export type ClientRequestTimelineItem = {
   estado: string;
   descripcion: string;
   fecha: string | null;
+  responsable?: string | null;
 };
 
 export type ReceivedOpenRequestProposal = {
@@ -240,7 +241,7 @@ export async function listMyRequests(
   user: User,
   params: {
     modalidad?: ModalidadFiltro;
-    estado?: EstadoFiltro;
+    estado?: EstadoFiltro | "TRABAJOS" | "SOLICITUDES";
     offset?: number;
     limit?: number;
   } = {},

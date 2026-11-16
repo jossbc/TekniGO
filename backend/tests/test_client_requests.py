@@ -26,9 +26,6 @@ from app.service_reception import (
     ConfirmReceptionSchema,
     OpenServiceIncidentSchema,
     ReportCompletionSchema,
-    _COMPLETION_EVENTS_BY_REQUEST,
-    _FINANCIAL_EFFECTS_BY_REQUEST,
-    _RECEPTION_STATE_BY_REQUEST,
     confirm_service_reception_by_client,
     is_review_window_open,
     open_service_incident_by_client,
@@ -221,6 +218,28 @@ class ClientRequestsPaginationTests(unittest.TestCase):
         )
         self.assertEqual(open_only["total"], 0)
         self.assertEqual(open_only["solicitudes"], [])
+
+    def test_jobs_and_requests_filters_separate_results_before_pagination(self):
+        claims = {"uid": self.client_a.firebase_uid}
+        accepted = self._add_direct_request(
+            client_uid=claims["uid"], estado="Aceptada", created_offset_minutes=1,
+        )
+        active = self._add_direct_request(
+            client_uid=claims["uid"], estado="EN_PROCESO", created_offset_minutes=2,
+        )
+        pending = self._add_direct_request(
+            client_uid=claims["uid"], estado="Pendiente", created_offset_minutes=3,
+        )
+        for modality in ("TODOS", "DIRECTA"):
+            with self.subTest(modality=modality):
+                first = list_client_requests(claims, self.db, modalidad=modality, estado="TRABAJOS", limit=1)
+                second = list_client_requests(claims, self.db, modalidad=modality, estado="TRABAJOS", offset=1, limit=1)
+                self.assertEqual(first["total"], 2)
+                self.assertEqual([row["id"] for row in first["solicitudes"]], [active.id])
+                self.assertEqual([row["id"] for row in second["solicitudes"]], [accepted.id])
+                requests = list_client_requests(claims, self.db, modalidad=modality, estado="SOLICITUDES", limit=1)
+                self.assertEqual(requests["total"], 1)
+                self.assertEqual([row["id"] for row in requests["solicitudes"]], [pending.id])
 
     def test_st01_combines_direct_and_open_requests_when_open_model_is_available(self):
         class SimulatedOpenRequest(Base):
@@ -444,15 +463,13 @@ class ClientRequestsPaginationTests(unittest.TestCase):
             )
         self.assertEqual(repeat_err.exception.status_code, 409)
 
-        # Solicitud ACEPTADA permite COMPLETAR
-        completed_detail = apply_client_request_action(
-            req_accepted.id,
-            "COMPLETAR",
-            {"uid": self.client_a.firebase_uid},
-            self.db,
-        )
-        self.assertEqual(completed_detail["estado"], "COMPLETADA")
-        self.assertEqual(completed_detail["acciones_permitidas"], [])
+        with self.assertRaises(HTTPException) as skipped_start:
+            apply_client_request_action(
+                req_accepted.id, "COMPLETAR", {"uid": self.client_a.firebase_uid}, self.db,
+            )
+        self.assertEqual(skipped_start.exception.status_code, 409)
+        self.db.refresh(req_accepted)
+        self.assertEqual(req_accepted.estado, "Aceptada")
 
     def test_st05_foreign_requests_final_states_and_empty_results(self):
         # 1. Resultados vacíos: cliente sin solicitudes o con filtros sin coincidencias no produce error
@@ -531,22 +548,32 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
 
     def setUp(self):
         ClientRequestsPaginationTests.setUp(self)
-        _RECEPTION_STATE_BY_REQUEST.clear()
-        _COMPLETION_EVENTS_BY_REQUEST.clear()
-        _FINANCIAL_EFFECTS_BY_REQUEST.clear()
         self.admin_user = self._add_user("admin-1", "Admin TekniGO", "ADMIN", "9")
         self.db.commit()
 
     def tearDown(self):
-        _RECEPTION_STATE_BY_REQUEST.clear()
-        _COMPLETION_EVENTS_BY_REQUEST.clear()
-        _FINANCIAL_EFFECTS_BY_REQUEST.clear()
         ClientRequestsPaginationTests.tearDown(self)
+    def test_scheduled_reception_requires_an_administrator(self):
+        from app.security import get_current_user
+        from app.service_reception import router as reception_router
+        from app.service_reception import run_scheduled_auto_completion_endpoint
+
+        route = next(route for route in reception_router.routes if route.endpoint is run_scheduled_auto_completion_endpoint)
+        self.assertIn(get_current_user, [dependency.call for dependency in route.dependant.dependencies])
+        with self.assertRaises(HTTPException) as anonymous:
+            get_current_user(credentials=None)
+        self.assertEqual(anonymous.exception.status_code, 401)
+        with self.assertRaises(HTTPException) as forbidden:
+            run_scheduled_auto_completion_endpoint(Response(), {"uid": self.client_a.firebase_uid}, self.db)
+        self.assertEqual(forbidden.exception.status_code, 403)
+        result = run_scheduled_auto_completion_endpoint(Response(), {"uid": self.admin_user.firebase_uid}, self.db)
+        self.assertEqual(result["total_completadas_automaticamente"], 0)
+
     def test_hu35_ca01_ca02_permisos_confirmacion_inmutabilidad_y_plazo_resena_48h(self):
         """CA-01, CA-02 y plazos independientes: solo el propietario confirma En proceso con finalización reportada."""
         req = self._add_direct_request(
             client_uid=self.client_a.firebase_uid,
-            estado="Aceptada",
+            estado="EN PROCESO",
             monto_base="1000.00",
         )
         t0 = datetime(2026, 11, 10, 18, 0, tzinfo=timezone.utc)
@@ -595,8 +622,8 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         self.assertTrue(confirm_res["acuerdo_inmutable"])
         self.assertTrue(confirm_res["fecha_cierre_tegucigalpa"].endswith("-06:00"))
         # Plazo independiente de 48h para reseñas empieza en t_confirm
-        self.assertTrue(is_review_window_open(req.id, now=t_confirm + timedelta(hours=47, minutes=59)))
-        self.assertFalse(is_review_window_open(req.id, now=t_confirm + timedelta(hours=48, seconds=1)))
+        self.assertTrue(is_review_window_open(req.id, self.db, now=t_confirm + timedelta(hours=47, minutes=59)))
+        self.assertFalse(is_review_window_open(req.id, self.db, now=t_confirm + timedelta(hours=48, seconds=1)))
         # CA-02: Acuerdo y estados inmutables tras completar
         with self.assertRaises(HTTPException) as err_immutable:
             apply_client_request_action(
@@ -610,7 +637,7 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         """CA-03: Si transcurren 48h sin confirmación ni incidencia, el proceso automático completa una sola vez con autor SISTEMA."""
         req = self._add_direct_request(
             client_uid=self.client_a.firebase_uid,
-            estado="Aceptada",
+            estado="EN PROCESO",
             monto_base="800.00",
         )
         t0 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
@@ -648,7 +675,7 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         """CA-04: Si el cliente abre incidencia dentro de las 48h, se detiene el cierre automático y la liberación de fondos."""
         req = self._add_direct_request(
             client_uid=self.client_a.firebase_uid,
-            estado="Aceptada",
+            estado="EN PROCESO",
             monto_base="1200.00",
         )
         t0 = datetime(2026, 11, 10, 15, 0, tzinfo=timezone.utc)
@@ -666,6 +693,12 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
             self.db,
             now=t0 + timedelta(hours=12),
         )
+        with Session(self.engine) as fresh_db:
+            persisted = fresh_db.get(DirectRequest, req.id)
+            self.assertTrue(persisted.seguimiento_recepcion["incidencia_abierta"])
+            with self.assertRaises(HTTPException) as blocked:
+                apply_client_request_action(req.id, "CANCELAR", {"uid": self.client_a.firebase_uid}, fresh_db)
+            self.assertEqual(blocked.exception.status_code, 409)
         self.assertTrue(inc_res["seguimiento"]["incidencia_abierta"])
         self.assertTrue(inc_res["seguimiento"]["cierre_automatico_detenido"])
         self.assertTrue(inc_res["seguimiento"]["liberacion_fondos_retenida"])
@@ -684,7 +717,6 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         )
         self.assertEqual(auto_after_72h["total_completadas_automaticamente"], 0)
         self.assertIn(req.id, auto_after_72h["solicitudes_bloqueadas_por_incidencia"])
-        self.assertNotIn(req.id, _COMPLETION_EVENTS_BY_REQUEST)
         # Resolución administrativa COMPLETAR_SERVICIO libera el cierre y emite el evento único
         admin_res = resolve_service_incident_by_admin(
             req.id,
@@ -705,7 +737,7 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         # 1. Solicitud en efectivo (Sprint 2 registra deuda por comisión y Sprint 3 consolida sin duplicar)
         req_cash = self._add_direct_request(
             client_uid=self.client_a.firebase_uid,
-            estado="Aceptada",
+            estado="EN PROCESO",
             monto_base="1000.00",
         )
         req_cash.metodo_pago = "efectivo"
@@ -721,6 +753,8 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         t_48h = t0 + timedelta(hours=48)
         auto_res = run_scheduled_auto_completion(self.db, now=t_48h)
         self.assertEqual(auto_res["total_completadas_automaticamente"], 1)
+        self.db.expire_all()
+        self.assertIsNotNone(self.db.get(DirectRequest, req_cash.id).seguimiento_recepcion["efecto_financiero"])
         concurrent_client_res = confirm_service_reception_by_client(
             req_cash.id,
             {"uid": self.client_a.firebase_uid},
@@ -742,6 +776,7 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         # CA-06: En Sprint 3 se valida el efecto financiero completo sin duplicar cierres anteriores
         sprint3_res = validate_sprint3_financial_settlement(
             req_cash.id,
+            self.db,
             now=t_48h + timedelta(days=5),
         )
         self.assertFalse(sprint3_res["duplicado_generado"])
@@ -751,7 +786,7 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
         # 2. Solicitud con tarjeta (acredita fondos digitales netos al técnico una sola vez)
         req_card = self._add_direct_request(
             client_uid=self.client_a.firebase_uid,
-            estado="Aceptada",
+            estado="EN PROCESO",
             monto_base="500.00",
         )
         req_card.metodo_pago = "tarjeta"

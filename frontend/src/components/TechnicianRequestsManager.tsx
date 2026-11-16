@@ -1,9 +1,12 @@
+import RequestTimeline from "./RequestTimeline";
+import { getOpportunityDetailApi, type TechnicianOpportunityItem } from "../lib/openRequests";
 import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
 import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, RefreshCw } from "lucide-react";
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
+  getTechnicianDirectRequest,
   formatConfirmationWindowStatus,
   formatTegucigalpaDateTime,
   listTechnicianDirectRequests,
@@ -11,14 +14,16 @@ import {
   reportTechnicianRequestCompletion,
   startTechnicianDirectRequest,
   type TechnicianDirectRequest,
+  type TechnicianDirectRequestDetail,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
 import { Button } from "./ui";
+import StartServiceConfirmation from "./StartServiceConfirmation";
 import ServiceLocationContactCard from "../lib/ServiceLocationContactCard";
 
 export type DirectRequest = TechnicianDirectRequest;
 
-type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "RECHAZADA" | "COMPLETADA";
+type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "RECHAZADA" | "COMPLETADA" | "CANCELADA";
 type ModalidadFilter = "TODAS" | "DIRECTA" | "ABIERTA";
 
 function getRequestModality(req: TechnicianDirectRequest): "DIRECTA" | "ABIERTA" {
@@ -67,8 +72,30 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [refreshTick, setRefreshTick] = useState(0);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState("");
+  const [completionNotice, setCompletionNotice] = useState<{ id: string; message: string } | null>(null);
+  const [startedRequestId, setStartedRequestId] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const [filter, setFilter] = useState<EstadoFilter>("TODOS");
+
+  const [startConfirmationId, setStartConfirmationId] = useState<string | null>(null);
+  const [trackingId, setTrackingId] = useState("");
+  const [trackingModality, setTrackingModality] = useState<"DIRECTA" | "ABIERTA">("DIRECTA");
+  const [tracking, setTracking] = useState<TechnicianDirectRequestDetail | TechnicianOpportunityItem | null>(null);
+  const [trackingError, setTrackingError] = useState("");
+
+  useEffect(() => {
+    if (!trackingId) return;
+    let active = true;
+    const loadDetail = trackingModality === "ABIERTA" ? getOpportunityDetailApi : getTechnicianDirectRequest;
+    loadDetail(user, trackingId)
+      .then((detail) => {
+        if (active) setTracking(detail);
+      })
+      .catch((err) => {
+        if (active) setTrackingError(errorMessage(err));
+      });
+    return () => { active = false; };
+  }, [user, trackingId, trackingModality, refreshTick]);
 
   // HU-22: Consultar Solicitudes directas recibidas desde el backend
   useEffect(() => {
@@ -100,21 +127,19 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     setActionLoading(id);
     setActionError("");
     setActionNotice("");
-    const nextState = decision === "accept" ? "ACEPTADA" : "RECHAZADA";
     const successText =
       decision === "accept"
         ? "Solicitud aceptada correctamente."
         : "Solicitud rechazada correctamente.";
 
     try {
-      if (decision === "accept") {
-        await acceptTechnicianDirectRequest(user, id);
-      } else {
-        await rejectTechnicianDirectRequest(user, id);
-      }
+      const updated = decision === "accept"
+        ? await acceptTechnicianDirectRequest(user, id)
+        : await rejectTechnicianDirectRequest(user, id);
       setRequests((prev) =>
-        prev.map((req) => (req.id === id ? { ...req, estado: nextState } : req)),
+        prev.map((req) => (req.id === id ? { ...req, estado: updated.estado } : req)),
       );
+      if (trackingId === id) setRefreshTick((tick) => tick + 1);
       setActionNotice(successText);
     } catch (err) {
       setActionError(errorMessage(err));
@@ -135,9 +160,12 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
 
   // Iniciar ejecución del servicio (pasa de ACEPTADA a EN_PROCESO)
   async function handleStartExecution(id: string) {
+    if (actionLoading) return;
+    setStartConfirmationId(null);
     setActionLoading(id);
     setActionError("");
     setActionNotice("");
+    setStartedRequestId(null);
 
     try {
       const updated = await startTechnicianDirectRequest(user, id);
@@ -146,7 +174,8 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
           req.id === id ? { ...req, ...updated, estado: "EN_PROCESO" } : req,
         ),
       );
-      setActionNotice("Servicio iniciado. Ahora se encuentra En proceso y puedes reportar su finalización al terminar.");
+      if (trackingId === id) setRefreshTick((tick) => tick + 1);
+      setStartedRequestId(id);
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -159,6 +188,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     setActionLoading(id);
     setActionError("");
     setActionNotice("");
+    setCompletionNotice(null);
 
     try {
       const res = await reportTechnicianRequestCompletion(user, id);
@@ -177,10 +207,11 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             : req,
         ),
       );
-      setActionNotice(
-        res.mensaje ||
+      setCompletionNotice({
+        id,
+        message: res.mensaje ||
           "Finalización reportada exitosamente. El servicio permanece En proceso pendiente de recepción y se inició el plazo de 48 horas.",
-      );
+      });
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -257,6 +288,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
               <option value="PENDIENTE">Pendientes ({pendingCount})</option>
               <option value="ACEPTADA">Aceptadas ({countByState("ACEPTADA")})</option>
               <option value="EN_PROCESO">En proceso ({countByState("EN_PROCESO")})</option>
+              <option value="CANCELADA">Canceladas ({countByState("CANCELADA")})</option>
               <option value="RECHAZADA">Rechazadas ({countByState("RECHAZADA")})</option>
               <option value="COMPLETADA">Completadas ({countByState("COMPLETADA")})</option>
             </select>
@@ -321,7 +353,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
           <h3>
             {filter === "TODOS"
               ? "No tienes solicitudes"
-              : `No tienes solicitudes ${filter.toLowerCase()}s`}
+              : "No hay solicitudes en este estado"}
           </h3>
           <p>
             {filter === "TODOS"
@@ -346,9 +378,14 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const reportedAtIso = req.finalizacion_reportada_local || req.finalizacion_reportada_en;
             const deadlineIso = req.vencimiento_confirmacion_local || req.vencimiento_confirmacion_en;
             const deadlineStatus = isPendingReception ? formatConfirmationWindowStatus(deadlineIso) : null;
+            const requestNotice = normalizedState === "EN_PROCESO" && !req.incidencia_abierta
+              ? isPendingReception
+                ? completionNotice?.id === req.id ? completionNotice.message : null
+                : startedRequestId === req.id ? "Servicio iniciado. Ahora se encuentra En proceso y puedes reportar su finalización al terminar." : null
+              : null;
 
             return (
-              <div key={req.id} className="client-request-item">
+              <div key={req.id} className="client-request-item" style={{ flexWrap: "wrap" }}>
                 <div className="client-request-item-main">
                   {/* Nombre del cliente y estado */}
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
@@ -536,6 +573,22 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   )}
                 </div>
 
+                <div className="client-request-item-side">
+                  <Button
+                    type="button"
+                    className="button-outline"
+                    aria-expanded={trackingId === req.id}
+                    onClick={() => {
+                      setTracking(null);
+                      setTrackingError("");
+                      setTrackingModality(modality);
+                      setTrackingId(trackingId === req.id ? "" : req.id);
+                    }}
+                  >
+                    {trackingId === req.id ? "Ocultar seguimiento" : "Ver seguimiento"}
+                  </Button>
+                </div>
+
                 {/* Botones de acción */}
                 {normalizedState === "PENDIENTE" && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
@@ -575,14 +628,28 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     </Button>
                   </div>
                 )}
+                {requestNotice && (
+                  <div className="success-alert" role="status" style={{ flexBasis: "100%", margin: 0 }}>
+                    <CheckCircle2 size={18} aria-hidden="true" />
+                    <span>{requestNotice}</span>
+                  </div>
+                )}
+                {trackingId === req.id && (
+                  <div style={{ flexBasis: "100%" }}>
+                    <p>{modality === "ABIERTA" ? "Solicitud abierta" : "Solicitud directa"} · {estadoConfig[tracking?.estado ?? normalizedState]?.label ?? normalizedState}</p>
+                    {trackingError && <p role="alert">{trackingError}</p>}
+                    {!tracking && !trackingError && <p role="status">Cargando seguimiento…</p>}
+                    {tracking?.linea_tiempo && <RequestTimeline items={tracking.linea_tiempo} />}
+                  </div>
+                )}
 
                 {/* Botón para pasar de ACEPTADA a EN_PROCESO */}
                 {normalizedState === "ACEPTADA" && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
                     <Button
                       type="button"
-                      onClick={() => handleStartExecution(req.id)}
-                      disabled={actionLoading === req.id}
+                      onClick={() => setStartConfirmationId(req.id)}
+                      disabled={actionLoading !== null}
                       style={{
                         background: "#eff6ff",
                         color: "#1d4ed8",
@@ -600,7 +667,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                 )}
 
                 {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado desde En proceso */}
-                {normalizedState === "EN_PROCESO" && !isPendingReception && (
+                {normalizedState === "EN_PROCESO" && !isPendingReception && !req.incidencia_abierta && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
                     <Button
                       type="button"
@@ -625,6 +692,12 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             );
           })}
         </div>
+      )}
+      {startConfirmationId && (
+        <StartServiceConfirmation
+          onCancel={() => setStartConfirmationId(null)}
+          onConfirm={() => void handleStartExecution(startConfirmationId)}
+        />
       )}
     </div>
   );

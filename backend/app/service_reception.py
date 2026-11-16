@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
-from app.models import DirectRequest, User
+from app.models import DirectRequest, OpenRequest, User
+from app.request_states import transition_request
 from app.security import get_current_user
 
 router = APIRouter(tags=["Confirmación de Recepción (HU-35)"])
@@ -20,10 +21,6 @@ router = APIRouter(tags=["Confirmación de Recepción (HU-35)"])
 TEGUCIGALPA_TZ = timezone(timedelta(hours=-6), name="America/Tegucigalpa")
 CONFIRMATION_WINDOW_HOURS = 48
 REVIEW_WINDOW_HOURS = 48
-
-# Estado persistido en memoria por solicitud (sincronizado con la fila bloqueada en BD)
-_RECEPTION_STATE_BY_REQUEST: dict[str, dict[str, Any]] = {}
-
 
 def _ensure_utc(dt: datetime | None = None) -> datetime:
     """Garantiza que todo instante se almacene con referencia horaria inequívoca en UTC."""
@@ -74,10 +71,31 @@ def _find_locked_request(db: Session, solicitud_id: str) -> tuple[str, Any]:
     raise HTTPException(404, "No se encontró la solicitud")
 
 
+def _save_tracking(record: Any, tracking: dict[str, Any]) -> None:
+    record.seguimiento_recepcion = {
+        key: value for key, value in tracking.items() if not key.startswith("_")
+    }
+
+
+def _require_reception_admin(claims: dict, db: Session) -> User:
+    user = db.scalar(select(User).where(User.firebase_uid == claims.get("uid")))
+    if user is None or not any(role.rol == "ADMIN" for role in user.roles):
+        raise HTTPException(403, "Se requiere el rol administrador")
+    return user
+
+
 def get_service_reception_tracking(solicitud_id: str, record: Any = None) -> dict[str, Any]:
     """Devuelve el estado de seguimiento, plazos, evento único y efecto financiero de una contratación."""
     clean_id = (solicitud_id or "").strip()
-    state = dict(_RECEPTION_STATE_BY_REQUEST.get(clean_id) or {})
+    state = dict(getattr(record, "seguimiento_recepcion", None) or {})
+    for internal, public in (
+        ("_reported_at_dt", "finalizacion_reportada_en"),
+        ("_confirmation_deadline_dt", "plazo_confirmacion_vence_en"),
+        ("_closed_at_dt", "fecha_cierre"),
+        ("_review_deadline_dt", "plazo_resena_vence_en"),
+    ):
+        if state.get(public):
+            state[internal] = datetime.fromisoformat(state[public])
 
     # Sincronizar con las columnas persistidas por HU-34 en base de datos (DirectRequest / OpenRequest)
     if record is not None:
@@ -103,7 +121,6 @@ def get_service_reception_tracking(solicitud_id: str, record: Any = None) -> dic
                     "_confirmation_deadline_dt": deadline_utc,
                 }
             )
-            _RECEPTION_STATE_BY_REQUEST[clean_id] = state
 
     if not state:
         return {
@@ -156,61 +173,18 @@ def report_service_completion_by_technician(
     payload: ReportCompletionSchema | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """
-    Registra el reporte de finalización del técnico (dependencia HU-34),
-    coloca el servicio en estado 'En proceso' e inicia el plazo de 48h para confirmar o abrir incidencia.
-    """
-    uid = claims.get("uid") if isinstance(claims, dict) else None
-    if not uid:
-        raise HTTPException(401, "Sesión inválida o expirada")
+    """Reuse HU-34 validation and preserve the reception response contract."""
+    from app.service_completion import report_service_completion
 
-    user = db.scalar(select(User).where(User.firebase_uid == uid))
-    if user is None:
-        raise HTTPException(404, "Completa tu registro en TekniGO")
-
-    modalidad, record = _find_locked_request(db, solicitud_id)
-    if getattr(record, "tecnico_id", None) != user.firebase_uid:
-        raise HTTPException(403, "Solo el técnico asignado puede reportar la finalización del servicio")
-
-    current_state = _canonical_state(getattr(record, "estado", None))
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(str(record.id), {})
-
-    if tracking.get("acuerdo_inmutable") or current_state == "COMPLETADA":
-        raise HTTPException(409, "El acuerdo ya fue completado y su estado es inmutable (CA-02)")
-
-    if current_state not in {"ACEPTADA", "EN_PROCESO"}:
-        raise HTTPException(
-            409,
-            f"Solo se puede reportar finalización de un servicio en estado Aceptada o En proceso (actual: {getattr(record, 'estado', None)}).",
-        )
-
-    reported_at = _ensure_utc(now)
-    confirmation_deadline = reported_at + timedelta(hours=CONFIRMATION_WINDOW_HOURS)
-
-    record.estado = "En proceso"
-    db.commit()
-    db.refresh(record)
-
-    updated_tracking = {
-        **get_service_reception_tracking(str(record.id)),
-        "solicitud_id": str(record.id),
-        "modalidad": modalidad,
-        "finalizacion_reportada": True,
-        "finalizacion_reportada_en": reported_at.isoformat(),
-        "finalizacion_reportada_tegucigalpa": _to_tegucigalpa_iso(reported_at),
-        "plazo_confirmacion_vence_en": confirmation_deadline.isoformat(),
-        "plazo_confirmacion_vence_tegucigalpa": _to_tegucigalpa_iso(confirmation_deadline),
-        "notas_finalizacion": payload.notas_finalizacion if payload else None,
-        "_reported_at_dt": reported_at,
-        "_confirmation_deadline_dt": confirmation_deadline,
-    }
-    _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+    reported = report_service_completion(
+        solicitud_id, claims, db, now=now,
+        comentario=payload.notas_finalizacion if payload else None,
+    )
+    _, record = _find_locked_request(db, solicitud_id)
     return {
-        "mensaje": "Finalización reportada por el técnico. El cliente dispone de 48 horas para confirmar recepción o reportar incidencia.",
-        "solicitud_id": str(record.id),
-        "modalidad": modalidad,
+        **reported,
         "estado": "EN PROCESO",
-        "seguimiento": get_service_reception_tracking(str(record.id)),
+        "seguimiento": get_service_reception_tracking(str(record.id), record=record),
     }
 
 
@@ -252,7 +226,9 @@ def confirm_service_reception_by_client(
             modalidad=modalidad,
             autor_cierre=tracking.get("autor_cierre") or "CLIENTE",
             closed_at=tracking.get("_closed_at_dt") or _ensure_utc(now),
-        )
+        ) if tracking.get("evento_cierre") else {
+            "evento_cierre": None, "efecto_financiero": None,
+        }
         return {
             "mensaje": "El servicio ya se encontraba en estado Completada y el acuerdo es inmutable.",
             "reintento_idempotente": True,
@@ -265,7 +241,7 @@ def confirm_service_reception_by_client(
             "acuerdo_inmutable": True,
             "evento_cierre": completion_bundle["evento_cierre"],
             "efecto_financiero": completion_bundle["efecto_financiero"],
-            "seguimiento": get_service_reception_tracking(str(record.id)),
+            "seguimiento": get_service_reception_tracking(str(record.id), record=record),
         }
 
     # CA-01: Debe estar en estado 'En proceso'
@@ -293,18 +269,16 @@ def confirm_service_reception_by_client(
     review_deadline = closed_at + timedelta(hours=REVIEW_WINDOW_HOURS)
 
         # CA-02: Transición transaccional a Completada e inmutabilidad
-    record.estado = "Completada"
+    transition_request(db, record, "COMPLETADA", role="CLIENTE", uid=uid, now=closed_at)
     if hasattr(record, "pendiente_recepcion"):
         record.pendiente_recepcion = False
-    db.commit()
-    db.refresh(record)
 
     monto_pactado = Decimal(
         str(getattr(record, "monto_total", None) or getattr(record, "presupuesto", None) or getattr(record, "monto_base", 0))
     ).quantize(Decimal("0.01"))
 
     updated_tracking = {
-        **get_service_reception_tracking(str(record.id)),
+        **get_service_reception_tracking(str(record.id), record=record),
         **tracking,
         "solicitud_id": str(record.id),
         "modalidad": modalidad,
@@ -324,7 +298,7 @@ def confirm_service_reception_by_client(
         "_closed_at_dt": closed_at,
         "_review_deadline_dt": review_deadline,
     }
-    _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+    _save_tracking(record, updated_tracking)
     completion_bundle = emit_and_process_idempotent_completion_event(
         record,
         modalidad=modalidad,
@@ -332,6 +306,7 @@ def confirm_service_reception_by_client(
         closed_at=closed_at,
     )
 
+    db.commit()
     return {
         "mensaje": "Recepción confirmada exitosamente. La contratación ha pasado a estado Completada.",
         "reintento_idempotente": False,
@@ -344,7 +319,7 @@ def confirm_service_reception_by_client(
         "acuerdo_inmutable": True,
         "evento_cierre": completion_bundle["evento_cierre"],
         "efecto_financiero": completion_bundle["efecto_financiero"],
-        "seguimiento": get_service_reception_tracking(str(record.id)),
+        "seguimiento": get_service_reception_tracking(str(record.id), record=record),
     }
 
 
@@ -377,6 +352,7 @@ def confirm_service_reception_endpoint(
 
 def is_review_window_open(
     solicitud_id: str,
+    db: Session,
     *,
     now: datetime | None = None,
 ) -> bool:
@@ -386,7 +362,8 @@ def is_review_window_open(
     (que inicia cuando el servicio llega a Completada) continúa vigente.
     """
     clean_id = (solicitud_id or "").strip()
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(clean_id)
+    _, record = _find_locked_request(db, clean_id)
+    tracking = get_service_reception_tracking(clean_id, record=record)
     if not tracking or not tracking.get("completada") or not tracking.get("resenas_habilitadas"):
         return False
 
@@ -416,8 +393,12 @@ def run_scheduled_auto_completion(
     skipped_by_incident_ids: list[str] = []
     already_completed_ids: list[str] = []
 
-    for solicitud_id in list(_RECEPTION_STATE_BY_REQUEST.keys()):
-        snapshot = _RECEPTION_STATE_BY_REQUEST.get(solicitud_id, {})
+    candidates = [
+        (str(record.id), get_service_reception_tracking(str(record.id), record=record))
+        for model in (DirectRequest, OpenRequest)
+        for record in db.scalars(select(model).where(model.finalizacion_reportada_en.is_not(None)))
+    ]
+    for solicitud_id, snapshot in candidates:
         if not snapshot.get("finalizacion_reportada"):
             continue
 
@@ -439,7 +420,7 @@ def run_scheduled_auto_completion(
         except HTTPException:
             continue
 
-        locked_tracking = _RECEPTION_STATE_BY_REQUEST.get(solicitud_id, {})
+        locked_tracking = get_service_reception_tracking(solicitud_id, record=record)
         current_state = _canonical_state(getattr(record, "estado", None))
 
         if locked_tracking.get("completada") or current_state == "COMPLETADA":
@@ -450,13 +431,13 @@ def run_scheduled_auto_completion(
             skipped_by_incident_ids.append(solicitud_id)
             continue
 
-        if current_state != "EN_PROCESO":
+        locked_deadline = locked_tracking.get("_confirmation_deadline_dt")
+        if current_state != "EN_PROCESO" or locked_deadline is None or eval_now < locked_deadline:
             continue
 
         review_deadline = eval_now + timedelta(hours=REVIEW_WINDOW_HOURS)
-        record.estado = "Completada"
-        db.commit()
-        db.refresh(record)
+        transition_request(db, record, "COMPLETADA", role="SISTEMA", now=eval_now)
+        record.pendiente_recepcion = False
 
         monto_pactado = Decimal(
             str(
@@ -467,7 +448,7 @@ def run_scheduled_auto_completion(
         ).quantize(Decimal("0.01"))
 
         updated_tracking = {
-            **get_service_reception_tracking(solicitud_id),
+            **get_service_reception_tracking(solicitud_id, record=record),
             **locked_tracking,
             "solicitud_id": solicitud_id,
             "modalidad": modalidad,
@@ -487,13 +468,14 @@ def run_scheduled_auto_completion(
             "_closed_at_dt": eval_now,
             "_review_deadline_dt": review_deadline,
         }
-        _RECEPTION_STATE_BY_REQUEST[solicitud_id] = updated_tracking
+        _save_tracking(record, updated_tracking)
         emit_and_process_idempotent_completion_event(
             record,
             modalidad=modalidad,
             autor_cierre="SISTEMA",
             closed_at=eval_now,
         )
+        db.commit()
         completed_ids.append(solicitud_id)
 
     return {
@@ -510,9 +492,11 @@ def run_scheduled_auto_completion(
 @router.post("/service-requests/scheduled/auto-complete", status_code=200)
 def run_scheduled_auto_completion_endpoint(
     response: Response,
+    claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
+    _require_reception_admin(claims, db)
     return run_scheduled_auto_completion(db)
 
 # --- HU-35 ST-03: Bloqueo por incidencia dentro del plazo de 48h y resolución administrativa ---
@@ -626,23 +610,15 @@ def open_service_incident_by_client(
     }
 
     updated_tracking = {
-        **get_service_reception_tracking(str(record.id)),
+        **get_service_reception_tracking(str(record.id), record=record),
         **tracking,
         "incidencia_abierta": True,
         "cierre_automatico_detenido": True,
         "liberacion_fondos_retenida": True,
         "incidencia": incident_data,
     }
-    _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
-    # Patrón Adapter/Mediator: sincroniza la incidencia con HU-34 (service_completion.py)
-    from app.service_completion import register_service_incident
-
-    register_service_incident(
-        str(record.id),
-        incidencia_id=incident_data["incidencia_id"],
-        motivo=motivo_clean,
-        estado="ABIERTA",
-    )
+    _save_tracking(record, updated_tracking)
+    db.commit()
 
     return {
         "mensaje": "Incidencia registrada. Se ha detenido el cierre automático y la liberación de fondos hasta resolución administrativa.",
@@ -650,7 +626,7 @@ def open_service_incident_by_client(
         "modalidad": modalidad,
         "estado": "EN PROCESO",
         "incidencia": incident_data,
-        "seguimiento": get_service_reception_tracking(str(record.id)),
+        "seguimiento": get_service_reception_tracking(str(record.id), record=record),
     }
 
 
@@ -688,7 +664,7 @@ def resolve_service_incident_by_admin(
         )
 
     modalidad, record = _find_locked_request(db, solicitud_id)
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(str(record.id), {})
+    tracking = get_service_reception_tracking(str(record.id), record=record)
 
     if not tracking.get("incidencia_abierta") or not tracking.get("incidencia"):
         raise HTTPException(409, "Esta solicitud no tiene una incidencia abierta pendiente de resolución")
@@ -706,17 +682,11 @@ def resolve_service_incident_by_admin(
         }
     )
 
-    from app.service_completion import resolve_service_incidents
-
-    resolve_service_incidents(str(record.id), nuevo_estado="RESUELTA")
-
     if decision_norm == "COMPLETAR_SERVICIO":
         review_deadline = eval_now + timedelta(hours=REVIEW_WINDOW_HOURS)
-        record.estado = "Completada"
+        transition_request(db, record, "COMPLETADA", role="ADMIN", uid=uid, now=eval_now)
         if hasattr(record, "pendiente_recepcion"):
             record.pendiente_recepcion = False
-        db.commit()
-        db.refresh(record)
 
         incident["cierre_automatico_detenido"] = False
         incident["liberacion_fondos_retenida"] = False
@@ -730,7 +700,7 @@ def resolve_service_incident_by_admin(
         ).quantize(Decimal("0.01"))
 
         updated_tracking = {
-            **get_service_reception_tracking(str(record.id)),
+            **get_service_reception_tracking(str(record.id), record=record),
             **tracking,
             "incidencia_abierta": False,
             "cierre_automatico_detenido": False,
@@ -751,13 +721,14 @@ def resolve_service_incident_by_admin(
             "_closed_at_dt": eval_now,
             "_review_deadline_dt": review_deadline,
         }
-        _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+        _save_tracking(record, updated_tracking)
         completion_bundle = emit_and_process_idempotent_completion_event(
             record,
             modalidad=modalidad,
             autor_cierre="ADMIN",
             closed_at=eval_now,
         )
+        db.commit()
         return {
             "mensaje": "Incidencia resuelta por administración: el servicio ha pasado a Completada.",
             "solicitud_id": str(record.id),
@@ -766,19 +737,18 @@ def resolve_service_incident_by_admin(
             "incidencia": incident,
             "evento_cierre": completion_bundle["evento_cierre"],
             "efecto_financiero": completion_bundle["efecto_financiero"],
-            "seguimiento": get_service_reception_tracking(str(record.id)),
+            "seguimiento": get_service_reception_tracking(str(record.id), record=record),
         }
 
     if decision_norm == "CANCELAR_SERVICIO":
-        record.estado = "Cancelada"
-        db.commit()
-        db.refresh(record)
+        transition_request(db, record, "CANCELADA", role="ADMIN", uid=uid, now=eval_now)
+        record.pendiente_recepcion = False
 
         incident["cierre_automatico_detenido"] = True
         incident["liberacion_fondos_retenida"] = True
 
         updated_tracking = {
-            **get_service_reception_tracking(str(record.id)),
+            **get_service_reception_tracking(str(record.id), record=record),
             **tracking,
             "incidencia_abierta": False,
             "cierre_automatico_detenido": True,
@@ -788,35 +758,37 @@ def resolve_service_incident_by_admin(
             "acuerdo_inmutable": True,
             "resenas_habilitadas": False,
         }
-        _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+        _save_tracking(record, updated_tracking)
+        db.commit()
         return {
             "mensaje": "Incidencia resuelta por administración: el servicio fue cancelado sin liberación de fondos.",
             "solicitud_id": str(record.id),
             "modalidad": modalidad,
             "estado": "CANCELADA",
             "incidencia": incident,
-            "seguimiento": get_service_reception_tracking(str(record.id)),
+            "seguimiento": get_service_reception_tracking(str(record.id), record=record),
         }
 
     # DESBLOQUEAR_CONFIRMACION
     incident["cierre_automatico_detenido"] = False
     incident["liberacion_fondos_retenida"] = False
     updated_tracking = {
-        **get_service_reception_tracking(str(record.id)),
+        **get_service_reception_tracking(str(record.id), record=record),
         **tracking,
         "incidencia_abierta": False,
         "cierre_automatico_detenido": False,
         "liberacion_fondos_retenida": False,
         "incidencia": incident,
     }
-    _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+    _save_tracking(record, updated_tracking)
+    db.commit()
     return {
         "mensaje": "Incidencia desbloqueada por administración. El servicio puede ser confirmado.",
         "solicitud_id": str(record.id),
         "modalidad": modalidad,
         "estado": "EN PROCESO",
         "incidencia": incident,
-        "seguimiento": get_service_reception_tracking(str(record.id)),
+        "seguimiento": get_service_reception_tracking(str(record.id), record=record),
     }
 
 
@@ -847,11 +819,6 @@ def resolve_service_incident_endpoint(
 # --- HU-35 ST-04: Persistir evento único de cierre y consumidores financieros idempotentes ---
 
 DEFAULT_COMMISSION_RATE = Decimal("0.10")  # 10% de comisión de plataforma
-
-# Registros persistidos e idempotentes indexados por solicitud_id (clave de idempotencia única)
-_COMPLETION_EVENTS_BY_REQUEST: dict[str, dict[str, Any]] = {}
-_FINANCIAL_EFFECTS_BY_REQUEST: dict[str, dict[str, Any]] = {}
-
 
 class FinancialEffectStrategy(Protocol):
     """
@@ -927,8 +894,9 @@ def emit_and_process_idempotent_completion_event(
     solicitud_id = str(getattr(record, "id", "")).strip()
     eval_closed_at = _ensure_utc(closed_at)
 
-    existing_event = _COMPLETION_EVENTS_BY_REQUEST.get(solicitud_id)
-    existing_effect = _FINANCIAL_EFFECTS_BY_REQUEST.get(solicitud_id)
+    tracking = get_service_reception_tracking(solicitud_id, record=record)
+    existing_event = tracking.get("evento_cierre")
+    existing_effect = tracking.get("efecto_financiero")
 
     if existing_event is not None and existing_effect is not None:
         reused_event = {
@@ -939,10 +907,6 @@ def emit_and_process_idempotent_completion_event(
             **existing_effect,
             "reutilizado_idempotente": True,
         }
-        tracking = _RECEPTION_STATE_BY_REQUEST.get(solicitud_id)
-        if tracking is not None:
-            tracking["evento_cierre"] = reused_event
-            tracking["efecto_financiero"] = reused_effect
         return {
             "evento_cierre": reused_event,
             "efecto_financiero": reused_effect,
@@ -1010,13 +974,7 @@ def emit_and_process_idempotent_completion_event(
         "reutilizado_idempotente": False,
     }
 
-    _COMPLETION_EVENTS_BY_REQUEST[solicitud_id] = event_payload
-    _FINANCIAL_EFFECTS_BY_REQUEST[solicitud_id] = financial_effect
-
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(solicitud_id)
-    if tracking is not None:
-        tracking["evento_cierre"] = event_payload
-        tracking["efecto_financiero"] = financial_effect
+    _save_tracking(record, {**tracking, "evento_cierre": event_payload, "efecto_financiero": financial_effect})
 
     return {
         "evento_cierre": event_payload,
@@ -1027,6 +985,7 @@ def emit_and_process_idempotent_completion_event(
 
 def validate_sprint3_financial_settlement(
     solicitud_id: str,
+    db: Session,
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1036,10 +995,12 @@ def validate_sprint3_financial_settlement(
     en el Sprint 3 se valida el efecto financiero completo sin duplicar cierres anteriores.
     """
     clean_id = (solicitud_id or "").strip()
-    event_payload = _COMPLETION_EVENTS_BY_REQUEST.get(clean_id)
-    financial_effect = _FINANCIAL_EFFECTS_BY_REQUEST.get(clean_id)
+    _, record = _find_locked_request(db, clean_id)
+    tracking = get_service_reception_tracking(clean_id, record=record)
+    event_payload = tracking.get("evento_cierre")
+    financial_effect = (tracking.get("efecto_financiero") or {}).copy()
 
-    if event_payload is None or financial_effect is None:
+    if event_payload is None or not financial_effect:
         raise HTTPException(
             404,
             "No existe un evento de cierre persistido para validar la liquidación financiera de esta solicitud.",
@@ -1054,10 +1015,8 @@ def validate_sprint3_financial_settlement(
         # Garantiza que aplicaciones_financieras permanezca en 1 (sin duplicar cierres anteriores)
         financial_effect["aplicaciones_financieras"] = 1
 
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(clean_id)
-    if tracking is not None:
-        tracking["evento_cierre"] = event_payload
-        tracking["efecto_financiero"] = financial_effect
+    _save_tracking(record, {**tracking, "efecto_financiero": financial_effect})
+    db.commit()
 
     return {
         "mensaje": "Efecto financiero consolidado en Sprint 3 sin duplicar el cierre ni los cargos previos.",
@@ -1077,8 +1036,17 @@ def get_completion_event_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     clean_id = (solicitud_id or "").strip()
-    event_payload = _COMPLETION_EVENTS_BY_REQUEST.get(clean_id)
-    financial_effect = _FINANCIAL_EFFECTS_BY_REQUEST.get(clean_id)
+    _, record = _find_locked_request(db, clean_id)
+    user = db.scalar(select(User).where(User.firebase_uid == claims.get("uid")))
+    if user is None or (
+        user.firebase_uid not in (record.cliente_id, record.tecnico_id)
+        and str(user.id) != record.tecnico_id
+        and not any(role.rol == "ADMIN" for role in user.roles)
+    ):
+        raise HTTPException(403, "No tienes acceso a esta contratación")
+    tracking = get_service_reception_tracking(clean_id, record=record)
+    event_payload = tracking.get("evento_cierre")
+    financial_effect = (tracking.get("efecto_financiero") or {}).copy()
     if event_payload is None:
         raise HTTPException(404, "Aún no se ha emitido un evento de cierre para esta contratación")
     return {
@@ -1093,6 +1061,8 @@ def validate_sprint3_financial_settlement_endpoint(
     solicitud_id: str,
     response: Response,
     claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return validate_sprint3_financial_settlement(solicitud_id)
+    _require_reception_admin(claims, db)
+    return validate_sprint3_financial_settlement(solicitud_id, db)

@@ -1,3 +1,5 @@
+import RequestTimeline from "./RequestTimeline";
+import StartServiceAction from "./StartServiceAction";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
@@ -18,7 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
-import { formatLempiras } from "../lib/clientRequests";
+import { formatLempiras, formatRequestStateLabel } from "../lib/clientRequests";
 import {
   acceptPublishedBudgetApi,
   discardOpportunityApi,
@@ -53,18 +55,11 @@ function formatDateTime(iso: string | null | undefined): string {
   });
 }
 
-function formatOpportunityStateLabel(estado: string): string {
-  const key = (estado || "PUBLICADA").trim().toUpperCase().replace(/\s+/g, "_");
-  if (key === "CON_OFERTAS") return "Con ofertas";
-  if (key === "PUBLICADA") return "Publicada";
-  return estado;
-}
-
 function OpportunityStateBadge({ estado }: { estado: string }) {
   const key = (estado || "PUBLICADA").trim().toUpperCase().replace(/\s+/g, "_").toLowerCase();
   return (
     <span className={`request-status-badge request-status-${key}`}>
-      {formatOpportunityStateLabel(estado)}
+      {formatRequestStateLabel(estado)}
     </span>
   );
 }
@@ -586,7 +581,7 @@ export default function TechnicianOpportunitiesManager({
             {page.solicitudes.map((item) => (
               <article
                 key={item.id}
-                className={`client-request-item${selectedId === item.id ? " client-request-item-selected" : ""}`}
+                className={`client-request-item opportunity-card${selectedId === item.id ? " client-request-item-selected" : ""}`}
               >
                 <div className="client-request-item-main">
                   <div className="client-request-badges">
@@ -619,13 +614,13 @@ export default function TechnicianOpportunitiesManager({
                   </p>
                 </div>
 
-                <div className="client-request-item-side">
+                <div className="client-request-item-side opportunity-card-footer">
                   <div className="client-request-budget">
                     <span>Presupuesto ofrecido</span>
                     <strong>{formatLempiras(item.presupuesto)}</strong>
                   </div>
 
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <div className="opportunity-card-actions">
                     {!item.mi_propuesta ? (
                       <>
                       <Button
@@ -780,96 +775,111 @@ export default function TechnicianOpportunitiesManager({
                 <p>{detail.descripcion}</p>
               </section>
 
-              <section className="client-request-box" aria-label="Acciones sobre la oportunidad">
-                <h3>Postulación y acciones sobre esta publicación</h3>
-                <div className="client-request-actions">
-                                    {detail.mi_propuesta ? (
-                    <div className="client-request-action-row" role="status">
-                      <div>
-                        <strong>
-                          {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "Contraoferta enviada" : "Propuesta enviada"} · Pendiente de decisión del cliente
-                        </strong>
-                        <p>
-                          Te postulaste con{" "}
-                          {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "una contraoferta de " : "el monto de "}
-                          <strong>{formatLempiras(detail.mi_propuesta.monto)}</strong> el{" "}
-                          {formatDateTime(detail.mi_propuesta.creada_en)}. El trabajo no se adjudica
-                          automáticamente hasta que el cliente tome una decisión.
-                        </p>
-                        {detail.mi_propuesta.justificacion && (
-                          <p style={{ margin: "4px 0 0", fontStyle: "italic", color: "var(--muted)" }}>
-                            Justificación: "{detail.mi_propuesta.justificacion}"
+              {detail.linea_tiempo ? (
+                <>
+                  <RequestTimeline items={detail.linea_tiempo} />
+                  {detail.estado === "ACEPTADA" && !detail.ubicacion_exacta_protegida && (
+                    <StartServiceAction
+                      user={user}
+                      path={`/open-requests/${encodeURIComponent(detail.id)}/start`}
+                      paymentMethod={detail.metodo_pago}
+                      cardPaymentConfirmed={detail.pago_tarjeta_confirmado}
+                      onStarted={() => setRefreshTick((tick) => tick + 1)}
+                    />
+                  )}
+                </>
+              ) : (
+                <section className="client-request-box" aria-label="Acciones sobre la oportunidad">
+                  <h3>Postulación y acciones sobre esta publicación</h3>
+                  <div className="client-request-actions">
+                    {detail.mi_propuesta ? (
+                      <div className="client-request-action-row" role="status">
+                        <div>
+                          <strong>
+                            {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "Contraoferta enviada" : "Propuesta enviada"} · Pendiente de decisión del cliente
+                          </strong>
+                          <p>
+                            Te postulaste con{" "}
+                            {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "una contraoferta de " : "el monto de "}
+                            <strong>{formatLempiras(detail.mi_propuesta.monto)}</strong> el{" "}
+                            {formatDateTime(detail.mi_propuesta.creada_en)}. El trabajo no se adjudica
+                            automáticamente hasta que el cliente tome una decisión.
                           </p>
-                        )}
+                          {detail.mi_propuesta.justificacion && (
+                            <p style={{ margin: "4px 0 0", fontStyle: "italic", color: "var(--muted)" }}>
+                              Justificación: "{detail.mi_propuesta.justificacion}"
+                            </p>
+                          )}
+                        </div>
+                        <Button type="button" className="button-outline" style={{ width: "auto" }} disabled>
+                          <CheckCircle2 size={15} />
+                          Propuesta activa ({detail.mi_propuesta.estado})
+                        </Button>
                       </div>
-                      <Button type="button" className="button-outline" style={{ width: "auto" }} disabled>
-                        <CheckCircle2 size={15} />
-                        Propuesta activa ({detail.mi_propuesta.estado})
+                    ) : (
+                      <>
+                        <div className="client-request-action-row">
+                          <div>
+                            <strong>Aceptar monto publicado ({formatLempiras(detail.presupuesto)})</strong>
+                            <p>
+                              Envía tu propuesta por el presupuesto del cliente. Tu postulación quedará en estado
+                              pendiente de decisión sin adjudicar el trabajo automáticamente.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            style={{ width: "auto" }}
+                            disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
+                            onClick={() => handleAcceptBudget(detail.id, true)}
+                          >
+                            <CheckCircle2 size={15} />
+                            {acceptingBudgetId === detail.id ? "Enviando propuesta…" : "Aceptar monto publicado"}
+                          </Button>
+                        </div>
+
+                        <div className="client-request-action-row">
+                          <div>
+                            <strong>Proponer otro monto (Contraoferta)</strong>
+                            <p>
+                              Si consideras que el presupuesto no cubre los costos o complejidad, envía una contraoferta con el monto que propones.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            className="button-outline"
+                            style={{ width: "auto" }}
+                            disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
+                            onClick={() => setCounterOfferTarget(detail)}
+                          >
+                            <DollarSign size={15} />
+                            Proponer otro monto
+                          </Button>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="client-request-action-row">
+                      <div>
+                        <strong>Descartar de mi listado</strong>
+                        <p>
+                          Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
+                          técnicos.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        className="button-outline"
+                        style={{ width: "auto" }}
+                        disabled={discardingId === detail.id || acceptingBudgetId === detail.id}
+                        onClick={() => handleDiscard(detail.id, true)}
+                      >
+                        <EyeOff size={15} />
+                        {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
                       </Button>
                     </div>
-                  ) : (
-                    <>
-                      <div className="client-request-action-row">
-                        <div>
-                          <strong>Aceptar monto publicado ({formatLempiras(detail.presupuesto)})</strong>
-                          <p>
-                            Envía tu propuesta por el presupuesto del cliente. Tu postulación quedará en estado
-                            pendiente de decisión sin adjudicar el trabajo automáticamente.
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          style={{ width: "auto" }}
-                          disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
-                          onClick={() => handleAcceptBudget(detail.id, true)}
-                        >
-                          <CheckCircle2 size={15} />
-                          {acceptingBudgetId === detail.id ? "Enviando propuesta…" : "Aceptar monto publicado"}
-                        </Button>
-                      </div>
-
-                      <div className="client-request-action-row">
-                        <div>
-                          <strong>Proponer otro monto (Contraoferta)</strong>
-                          <p>
-                            Si consideras que el presupuesto no cubre los costos o complejidad, envía una contraoferta con el monto que propones.
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          className="button-outline"
-                          style={{ width: "auto" }}
-                          disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
-                          onClick={() => setCounterOfferTarget(detail)}
-                        >
-                          <DollarSign size={15} />
-                          Proponer otro monto
-                        </Button>
-                      </div>
-                    </>
-                  )}
-
-                  <div className="client-request-action-row">
-                    <div>
-                      <strong>Descartar de mi listado</strong>
-                      <p>
-                        Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
-                        técnicos.
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      className="button-outline"
-                      style={{ width: "auto" }}
-                      disabled={discardingId === detail.id || acceptingBudgetId === detail.id}
-                      onClick={() => handleDiscard(detail.id, true)}
-                    >
-                      <EyeOff size={15} />
-                      {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
-                    </Button>
                   </div>
-                </div>
-              </section>
+                </section>
+              )}
             </section>
           )}
         </OpportunityDetailModal>
