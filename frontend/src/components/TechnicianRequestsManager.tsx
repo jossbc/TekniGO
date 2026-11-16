@@ -14,6 +14,7 @@ import {
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
 import { Button } from "./ui";
+import ServiceLocationContactCard from "../lib/ServiceLocationContactCard";
 
 export type DirectRequest = TechnicianDirectRequest;
 
@@ -339,6 +340,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const totalEstimado = Number(req.total_estimado ?? 0);
             const isPendingReception =
               normalizedState === "EN_PROCESO" &&
+              !req.incidencia_abierta &&
               Boolean(req.pendiente_recepcion || req.finalizacion_reportada_en || req.finalizacion_reportada_local);
             const hasPendingAdjustment = Boolean(req.tiene_ajuste_pendiente);
             const reportedAtIso = req.finalizacion_reportada_local || req.finalizacion_reportada_en;
@@ -382,18 +384,22 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     >
                       {modality === "ABIERTA" ? "Solicitud abierta" : "Solicitud directa"}
                     </span>
-                    <span
+                                        <span
                       className="status-pill"
                       style={{
-                        background: config.bg,
-                        color: config.color,
-                        border: `1px solid ${config.border}`,
+                        background: req.incidencia_abierta ? "#fef2f2" : config.bg,
+                        color: req.incidencia_abierta ? "#b91c1c" : config.color,
+                        border: `1px solid ${req.incidencia_abierta ? "#fecaca" : config.border}`,
                         fontWeight: 650,
                         fontSize: "11px",
                       }}
                     >
                       <StatusIcon size={14} />
-                      {isPendingReception ? "En proceso · Pendiente de recepción" : config.label}
+                      {req.incidencia_abierta
+                        ? "En revisión por incidencia"
+                        : isPendingReception
+                        ? "En proceso · Pendiente de recepción"
+                        : config.label}
                     </span>
                   </div>
 
@@ -426,6 +432,15 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     "{req.descripcion}"
                   </div>
 
+                  {/* HU-31 CA-06 / HU-23 / HU-35: Tarjeta de Ubicación y Contacto Reutilizable */}
+                  <ServiceLocationContactCard
+                    municipio={req.municipio}
+                    sector={req.sector}
+                    direccionExacta={req.direccion_exacta}
+                    telefono={req.cliente_telefono}
+                    isPendingAcceptance={normalizedState === "PENDIENTE"}
+                  />
+
                   {/* Total */}
                   <div style={{ margin: "12px 0 0 48px", display: "flex", alignItems: "center", gap: "6px" }}>
                     <span style={{ fontSize: "13px", color: "var(--muted)" }}>Total a cobrar:</span>
@@ -435,6 +450,34 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   </div>
 
                   {/* HU-34 CA-02 & CA-03: Visualización de pendiente de recepción y vencimiento de 48h en America/Tegucigalpa */}
+                                    {/* HU-35 CA-04: Aviso al técnico cuando el cliente abre una incidencia */}
+                  {req.incidencia_abierta && (
+                    <div
+                      role="alert"
+                      style={{
+                        margin: "12px 0 0 48px",
+                        padding: "12px 14px",
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: "10px",
+                        fontSize: "13px",
+                        color: "#991b1b",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                        Incidencia reportada por el cliente · Cierre automático y fondos retenidos
+                      </div>
+                      <div>
+                        El cliente abrió una incidencia dentro del plazo de 48 horas. El cierre automático se ha detenido y la liberación de fondos permanece retenida hasta la resolución administrativa.
+                      </div>
+                      {req.incidencia?.motivo && (
+                        <div style={{ marginTop: "6px" }}>
+                          <strong>Motivo reportado:</strong> {req.incidencia.motivo}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {isPendingReception && (
                     <div
                       role="region"
