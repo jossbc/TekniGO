@@ -155,8 +155,8 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
             {roleNotice}
           </div>
         )}
-        {profile && <EmailVerification user={user} hideWhenVerified={space === "CLIENTE" || space === "TECNICO"} />}
-        {profile && <PhoneVerification user={user} hideWhenVerified={space === "CLIENTE" || space === "TECNICO"} />}
+        {profile && <EmailVerification user={user} hideWhenVerified />}
+        {profile && <PhoneVerification user={user} hideWhenVerified />}
         {roleNotice && (
           <div className="success-alert" role="status">
             {roleNotice}
