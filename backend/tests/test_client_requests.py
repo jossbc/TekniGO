@@ -21,7 +21,22 @@ from app.client_requests import (
 )
 from app.database import Base
 from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User, UserRole
-
+from app.service_reception import (
+    AdminResolveIncidentSchema,
+    ConfirmReceptionSchema,
+    OpenServiceIncidentSchema,
+    ReportCompletionSchema,
+    _COMPLETION_EVENTS_BY_REQUEST,
+    _FINANCIAL_EFFECTS_BY_REQUEST,
+    _RECEPTION_STATE_BY_REQUEST,
+    confirm_service_reception_by_client,
+    is_review_window_open,
+    open_service_incident_by_client,
+    report_service_completion_by_technician,
+    resolve_service_incident_by_admin,
+    run_scheduled_auto_completion,
+    validate_sprint3_financial_settlement,
+)
 
 class ClientRequestsPaginationTests(unittest.TestCase):
     def setUp(self):
@@ -508,3 +523,255 @@ class ClientRequestsPaginationTests(unittest.TestCase):
                     self.db,
                 )
             self.assertEqual(action_foreign.exception.status_code, 403)
+
+
+class ServiceReceptionHU35Tests(unittest.TestCase):
+    _add_user = ClientRequestsPaginationTests._add_user
+    _add_direct_request = ClientRequestsPaginationTests._add_direct_request
+
+    def setUp(self):
+        ClientRequestsPaginationTests.setUp(self)
+        _RECEPTION_STATE_BY_REQUEST.clear()
+        _COMPLETION_EVENTS_BY_REQUEST.clear()
+        _FINANCIAL_EFFECTS_BY_REQUEST.clear()
+        self.admin_user = self._add_user("admin-1", "Admin TekniGO", "ADMIN", "9")
+        self.db.commit()
+
+    def tearDown(self):
+        _RECEPTION_STATE_BY_REQUEST.clear()
+        _COMPLETION_EVENTS_BY_REQUEST.clear()
+        _FINANCIAL_EFFECTS_BY_REQUEST.clear()
+        ClientRequestsPaginationTests.tearDown(self)
+    def test_hu35_ca01_ca02_permisos_confirmacion_inmutabilidad_y_plazo_resena_48h(self):
+        """CA-01, CA-02 y plazos independientes: solo el propietario confirma En proceso con finalización reportada."""
+        req = self._add_direct_request(
+            client_uid=self.client_a.firebase_uid,
+            estado="Aceptada",
+            monto_base="1000.00",
+        )
+        t0 = datetime(2026, 11, 10, 18, 0, tzinfo=timezone.utc)
+        # Sin reporte de finalización aún no se puede confirmar
+        with self.assertRaises(HTTPException) as err_not_in_progress:
+            confirm_service_reception_by_client(
+                req.id,
+                {"uid": self.client_a.firebase_uid},
+                self.db,
+                now=t0,
+            )
+        self.assertEqual(err_not_in_progress.exception.status_code, 409)
+        # El técnico reporta la finalización -> pasa a 'En proceso' e inicia plazo de 48h
+        report_res = report_service_completion_by_technician(
+            req.id,
+            {"uid": self.tech_only.firebase_uid},
+            self.db,
+            payload=ReportCompletionSchema(notas_finalizacion="Instalación completada y probada"),
+            now=t0,
+        )
+        self.assertEqual(report_res["estado"], "EN PROCESO")
+        self.assertTrue(report_res["seguimiento"]["finalizacion_reportada"])
+        self.assertTrue(
+            report_res["seguimiento"]["finalizacion_reportada_tegucigalpa"].endswith("-06:00")
+        )
+        # CA-01: Otro cliente no propietario recibe 403 Forbidden
+        with self.assertRaises(HTTPException) as err_foreign:
+            confirm_service_reception_by_client(
+                req.id,
+                {"uid": self.client_b.firebase_uid},
+                self.db,
+                now=t0 + timedelta(hours=2),
+            )
+        self.assertEqual(err_foreign.exception.status_code, 403)
+        # CA-01 y CA-02: El cliente propietario confirma a las 10 horas del reporte
+        t_confirm = t0 + timedelta(hours=10)
+        confirm_res = confirm_service_reception_by_client(
+            req.id,
+            {"uid": self.client_a.firebase_uid},
+            self.db,
+            payload=ConfirmReceptionSchema(comentario="Excelente trabajo"),
+            now=t_confirm,
+        )
+        self.assertEqual(confirm_res["estado"], "COMPLETADA")
+        self.assertEqual(confirm_res["autor_cierre"], "CLIENTE")
+        self.assertTrue(confirm_res["acuerdo_inmutable"])
+        self.assertTrue(confirm_res["fecha_cierre_tegucigalpa"].endswith("-06:00"))
+        # Plazo independiente de 48h para reseñas empieza en t_confirm
+        self.assertTrue(is_review_window_open(req.id, now=t_confirm + timedelta(hours=47, minutes=59)))
+        self.assertFalse(is_review_window_open(req.id, now=t_confirm + timedelta(hours=48, seconds=1)))
+        # CA-02: Acuerdo y estados inmutables tras completar
+        with self.assertRaises(HTTPException) as err_immutable:
+            apply_client_request_action(
+                req.id,
+                "CANCELAR",
+                {"uid": self.client_a.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(err_immutable.exception.status_code, 409)
+    def test_hu35_ca03_proceso_automatico_48h_con_reloj_controlado_y_autor_sistema(self):
+        """CA-03: Si transcurren 48h sin confirmación ni incidencia, el proceso automático completa una sola vez con autor SISTEMA."""
+        req = self._add_direct_request(
+            client_uid=self.client_a.firebase_uid,
+            estado="Aceptada",
+            monto_base="800.00",
+        )
+        t0 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+        report_service_completion_by_technician(
+            req.id,
+            {"uid": self.tech_only.firebase_uid},
+            self.db,
+            now=t0,
+        )
+        # A las 47h 59m aún NO vence el plazo de confirmación
+        before_48h = run_scheduled_auto_completion(
+            self.db,
+            now=t0 + timedelta(hours=47, minutes=59),
+        )
+        self.assertEqual(before_48h["total_completadas_automaticamente"], 0)
+        # Exactamente a las 48h se completa automáticamente con autor SISTEMA
+        at_48h = run_scheduled_auto_completion(
+            self.db,
+            now=t0 + timedelta(hours=48),
+        )
+        self.assertEqual(at_48h["total_completadas_automaticamente"], 1)
+        self.assertIn(req.id, at_48h["solicitudes_completadas"])
+        detail = get_client_request_detail(req.id, {"uid": self.client_a.firebase_uid}, self.db)
+        self.assertEqual(detail["estado"], "COMPLETADA")
+        self.assertEqual(detail["seguimiento_recepcion"]["autor_cierre"], "SISTEMA")
+        self.assertTrue(detail["seguimiento_recepcion"]["acuerdo_inmutable"])
+        # Segunda ejecución del proceso programado no vuelve a completarla
+        second_run = run_scheduled_auto_completion(
+            self.db,
+            now=t0 + timedelta(hours=50),
+        )
+        self.assertEqual(second_run["total_completadas_automaticamente"], 0)
+        self.assertIn(req.id, second_run["solicitudes_ya_completadas"])
+    def test_hu35_ca04_incidencia_previa_detiene_cierre_automatico_hasta_resolucion_admin(self):
+        """CA-04: Si el cliente abre incidencia dentro de las 48h, se detiene el cierre automático y la liberación de fondos."""
+        req = self._add_direct_request(
+            client_uid=self.client_a.firebase_uid,
+            estado="Aceptada",
+            monto_base="1200.00",
+        )
+        t0 = datetime(2026, 11, 10, 15, 0, tzinfo=timezone.utc)
+        report_service_completion_by_technician(
+            req.id,
+            {"uid": self.tech_only.firebase_uid},
+            self.db,
+            now=t0,
+        )
+        # El cliente abre una incidencia a las 12h (dentro del plazo de 48h)
+        inc_res = open_service_incident_by_client(
+            req.id,
+            OpenServiceIncidentSchema(motivo="El tomacorriente instalado presenta falso contacto"),
+            {"uid": self.client_a.firebase_uid},
+            self.db,
+            now=t0 + timedelta(hours=12),
+        )
+        self.assertTrue(inc_res["seguimiento"]["incidencia_abierta"])
+        self.assertTrue(inc_res["seguimiento"]["cierre_automatico_detenido"])
+        self.assertTrue(inc_res["seguimiento"]["liberacion_fondos_retenida"])
+        # Mientras la incidencia esté abierta, ni el cliente puede confirmar ni el job de 48h puede cerrarla
+        with self.assertRaises(HTTPException) as err_blocked_confirm:
+            confirm_service_reception_by_client(
+                req.id,
+                {"uid": self.client_a.firebase_uid},
+                self.db,
+                now=t0 + timedelta(hours=20),
+            )
+        self.assertEqual(err_blocked_confirm.exception.status_code, 409)
+        auto_after_72h = run_scheduled_auto_completion(
+            self.db,
+            now=t0 + timedelta(hours=72),
+        )
+        self.assertEqual(auto_after_72h["total_completadas_automaticamente"], 0)
+        self.assertIn(req.id, auto_after_72h["solicitudes_bloqueadas_por_incidencia"])
+        self.assertNotIn(req.id, _COMPLETION_EVENTS_BY_REQUEST)
+        # Resolución administrativa COMPLETAR_SERVICIO libera el cierre y emite el evento único
+        admin_res = resolve_service_incident_by_admin(
+            req.id,
+            AdminResolveIncidentSchema(
+                decision="COMPLETAR_SERVICIO",
+                resolucion="Se verificó la corrección técnica en sitio y procede el cierre.",
+            ),
+            {"uid": self.admin_user.firebase_uid},
+            self.db,
+            now=t0 + timedelta(hours=80),
+        )
+        self.assertEqual(admin_res["estado"], "COMPLETADA")
+        self.assertEqual(admin_res["seguimiento"]["autor_cierre"], "ADMIN")
+        self.assertFalse(admin_res["seguimiento"]["liberacion_fondos_retenida"])
+        self.assertEqual(admin_res["evento_cierre"]["veces_emitido"], 1)
+    def test_hu35_ca05_ca06_ca07_evento_unico_efectivo_sprint2_sprint3_y_concurrencia(self):
+        """CA-05, CA-06 y CA-07: Evento único con efectivo/tarjeta, validación Sprint 3 sin duplicar y concurrencia."""
+        # 1. Solicitud en efectivo (Sprint 2 registra deuda por comisión y Sprint 3 consolida sin duplicar)
+        req_cash = self._add_direct_request(
+            client_uid=self.client_a.firebase_uid,
+            estado="Aceptada",
+            monto_base="1000.00",
+        )
+        req_cash.metodo_pago = "efectivo"
+        self.db.commit()
+        t0 = datetime(2026, 11, 11, 10, 0, tzinfo=timezone.utc)
+        report_service_completion_by_technician(
+            req_cash.id,
+            {"uid": self.tech_only.firebase_uid},
+            self.db,
+            now=t0,
+        )
+        # El proceso automático cierra a las 48h y en el mismo instante el cliente envía confirmación manual (CA-07)
+        t_48h = t0 + timedelta(hours=48)
+        auto_res = run_scheduled_auto_completion(self.db, now=t_48h)
+        self.assertEqual(auto_res["total_completadas_automaticamente"], 1)
+        concurrent_client_res = confirm_service_reception_by_client(
+            req_cash.id,
+            {"uid": self.client_a.firebase_uid},
+            self.db,
+            now=t_48h,
+        )
+        self.assertTrue(concurrent_client_res["reintento_idempotente"])
+        self.assertEqual(concurrent_client_res["autor_cierre"], "SISTEMA")
+        self.assertTrue(concurrent_client_res["evento_cierre"]["reutilizado_idempotente"])
+        self.assertEqual(concurrent_client_res["evento_cierre"]["veces_emitido"], 1)
+        self.assertEqual(
+            concurrent_client_res["efecto_financiero"]["tipo_efecto"],
+            "DEUDA_COMISION_EFECTIVO_REGISTRADA",
+        )
+        self.assertEqual(concurrent_client_res["efecto_financiero"]["monto_comision"], 100.0)
+        self.assertEqual(concurrent_client_res["efecto_financiero"]["deuda_comision_efectivo"], 100.0)
+        self.assertEqual(concurrent_client_res["efecto_financiero"]["credito_digital_acreditado"], 0.0)
+        self.assertEqual(concurrent_client_res["efecto_financiero"]["aplicaciones_financieras"], 1)
+        # CA-06: En Sprint 3 se valida el efecto financiero completo sin duplicar cierres anteriores
+        sprint3_res = validate_sprint3_financial_settlement(
+            req_cash.id,
+            now=t_48h + timedelta(days=5),
+        )
+        self.assertFalse(sprint3_res["duplicado_generado"])
+        self.assertTrue(sprint3_res["efecto_financiero"]["validado_sprint_3"])
+        self.assertEqual(sprint3_res["efecto_financiero"]["estado_liquidacion"], "CONSOLIDADO_SPRINT_3")
+        self.assertEqual(sprint3_res["efecto_financiero"]["aplicaciones_financieras"], 1)
+        # 2. Solicitud con tarjeta (acredita fondos digitales netos al técnico una sola vez)
+        req_card = self._add_direct_request(
+            client_uid=self.client_a.firebase_uid,
+            estado="Aceptada",
+            monto_base="500.00",
+        )
+        req_card.metodo_pago = "tarjeta"
+        self.db.commit()
+        report_service_completion_by_technician(
+            req_card.id,
+            {"uid": self.tech_only.firebase_uid},
+            self.db,
+            now=t0,
+        )
+        card_close = confirm_service_reception_by_client(
+            req_card.id,
+            {"uid": self.client_a.firebase_uid},
+            self.db,
+            now=t0 + timedelta(hours=4),
+        )
+        self.assertEqual(
+            card_close["efecto_financiero"]["tipo_efecto"],
+            "FONDOS_DIGITALES_ACREDITADOS",
+        )
+        self.assertEqual(card_close["efecto_financiero"]["monto_comision"], 50.0)
+        self.assertEqual(card_close["efecto_financiero"]["credito_digital_acreditado"], 450.0)
+        self.assertEqual(card_close["efecto_financiero"]["deuda_comision_efectivo"], 0.0)

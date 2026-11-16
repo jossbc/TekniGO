@@ -25,7 +25,9 @@ import {
   MODALIDAD_OPTIONS,
   TEGUCIGALPA_TIME_ZONE,
   awardProposalApi,
+  confirmReceptionApi,
   executeMyRequestAction,
+  formatDateTimeTegucigalpa,
   formatConfirmationWindowStatus,
   formatLempiras,
   formatRequestModalityLabel,
@@ -34,7 +36,9 @@ import {
   formatUnitLabel,
   getMyRequestDetail,
   listMyRequests,
+  openServiceIncidentApi,
   rejectProposalApi,
+  resolveReceptionUiState,
   type ClientRequestDetail,
   type ClientRequestsPageResponse,
   type EstadoFiltro,
@@ -58,15 +62,24 @@ function formatDateTime(iso: string | null | undefined): string {
 function StateBadge({
   estado,
   pendienteRecepcion,
+  incidenciaAbierta,
 }: {
   estado: string;
   pendienteRecepcion?: boolean;
+  incidenciaAbierta?: boolean;
 }) {
   const normalized = (estado || "PENDIENTE").toUpperCase();
   const slug = normalized.toLowerCase().replaceAll(/\s+/g, "_");
   return (
-    <span className={`request-status-badge request-status-${slug}`}>
-      {formatRequestStateLabel(normalized, pendienteRecepcion)}
+    <span
+      className={`request-status-badge request-status-${slug}`}
+      style={
+        incidenciaAbierta
+          ? { background: "#fef2f2", color: "#b91c1c", borderColor: "#fecaca" }
+          : undefined
+      }
+    >
+      {formatRequestStateLabel(normalized, pendienteRecepcion, incidenciaAbierta)}
     </span>
   );
 }
@@ -417,6 +430,56 @@ export default function ClientRequestsManager({
     void executeAwardProposal(confirmAwardProp, "tarjeta", result.referenciaPasarela);
   }
 
+  const [receptionComment, setReceptionComment] = useState("");
+  const [confirmingReception, setConfirmingReception] = useState(false);
+  const [showIncidentForm, setShowIncidentForm] = useState(false);
+  const [incidentReason, setIncidentReason] = useState("");
+  const [openingIncident, setOpeningIncident] = useState(false);
+
+  async function handleConfirmReception() {
+    if (!detail || confirmingReception) return;
+    setConfirmingReception(true);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const res = await confirmReceptionApi(user, detail.id, receptionComment);
+      setActionNotice(res.mensaje || "Recepción confirmada exitosamente.");
+      setReceptionComment("");
+      setShowIncidentForm(false);
+      const updatedDetail = await getMyRequestDetail(user, detail.id);
+      setDetail(updatedDetail);
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+    } finally {
+      setConfirmingReception(false);
+    }
+  }
+
+  async function handleOpenIncident() {
+    if (!detail || openingIncident) return;
+    if (incidentReason.trim().length < 5) {
+      setDetailError("Describe el motivo de la incidencia con al menos 5 caracteres.");
+      return;
+    }
+    setOpeningIncident(true);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const res = await openServiceIncidentApi(user, detail.id, incidentReason);
+      setActionNotice(res.mensaje || "Incidencia reportada. Se detuvo el cierre automático.");
+      setIncidentReason("");
+      setShowIncidentForm(false);
+      const updatedDetail = await getMyRequestDetail(user, detail.id);
+      setDetail(updatedDetail);
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+    } finally {
+      setOpeningIncident(false);
+    }
+  }
+
   return (
     <div className="client-requests-section">
       <div className="client-requests-toolbar">
@@ -514,71 +577,72 @@ export default function ClientRequestsManager({
           </div>
 
           <div className="client-requests-list">
-            {page.solicitudes.map((item) => (
-              <article
-                key={item.id}
-                className={`client-request-item${selectedId === item.id ? " client-request-item-selected" : ""}`}
-              >
-                <div className="client-request-item-main">
-                  <div className="client-request-badges">
-                    <ModalityBadge modalidad={item.modalidad} />
-                    <StateBadge
-                      estado={item.estado}
-                      pendienteRecepcion={Boolean(
-                        item.pendiente_recepcion ||
-                          item.finalizacion_reportada_en ||
-                          item.finalizacion_reportada_local,
+                        {page.solicitudes.map((item) => {
+              const itemReceptionUi = resolveReceptionUiState(item);
+              return (
+                <article
+                  key={item.id}
+                  className={`client-request-item${selectedId === item.id ? " client-request-item-selected" : ""}`}
+                >
+                  <div className="client-request-item-main">
+                    <div className="client-request-badges">
+                      <ModalityBadge modalidad={item.modalidad} />
+                      <StateBadge
+                        estado={item.estado}
+                        pendienteRecepcion={itemReceptionUi.isPendingReceptionBadge}
+                        incidenciaAbierta={itemReceptionUi.isBlockedByIncident}
+                      />
+                    </div>
+                    <h3>{item.servicio?.nombre || "Servicio solicitado"}</h3>
+                    <p className="client-request-meta">
+                      <span>
+                        <Calendar size={14} aria-hidden="true" /> Programado: {formatDateTime(item.fecha_hora)}
+                      </span>
+                      {item.tecnico?.nombre_completo ? (
+                        <span>
+                          <UserCheck size={14} aria-hidden="true" /> Técnico: {item.tecnico.nombre_completo}
+                        </span>
+                      ) : (
+                        <span>
+                          <Clock3 size={14} aria-hidden="true" /> Técnico: Pendiente de selección
+                        </span>
                       )}
-                    />
-                  </div>
-                  <h3>{item.servicio?.nombre || "Servicio solicitado"}</h3>
-                  <p className="client-request-meta">
-                    <span>
-                      <Calendar size={14} aria-hidden="true" /> Programado: {formatDateTime(item.fecha_hora)}
-                    </span>
-                    {item.tecnico?.nombre_completo ? (
-                      <span>
-                        <UserCheck size={14} aria-hidden="true" /> Técnico: {item.tecnico.nombre_completo}
-                      </span>
-                    ) : (
-                      <span>
-                        <Clock3 size={14} aria-hidden="true" /> Técnico: Pendiente de selección
-                      </span>
-                    )}
-                    {item.municipio && (
-                      <span>
-                        <MapPin size={14} aria-hidden="true" /> {item.municipio}
-                        {item.sector ? `, ${item.sector}` : ""}
-                      </span>
-                    )}
-                    {(item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en) && (
-                      <span>
-                        <Clock3 size={14} aria-hidden="true" /> Vence confirmación (48 h):{" "}
-                        {formatTegucigalpaDateTime(
-                          item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en,
+                      {item.municipio && (
+                        <span>
+                          <MapPin size={14} aria-hidden="true" /> {item.municipio}
+                          {item.sector ? `, ${item.sector}` : ""}
+                        </span>
+                      )}
+                      {itemReceptionUi.showConfirmationCountdown &&
+                        (item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en) && (
+                          <span>
+                            <Clock3 size={14} aria-hidden="true" /> Vence confirmación (48 h):{" "}
+                            {formatTegucigalpaDateTime(
+                              item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en,
+                            )}
+                          </span>
                         )}
-                      </span>
-                    )}
-                  </p>
-                </div>
-
-                <div className="client-request-item-side">
-                  <div className="client-request-budget">
-                    <span>Presupuesto</span>
-                    <strong>{formatLempiras(item.presupuesto)}</strong>
+                    </p>
                   </div>
-                  <Button
-                    type="button"
-                    className="button-outline"
-                    aria-label={`Ver detalle de ${item.servicio?.nombre || "solicitud"}`}
-                    onClick={() => openDetail(item.id)}
-                  >
-                    <FileText size={15} />
-                    Ver detalle
-                  </Button>
-                </div>
-              </article>
-            ))}
+
+                  <div className="client-request-item-side">
+                    <div className="client-request-budget">
+                      <span>Presupuesto</span>
+                      <strong>{formatLempiras(item.presupuesto)}</strong>
+                    </div>
+                    <Button
+                      type="button"
+                      className="button-outline"
+                      aria-label={`Ver detalle de ${item.servicio?.nombre || "solicitud"}`}
+                      onClick={() => openDetail(item.id)}
+                    >
+                      <FileText size={15} />
+                      Ver detalle
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
 
           <div className="admin-toolbar admin-pagination">
@@ -620,15 +684,16 @@ export default function ClientRequestsManager({
           )}
           {detail && (
             <section className="client-request-detail" aria-label="Detalle de solicitud seleccionada">
-              <div className="client-request-badges" style={{ marginBottom: 12 }}>
+                            <div className="client-request-badges" style={{ marginBottom: 12 }}>
                 <ModalityBadge modalidad={detail.modalidad} />
-                <StateBadge
+                                <StateBadge
                   estado={detail.estado}
-                  pendienteRecepcion={Boolean(
-                    detail.pendiente_recepcion ||
-                      detail.finalizacion_reportada_en ||
-                      detail.finalizacion_reportada_local,
-                  )}
+                  pendienteRecepcion={
+                    resolveReceptionUiState(detail, detail.seguimiento_recepcion).isPendingReceptionBadge
+                  }
+                  incidenciaAbierta={
+                    resolveReceptionUiState(detail, detail.seguimiento_recepcion).isBlockedByIncident
+                  }
                 />
               </div>
 
@@ -638,51 +703,70 @@ export default function ClientRequestsManager({
                 {formatDateTime(detail.creada_en)}
               </p>
 
-              {/* HU-34 CA-02 & CA-03: Aviso de finalización reportada y plazo máximo de 48h en America/Tegucigalpa */}
-              {Boolean(
-                detail.pendiente_recepcion ||
-                  detail.finalizacion_reportada_en ||
-                  detail.finalizacion_reportada_local,
-              ) && (
+              {/* HU-34 & HU-35: Banner superior sincronizado mediante State Resolver */}
+              {resolveReceptionUiState(detail, detail.seguimiento_recepcion).isBlockedByIncident ? (
                 <section
                   className="client-request-box"
-                  aria-label="Plazo de confirmación de trabajo finalizado"
+                  aria-label="Incidencia abierta en revisión administrativa"
                   style={{
-                    background: "#eff6ff",
-                    borderColor: "#bfdbfe",
-                    color: "#1e3a8a",
+                    background: "#fef2f2",
+                    borderColor: "#fecaca",
+                    color: "#991b1b",
                     marginBottom: "16px",
                   }}
                 >
-                  <h3>Trabajo reportado como finalizado · Pendiente de recepción</h3>
+                  <h3>Incidencia reportada · Cierre automático de 48 horas detenido</h3>
                   <p>
-                    El técnico informó que terminó el servicio. La contratación se conserva{" "}
-                    <strong>En proceso (pendiente de recepción)</strong> y no libera fondos de inmediato.
-                    Tienes un plazo máximo de <strong>48 horas</strong> para confirmar la finalización o
-                    abrir una incidencia.
+                    Has abierto una incidencia sobre este servicio. Se ha <strong>detenido el plazo de cierre automático de 48 horas</strong> y la liberación de fondos permanece retenida hasta la resolución administrativa.
                   </p>
-                  <p>
-                    <strong>Finalización reportada:</strong>{" "}
-                    {formatTegucigalpaDateTime(
-                      detail.finalizacion_reportada_local || detail.finalizacion_reportada_en,
-                    )}
-                  </p>
-                  <p>
-                    <strong>Vencimiento de confirmación (48 h):</strong>{" "}
-                    {formatTegucigalpaDateTime(
-                      detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
-                    )}
-                  </p>
-                  <p>
-                    <strong>
-                      {
-                        formatConfirmationWindowStatus(
-                          detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
-                        ).etiqueta
-                      }
-                    </strong>
-                  </p>
+                  {detail.seguimiento_recepcion?.incidencia?.motivo && (
+                    <p>
+                      <strong>Motivo reportado:</strong> {detail.seguimiento_recepcion.incidencia.motivo}
+                    </p>
+                  )}
                 </section>
+              ) : (
+                resolveReceptionUiState(detail, detail.seguimiento_recepcion).showConfirmationCountdown && (
+                  <section
+                    className="client-request-box"
+                    aria-label="Plazo de confirmación de trabajo finalizado"
+                    style={{
+                      background: "#eff6ff",
+                      borderColor: "#bfdbfe",
+                      color: "#1e3a8a",
+                      marginBottom: "16px",
+                    }}
+                  >
+                    <h3>Trabajo reportado como finalizado · Pendiente de recepción</h3>
+                    <p>
+                      El técnico informó que terminó el servicio. La contratación se conserva{" "}
+                      <strong>En proceso (pendiente de recepción)</strong> y no libera fondos de inmediato.
+                      Tienes un plazo máximo de <strong>48 horas</strong> para confirmar la finalización o
+                      abrir una incidencia.
+                    </p>
+                    <p>
+                      <strong>Finalización reportada:</strong>{" "}
+                      {formatTegucigalpaDateTime(
+                        detail.finalizacion_reportada_local || detail.finalizacion_reportada_en,
+                      )}
+                    </p>
+                    <p>
+                      <strong>Vencimiento de confirmación (48 h):</strong>{" "}
+                      {formatTegucigalpaDateTime(
+                        detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
+                      )}
+                    </p>
+                    <p>
+                      <strong>
+                        {
+                          formatConfirmationWindowStatus(
+                            detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
+                          ).etiqueta
+                        }
+                      </strong>
+                    </p>
+                  </section>
+                )
               )}
 
               <div className="client-request-detail-grid">
@@ -1182,6 +1266,205 @@ export default function ClientRequestsManager({
                         </div>
                       ))}
                     </div>
+                  )}
+                </section>
+              )}
+
+              {/* HU-35: Confirmación de recepción, plazo de 48h (America/Tegucigalpa) e incidencias */}
+              {(detail.seguimiento_recepcion?.finalizacion_reportada ||
+                ["EN PROCESO", "EN_PROCESO", "COMPLETADA"].includes(
+                  (detail.estado || "").toUpperCase(),
+                )) && (
+                <section
+                  className="client-request-box"
+                  aria-label="Confirmación de recepción del servicio"
+                >
+                  <h3>Recepción del trabajo y cierre del acuerdo</h3>
+                  {detail.seguimiento_recepcion?.finalizacion_reportada_tegucigalpa && (
+                    <p style={{ fontSize: "0.88rem", color: "#334155", marginBottom: "6px" }}>
+                      <strong>Finalización reportada por el técnico:</strong>{" "}
+                      {formatDateTimeTegucigalpa(
+                        detail.seguimiento_recepcion.finalizacion_reportada_tegucigalpa,
+                      )}
+                    </p>
+                  )}
+                    {detail.seguimiento_recepcion?.plazo_confirmacion_vence_tegucigalpa &&
+                    !detail.seguimiento_recepcion?.completada &&
+                    !detail.seguimiento_recepcion?.incidencia_abierta && (
+                      <p style={{ fontSize: "0.88rem", color: "#0369a1", marginBottom: "8px" }}>
+                        <strong>Plazo de 48 horas para confirmar o abrir incidencia:</strong> vence el{" "}
+                        {formatDateTimeTegucigalpa(
+                          detail.seguimiento_recepcion.plazo_confirmacion_vence_tegucigalpa,
+                        )}
+                      </p>
+                    )}
+
+                  {detail.seguimiento_recepcion?.incidencia_abierta && (
+                    <div
+                      role="alert"
+                      style={{
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: "8px",
+                        padding: "10px 12px",
+                        marginBottom: "10px",
+                      }}
+                    >
+                      <strong style={{ color: "#b91c1c", display: "block" }}>
+                        Incidencia abierta — Cierre automático y liberación de fondos detenidos
+                      </strong>
+                      <span style={{ fontSize: "0.85rem", color: "#7f1d1d" }}>
+                        Motivo: {detail.seguimiento_recepcion.incidencia?.motivo}
+                      </span>
+                    </div>
+                  )}
+
+                  {detail.seguimiento_recepcion?.completada ||
+                  (detail.estado || "").toUpperCase() === "COMPLETADA" ? (
+                    <div
+                      style={{
+                        background: "#f0fdf4",
+                        border: "1px solid #86efac",
+                        borderRadius: "8px",
+                        padding: "12px",
+                      }}
+                    >
+                      <strong style={{ color: "#15803d", display: "block", marginBottom: "4px" }}>
+                        Acuerdo completado e inmutable
+                      </strong>
+                      <p style={{ fontSize: "0.85rem", color: "#166534", margin: "2px 0" }}>
+                        <strong>Autor del cierre:</strong>{" "}
+                        {detail.seguimiento_recepcion?.autor_cierre || "CLIENTE"}
+                        {detail.seguimiento_recepcion?.fecha_cierre_tegucigalpa
+                          ? ` — ${formatDateTimeTegucigalpa(detail.seguimiento_recepcion.fecha_cierre_tegucigalpa)}`
+                          : ""}
+                      </p>
+                      {detail.seguimiento_recepcion?.efecto_financiero && (
+                        <p style={{ fontSize: "0.84rem", color: "#166534", margin: "4px 0" }}>
+                          <strong>Efecto financiero único:</strong>{" "}
+                          {detail.seguimiento_recepcion.efecto_financiero.tipo_efecto} — Comisión:{" "}
+                          {formatLempiras(
+                            detail.seguimiento_recepcion.efecto_financiero.monto_comision,
+                          )}
+                        </p>
+                      )}
+                      {detail.seguimiento_recepcion?.plazo_resena_vence_tegucigalpa && (
+                        <p style={{ fontSize: "0.84rem", color: "#0f766e", margin: "4px 0 0" }}>
+                          <strong>Plazo independiente de 48h para reseña:</strong> habilitado hasta el{" "}
+                          {formatDateTimeTegucigalpa(
+                            detail.seguimiento_recepcion.plazo_resena_vence_tegucigalpa,
+                          )}
+                        </p>
+                      )}
+                    </div>
+                                    ) : !(
+                    detail.seguimiento_recepcion?.finalizacion_reportada ||
+                    detail.pendiente_recepcion ||
+                    detail.finalizacion_reportada_en ||
+                    detail.finalizacion_reportada_local
+                  ) ? (
+                    <p style={{ fontSize: "0.88rem", color: "#475569", margin: "4px 0 0" }}>
+                      El técnico inició la ejecución del servicio. Los botones para{" "}
+                      <strong>confirmar recepción</strong> o <strong>reportar incidencia</strong> se
+                      habilitarán automáticamente en cuanto el técnico marque el trabajo como finalizado.
+                    </p>
+                  ) : (
+                    ["EN PROCESO", "EN_PROCESO"].includes((detail.estado || "").toUpperCase()) &&
+                    !detail.seguimiento_recepcion?.incidencia_abierta && (
+                      <div style={{ marginTop: "8px" }}>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.84rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                          }}
+                        >
+                          Comentario de recepción (opcional)
+                        </label>
+                        <input
+                          type="text"
+                          value={receptionComment}
+                          onChange={(e) => setReceptionComment(e.target.value)}
+                          placeholder="Ej. Trabajo recibido conforme a lo acordado"
+                          style={{
+                            width: "100%",
+                            padding: "8px 10px",
+                            borderRadius: "6px",
+                            border: "1px solid #cbd5e1",
+                            marginBottom: "10px",
+                            fontSize: "0.88rem",
+                          }}
+                        />
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <Button
+                            type="button"
+                            style={{ width: "auto", background: "#16a34a", color: "#fff" }}
+                            disabled={confirmingReception || openingIncident}
+                            onClick={handleConfirmReception}
+                          >
+                            {confirmingReception
+                              ? "Confirmando recepción…"
+                              : "Confirmar recepción del trabajo"}
+                          </Button>
+                          <Button
+                            type="button"
+                            className="button-outline"
+                            style={{ width: "auto", color: "#b91c1c", borderColor: "#fca5a5" }}
+                            disabled={confirmingReception || openingIncident}
+                            onClick={() => setShowIncidentForm((v) => !v)}
+                          >
+                            {showIncidentForm ? "Cancelar reporte" : "Reportar incidencia"}
+                          </Button>
+                        </div>
+
+                        {showIncidentForm && (
+                          <div
+                            style={{
+                              marginTop: "10px",
+                              padding: "10px",
+                              borderRadius: "8px",
+                              background: "#fff1f2",
+                              border: "1px solid #fecdd3",
+                            }}
+                          >
+                            <label
+                              style={{
+                                display: "block",
+                                fontSize: "0.84rem",
+                                fontWeight: 600,
+                                color: "#9f1239",
+                                marginBottom: "4px",
+                              }}
+                            >
+                              Motivo de la incidencia (detiene el cierre automático y retiene fondos)
+                            </label>
+                            <input
+                              type="text"
+                              value={incidentReason}
+                              onChange={(e) => setIncidentReason(e.target.value)}
+                              placeholder="Describe el problema detectado en el trabajo…"
+                              style={{
+                                width: "100%",
+                                padding: "8px 10px",
+                                borderRadius: "6px",
+                                border: "1px solid #fda4af",
+                                marginBottom: "8px",
+                                fontSize: "0.88rem",
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              style={{ width: "auto", background: "#dc2626", color: "#fff" }}
+                              disabled={openingIncident}
+                              onClick={handleOpenIncident}
+                            >
+                              {openingIncident ? "Registrando incidencia…" : "Confirmar incidencia"}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )
                   )}
                 </section>
               )}
