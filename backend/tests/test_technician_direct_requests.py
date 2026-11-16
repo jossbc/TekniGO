@@ -144,7 +144,7 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
             set(payload[0].keys()),
             {
                 "id", "cliente_nombre", "servicio_nombre", "fecha_hora", "descripcion",
-                "estado", "total_estimado", "metodo_pago", "referencia_pasarela",
+                "estado", "modalidad", "total_estimado", "metodo_pago", "referencia_pasarela",
                 "monto_ajuste", "metodo_pago_ajuste", "monto_total", "desglose_medios",
             },
         )

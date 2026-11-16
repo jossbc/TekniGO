@@ -1,7 +1,7 @@
 """HU-34 ST-02: Endpoint idempotente para reportar trabajo finalizado y validación de ajustes pendientes."""
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -239,36 +239,62 @@ def _adjustment_item_is_pending(item: Any) -> bool:
     return raw_state in PENDING_ADJUSTMENT_STATES
 
 
-def has_pending_adjustment(record: Any, db: Session | None = None) -> tuple[bool, str | None]:
-    """CA-05: Verifica si existe un ajuste pendiente de aprobación antes de permitir reportar finalización."""
-    solicitud_id = str(getattr(record, "id", "") or "").strip()
+class PendingAdjustmentStrategy(Protocol):
+    """Contrato (DIP/OCP) para evaluar una fuente de ajustes pendientes en HU-34."""
 
-    # 1. Bandera booleana directa en la instancia
-    if bool(getattr(record, "tiene_ajuste_pendiente", False)) or bool(
-        getattr(record, "ajuste_pendiente", False)
-    ):
-        return True, "Existe un ajuste pendiente de aprobación en el servicio."
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]: ...
 
-    # 2. Estado de ajuste directo en la instancia
-    raw_adj_state = str(getattr(record, "estado_ajuste", "") or "").strip().upper()
-    if raw_adj_state in PENDING_ADJUSTMENT_STATES:
-        return True, f"El ajuste asociado se encuentra en estado {raw_adj_state}."
 
-    # 3. Colección de ajustes asociada a la instancia
-    for attr_name in ("ajustes", "ajustes_servicio", "ajustes_presupuesto"):
-        collection = getattr(record, attr_name, None)
-        if isinstance(collection, (list, tuple, set)):
-            for item in collection:
-                if _adjustment_item_is_pending(item):
-                    return True, "Existe un ajuste pendiente de aprobación por el cliente."
+class InstanceFlagAdjustmentStrategy:
+    """Evalúa banderas booleanas directas en la instancia de solicitud."""
 
-    # 4. Registro de ajustes pendientes (HU-36 / pruebas)
-    for item in _PENDING_ADJUSTMENTS_REGISTRY.get(solicitud_id, []):
-        if _adjustment_item_is_pending(item):
-            return True, item.get("motivo") or "Existe un ajuste pendiente de aprobación."
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]:
+        if bool(getattr(record, "tiene_ajuste_pendiente", False)) or bool(
+            getattr(record, "ajuste_pendiente", False)
+        ):
+            return True, "Existe un ajuste pendiente de aprobación en el servicio."
+        return False, None
 
-    # 5. Modelo persistente de ajustes en base de datos si está definido (HU-36)
-    if db is not None and solicitud_id:
+
+class InstanceStateAdjustmentStrategy:
+    """Evalúa el atributo `estado_ajuste` de la instancia de solicitud."""
+
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]:
+        raw_adj_state = str(getattr(record, "estado_ajuste", "") or "").strip().upper()
+        if raw_adj_state in PENDING_ADJUSTMENT_STATES:
+            return True, f"El ajuste asociado se encuentra en estado {raw_adj_state}."
+        return False, None
+
+
+class InstanceCollectionAdjustmentStrategy:
+    """Evalúa colecciones de ajustes adjuntas a la instancia de solicitud."""
+
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]:
+        for attr_name in ("ajustes", "ajustes_servicio", "ajustes_presupuesto"):
+            collection = getattr(record, attr_name, None)
+            if isinstance(collection, (list, tuple, set)):
+                for item in collection:
+                    if _adjustment_item_is_pending(item):
+                        return True, "Existe un ajuste pendiente de aprobación por el cliente."
+        return False, None
+
+
+class RegistryAdjustmentStrategy:
+    """Evalúa el registro en memoria de ajustes pendientes (HU-36 / pruebas)."""
+
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]:
+        for item in _PENDING_ADJUSTMENTS_REGISTRY.get(solicitud_id, []):
+            if _adjustment_item_is_pending(item):
+                return True, item.get("motivo") or "Existe un ajuste pendiente de aprobación."
+        return False, None
+
+
+class DatabaseAdjustmentStrategy:
+    """Evalúa modelos persistentes de ajustes en base de datos si están definidos."""
+
+    def check(self, record: Any, solicitud_id: str, db: Session | None) -> tuple[bool, str | None]:
+        if db is None or not solicitud_id:
+            return False, None
         for model_name in ("ServiceAdjustment", "AjusteServicio", "RequestAdjustment"):
             adj_model = getattr(models, model_name, None)
             if adj_model is not None and hasattr(adj_model, "solicitud_id"):
@@ -278,7 +304,30 @@ def has_pending_adjustment(record: Any, db: Session | None = None) -> tuple[bool
                 for row in rows:
                     if _adjustment_item_is_pending(row):
                         return True, "Existe un ajuste pendiente de aprobación en base de datos."
+        return False, None
 
+
+_DEFAULT_ADJUSTMENT_STRATEGIES: tuple[PendingAdjustmentStrategy, ...] = (
+    InstanceFlagAdjustmentStrategy(),
+    InstanceStateAdjustmentStrategy(),
+    InstanceCollectionAdjustmentStrategy(),
+    RegistryAdjustmentStrategy(),
+    DatabaseAdjustmentStrategy(),
+)
+
+
+def has_pending_adjustment(
+    record: Any,
+    db: Session | None = None,
+    *,
+    strategies: tuple[PendingAdjustmentStrategy, ...] | None = None,
+) -> tuple[bool, str | None]:
+    """CA-05: Verifica mediante estrategias desacopladas si existe un ajuste pendiente de aprobación."""
+    solicitud_id = str(getattr(record, "id", "") or "").strip()
+    for strategy in strategies or _DEFAULT_ADJUSTMENT_STRATEGIES:
+        is_pending, reason = strategy.check(record, solicitud_id, db)
+        if is_pending:
+            return True, reason
     return False, None
 
 
@@ -303,6 +352,91 @@ def _require_technician_user(claims: dict, db: Session) -> User:
     return user
 
 
+class RequestModalityAdapter(Protocol):
+    """Adaptador por modalidad (Adapter + LSP/OCP) para consultar solicitudes DirectRequest/OpenRequest."""
+
+    modalidad: str
+
+    def find_for_update(self, db: Session, clean_id: str, *, is_postgres: bool) -> Any | None: ...
+
+    def collect_reported_in_progress(self, db: Session) -> list[Any]: ...
+
+
+class DirectRequestModalityAdapter:
+    """Adaptador de consulta y bloqueo para solicitudes directas."""
+
+    modalidad = "DIRECTA"
+
+    def find_for_update(self, db: Session, clean_id: str, *, is_postgres: bool) -> Any | None:
+        lookup_id = clean_id
+        if is_postgres:
+            try:
+                lookup_id = str(uuid.UUID(clean_id))
+            except ValueError:
+                return None
+        return db.scalar(
+            select(DirectRequest)
+            .where(DirectRequest.id == lookup_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def collect_reported_in_progress(self, db: Session) -> list[Any]:
+        rows = db.scalars(
+            select(DirectRequest)
+            .where(
+                DirectRequest.finalizacion_reportada_en.is_not(None),
+                DirectRequest.vencimiento_confirmacion_en.is_not(None),
+            )
+            .order_by(DirectRequest.vencimiento_confirmacion_en.asc(), DirectRequest.id.asc())
+        ).all()
+        return [row for row in rows if is_in_progress_state(getattr(row, "estado", None))]
+
+
+class OpenRequestModalityAdapter:
+    """Adaptador de consulta y bloqueo para solicitudes abiertas."""
+
+    modalidad = "ABIERTA"
+
+    def find_for_update(self, db: Session, clean_id: str, *, is_postgres: bool) -> Any | None:
+        open_model = getattr(models, "OpenRequest", OpenRequest)
+        if open_model is None:
+            return None
+        return db.scalar(
+            select(open_model)
+            .where(open_model.id == clean_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def collect_reported_in_progress(self, db: Session) -> list[Any]:
+        open_model = getattr(models, "OpenRequest", OpenRequest)
+        if open_model is None or not hasattr(open_model, "vencimiento_confirmacion_en"):
+            return []
+        rows = db.scalars(
+            select(open_model)
+            .where(
+                open_model.finalizacion_reportada_en.is_not(None),
+                open_model.vencimiento_confirmacion_en.is_not(None),
+            )
+            .order_by(open_model.vencimiento_confirmacion_en.asc(), open_model.id.asc())
+        ).all()
+        return [row for row in rows if is_in_progress_state(getattr(row, "estado", None))]
+
+
+_MODALITY_ADAPTERS: tuple[RequestModalityAdapter, ...] = (
+    DirectRequestModalityAdapter(),
+    OpenRequestModalityAdapter(),
+)
+
+
+def _iter_modality_adapters(modalidad_hint: str | None) -> tuple[RequestModalityAdapter, ...]:
+    hint = (modalidad_hint or "").strip().upper()
+    if hint in {"", "TODOS"}:
+        return _MODALITY_ADAPTERS
+    return tuple(adapter for adapter in _MODALITY_ADAPTERS if adapter.modalidad == hint)
+
+
 def _find_request_for_update(
     db: Session,
     solicitud_id: str,
@@ -313,39 +447,12 @@ def _find_request_for_update(
     if not clean_id:
         return None, None
 
-    hint = (modalidad_hint or "").strip().upper()
     bind = db.get_bind()
     is_postgres = bind is not None and bind.dialect.name == "postgresql"
-
-    if hint in {"", "TODOS", "DIRECTA"}:
-        lookup_id = clean_id
-        can_query_direct = True
-        if is_postgres:
-            try:
-                lookup_id = str(uuid.UUID(clean_id))
-            except ValueError:
-                can_query_direct = False
-        if can_query_direct:
-            direct_row = db.scalar(
-                select(DirectRequest)
-                .where(DirectRequest.id == lookup_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if direct_row is not None:
-                return "DIRECTA", direct_row
-
-    if hint in {"", "TODOS", "ABIERTA"}:
-        open_model = getattr(models, "OpenRequest", OpenRequest)
-        if open_model is not None:
-            open_row = db.scalar(
-                select(open_model)
-                .where(open_model.id == clean_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if open_row is not None:
-                return "ABIERTA", open_row
+    for adapter in _iter_modality_adapters(modalidad_hint):
+        row = adapter.find_for_update(db, clean_id, is_postgres=is_postgres)
+        if row is not None:
+            return adapter.modalidad, row
 
     return None, None
 
@@ -654,32 +761,9 @@ def _collect_reported_in_progress_candidates(
         )
 
     candidates: list[tuple[str, Any]] = []
-    if norm_mod in {"TODOS", "DIRECTA"}:
-        direct_rows = db.scalars(
-            select(DirectRequest)
-            .where(
-                DirectRequest.finalizacion_reportada_en.is_not(None),
-                DirectRequest.vencimiento_confirmacion_en.is_not(None),
-            )
-            .order_by(DirectRequest.vencimiento_confirmacion_en.asc(), DirectRequest.id.asc())
-        ).all()
-        for row in direct_rows:
-            if is_in_progress_state(getattr(row, "estado", None)):
-                candidates.append(("DIRECTA", row))
-
-    open_model = getattr(models, "OpenRequest", OpenRequest)
-    if norm_mod in {"TODOS", "ABIERTA"} and open_model is not None and hasattr(open_model, "vencimiento_confirmacion_en"):
-        open_rows = db.scalars(
-            select(open_model)
-            .where(
-                open_model.finalizacion_reportada_en.is_not(None),
-                open_model.vencimiento_confirmacion_en.is_not(None),
-            )
-            .order_by(open_model.vencimiento_confirmacion_en.asc(), open_model.id.asc())
-        ).all()
-        for row in open_rows:
-            if is_in_progress_state(getattr(row, "estado", None)):
-                candidates.append(("ABIERTA", row))
+    for adapter in _iter_modality_adapters(norm_mod):
+        for row in adapter.collect_reported_in_progress(db):
+            candidates.append((adapter.modalidad, row))
 
     candidates.sort(
         key=lambda item: (
