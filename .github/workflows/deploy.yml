@@ -2,6 +2,23 @@ name: Deploy a Azure
 
 on:
   workflow_call:
+    secrets:
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
+      VITE_FIREBASE_API_KEY:
+        required: false
+      VITE_FIREBASE_AUTH_DOMAIN:
+        required: false
+      VITE_FIREBASE_PROJECT_ID:
+        required: false
+      VITE_FIREBASE_APP_ID:
+        required: false
+      DATABASE_URL:
+        required: false
 
 concurrency:
   group: teknigo-azure-production
@@ -23,6 +40,16 @@ jobs:
       VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
     steps:
       - uses: actions/checkout@v4
+      - name: Comprobar credenciales de Azure
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            : "${!name:?Falta configurar $name en los secretos de production o del repositorio}"
+          done
       - uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
