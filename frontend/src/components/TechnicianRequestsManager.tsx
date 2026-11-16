@@ -9,6 +9,7 @@ import {
   listTechnicianDirectRequests,
   rejectTechnicianDirectRequest,
   reportTechnicianRequestCompletion,
+  startTechnicianDirectRequest,
   type TechnicianDirectRequest,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
@@ -17,6 +18,14 @@ import { Button } from "./ui";
 export type DirectRequest = TechnicianDirectRequest;
 
 type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "RECHAZADA" | "COMPLETADA";
+type ModalidadFilter = "TODAS" | "DIRECTA" | "ABIERTA";
+
+function getRequestModality(req: TechnicianDirectRequest): "DIRECTA" | "ABIERTA" {
+  const mod = (req.modalidad || "").trim().toUpperCase();
+  if (mod === "ABIERTA" || mod === "OPEN") return "ABIERTA";
+  if (mod === "DIRECTA" || mod === "DIRECT") return "DIRECTA";
+  return (req.servicio_nombre || "").includes("(Licitación abierta)") ? "ABIERTA" : "DIRECTA";
+}
 
 const estadoConfig: Record<
   string,
@@ -84,6 +93,8 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     };
   }, [user, refreshTick]);
 
+  const [modalityFilter, setModalityFilter] = useState<ModalidadFilter>("TODAS");
+
   async function handleDecision(id: string, decision: "accept" | "reject") {
     setActionLoading(id);
     setActionError("");
@@ -119,6 +130,27 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   // HU-24: Rechazar Solicitud
   function handleReject(id: string) {
     return handleDecision(id, "reject");
+  }
+
+  // Iniciar ejecución del servicio (pasa de ACEPTADA a EN_PROCESO)
+  async function handleStartExecution(id: string) {
+    setActionLoading(id);
+    setActionError("");
+    setActionNotice("");
+
+    try {
+      const updated = await startTechnicianDirectRequest(user, id);
+      setRequests((prev) =>
+        prev.map((req) =>
+          req.id === id ? { ...req, ...updated, estado: "EN_PROCESO" } : req,
+        ),
+      );
+      setActionNotice("Servicio iniciado. Ahora se encuentra En proceso y puedes reportar su finalización al terminar.");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   // HU-34: Reportar trabajo finalizado (conserva En proceso con pendiente_recepcion e inicia plazo de 48h)
@@ -166,11 +198,14 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
 
   const countByState = (estado: string) =>
     requests.filter((r) => normalizeEstado(r.estado) === estado).length;
+  const directCount = requests.filter((r) => getRequestModality(r) === "DIRECTA").length;
+  const openCount = requests.filter((r) => getRequestModality(r) === "ABIERTA").length;
   const pendingCount = countByState("PENDIENTE");
-  const filtered =
-    filter === "TODOS"
-      ? requests
-      : requests.filter((r) => normalizeEstado(r.estado) === filter);
+  const filtered = requests.filter((r) => {
+    const matchesState = filter === "TODOS" || normalizeEstado(r.estado) === filter;
+    const matchesModality = modalityFilter === "TODAS" || getRequestModality(r) === modalityFilter;
+    return matchesState && matchesModality;
+  });
 
   return (
     <div>
@@ -178,10 +213,10 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
       <div className="client-requests-page-heading" style={{ marginBottom: "24px" }}>
         <div>
           <h1 style={{ fontSize: "clamp(28px, 4vw, 38px)", letterSpacing: "-1.3px", marginBottom: "8px" }}>
-            Solicitudes entrantes
+            Mis solicitudes y trabajos
           </h1>
           <p style={{ color: "var(--muted)", fontSize: "14px", margin: 0 }}>
-            Revisa y gestiona los trabajos que los clientes te han solicitado directamente.
+            Gestiona tus solicitudes directas y los trabajos de ofertas abiertas donde fuiste seleccionado.
           </p>
         </div>
         {pendingCount > 0 && (
@@ -198,6 +233,18 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
       {/* Filtros y actualización */}
       <div className="client-requests-toolbar">
         <div className="client-requests-filter-controls">
+          <div className="client-requests-state-filter">
+            <label htmlFor="filter-modalidad">Modalidad</label>
+            <select
+              id="filter-modalidad"
+              value={modalityFilter}
+              onChange={(e) => setModalityFilter(e.target.value as ModalidadFilter)}
+            >
+              <option value="TODAS">Todas ({requests.length})</option>
+              <option value="DIRECTA">Directas ({directCount})</option>
+              <option value="ABIERTA">Abiertas ({openCount})</option>
+            </select>
+          </div>
           <div className="client-requests-state-filter">
             <label htmlFor="filter-estado">Filtrar por estado</label>
             <select
@@ -287,6 +334,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const normalizedState = normalizeEstado(req.estado);
             const config = estadoConfig[normalizedState] ?? estadoConfig.PENDIENTE;
             const StatusIcon = config.icon;
+            const modality = getRequestModality(req);
             const clientName = req.cliente_nombre || "Cliente";
             const totalEstimado = Number(req.total_estimado ?? 0);
             const isPendingReception =
@@ -322,6 +370,18 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                       </span>
                       <h3 style={{ margin: 0, fontSize: "16px" }}>{clientName}</h3>
                     </div>
+                    <span
+                      className="status-pill"
+                      style={{
+                        background: modality === "ABIERTA" ? "#eef2ff" : "#f8fafc",
+                        color: modality === "ABIERTA" ? "#3730a3" : "#475569",
+                        border: `1px solid ${modality === "ABIERTA" ? "#c7d2fe" : "#cbd5e1"}`,
+                        fontWeight: 650,
+                        fontSize: "11px",
+                      }}
+                    >
+                      {modality === "ABIERTA" ? "Solicitud abierta" : "Solicitud directa"}
+                    </span>
                     <span
                       className="status-pill"
                       style={{
@@ -469,6 +529,29 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     >
                       <X size={16} strokeWidth={2.5} />
                       {actionLoading === req.id ? "Procesando…" : "Rechazar"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Botón para pasar de ACEPTADA a EN_PROCESO */}
+                {normalizedState === "ACEPTADA" && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() => handleStartExecution(req.id)}
+                      disabled={actionLoading === req.id}
+                      style={{
+                        background: "#eff6ff",
+                        color: "#1d4ed8",
+                        border: "1px solid #bfdbfe",
+                        gap: "8px",
+                        minWidth: "170px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <Clock3 size={16} />
+                      {actionLoading === req.id ? "Iniciando…" : "Iniciar servicio"}
                     </Button>
                   </div>
                 )}

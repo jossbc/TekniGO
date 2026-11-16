@@ -8,6 +8,7 @@ export interface TechnicianDirectRequest {
   fecha_hora: string;
   descripcion: string;
   estado: "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "EN PROCESO" | "RECHAZADA" | "COMPLETADA" | string;
+  modalidad?: "DIRECTA" | "ABIERTA" | string | null;
   total_estimado: number | string;
   pendiente_recepcion?: boolean;
   finalizacion_reportada_en?: string | null;
@@ -177,6 +178,9 @@ export const acceptTechnicianDirectRequest = (user: User, solicitudId: string) =
 
 export const rejectTechnicianDirectRequest = (user: User, solicitudId: string) =>
   api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/reject`, user, undefined, "PATCH");
+
+export const startTechnicianDirectRequest = (user: User, solicitudId: string) =>
+  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/start`, user, undefined, "PATCH");
 
 // HU-34: Reportar trabajo finalizado (idempotente, inicia plazo de 48h en En proceso)
 export const reportTechnicianRequestCompletion = (

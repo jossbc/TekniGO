@@ -7,10 +7,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from typing import Any
+
 from app.database import get_db
 from app.models import (
     DirectRequest,
+    OpenRequest,
     Service,
+    Specialty,
     User,
     ensure_utc_datetime,
     format_tegucigalpa_iso,
@@ -28,6 +32,7 @@ class TechnicianDirectRequestOut(BaseModel):
     fecha_hora: str | None
     descripcion: str
     estado: str
+    modalidad: str | None = None
     total_estimado: float
     metodo_pago: str | None = None
     referencia_pasarela: str | None = None
@@ -62,15 +67,16 @@ def _require_technician_user(claims: dict, db: Session) -> User:
 
 def _resolve_related_maps(
     db: Session,
-    rows: list[DirectRequest],
-) -> tuple[dict[str, User], dict[str, Service]]:
-    client_uids = {row.cliente_id for row in rows if row.cliente_id}
+    rows: list[Any],
+) -> tuple[dict[str, User], dict[str, Service], dict[str, Specialty]]:
+    client_uids = {row.cliente_id for row in rows if getattr(row, "cliente_id", None)}
     clients_by_uid: dict[str, User] = {}
     if client_uids:
         clients = db.scalars(select(User).where(User.firebase_uid.in_(client_uids))).all()
         clients_by_uid = {client.firebase_uid: client for client in clients}
 
     service_uuids: list[uuid.UUID] = []
+    specialty_uuids: list[uuid.UUID] = []
     for row in rows:
         raw_service_id = getattr(row, "servicio_id", None)
         if isinstance(raw_service_id, uuid.UUID):
@@ -79,45 +85,69 @@ def _resolve_related_maps(
             try:
                 service_uuids.append(uuid.UUID(raw_service_id))
             except ValueError:
-                continue
+                pass
+        raw_spec_id = getattr(row, "especialidad_id", None)
+        if isinstance(raw_spec_id, uuid.UUID):
+            specialty_uuids.append(raw_spec_id)
+        elif isinstance(raw_spec_id, str):
+            try:
+                specialty_uuids.append(uuid.UUID(raw_spec_id))
+            except ValueError:
+                pass
 
     services_by_id: dict[str, Service] = {}
     if service_uuids:
         services = db.scalars(select(Service).where(Service.id.in_(service_uuids))).all()
         services_by_id = {str(service.id): service for service in services}
 
-    return clients_by_uid, services_by_id
+    specialties_by_id: dict[str, Specialty] = {}
+    if specialty_uuids:
+        specs = db.scalars(select(Specialty).where(Specialty.id.in_(specialty_uuids))).all()
+        specialties_by_id = {str(spec.id): spec for spec in specs}
+
+    return clients_by_uid, services_by_id, specialties_by_id
 
 
 def _serialize_direct_request(
-    row: DirectRequest,
+    row: Any,
     *,
     clients_by_uid: dict[str, User],
     services_by_id: dict[str, Service],
+    specialties_by_id: dict[str, Specialty] | None = None,
 ) -> dict:
     client = clients_by_uid.get(row.cliente_id)
-    service_key = str(row.servicio_id) if row.servicio_id is not None else ""
+    service_key = str(row.servicio_id) if getattr(row, "servicio_id", None) is not None else ""
     service = services_by_id.get(service_key)
+    spec_key = str(getattr(row, "especialidad_id", "")) if getattr(row, "especialidad_id", None) is not None else ""
+    spec = (specialties_by_id or {}).get(spec_key)
+    base_val = getattr(row, "monto_base", None) or getattr(row, "presupuesto", None)
     total = (
-        float(Decimal(str(row.monto_base)).quantize(Decimal("0.01")))
-        if row.monto_base is not None
+        float(Decimal(str(base_val)).quantize(Decimal("0.01")))
+        if base_val is not None
         else 0.0
     )
-    estado = (row.estado or "PENDIENTE").strip().upper()
+    raw_estado = (row.estado or "PENDIENTE").strip().upper()
+    estado = "EN_PROCESO" if raw_estado in {"EN PROCESO", "EN_PROCESO"} else raw_estado
+    service_label = (
+        service.nombre
+        if service is not None
+        else (f"{spec.nombre} (Licitación abierta)" if spec is not None else "Servicio")
+    )
 
     payload = {
         "id": str(row.id),
         "cliente_nombre": client.nombre_completo if client is not None else "Cliente",
-        "servicio_nombre": service.nombre if service is not None else "Servicio",
+        "servicio_nombre": service_label,
         "fecha_hora": row.fecha_hora.isoformat() if row.fecha_hora is not None else None,
         "descripcion": row.descripcion or "",
         "estado": estado,
+        "modalidad": "ABIERTA" if isinstance(row, OpenRequest) else "DIRECTA",
         "total_estimado": total,
         "metodo_pago": row.metodo_pago,
         "referencia_pasarela": row.referencia_pasarela,
         "monto_ajuste": float(row.monto_ajuste or 0.0),
         "metodo_pago_ajuste": row.metodo_pago_ajuste,
-        "monto_total": float(row.monto_total or row.monto_base or 0.0),
+        "monto_total": float(row.monto_total or base_val or 0.0),
         "desglose_medios": row.desglose_medios,
     }
     finalizacion_dt = ensure_utc_datetime(getattr(row, "finalizacion_reportada_en", None))
@@ -138,18 +168,31 @@ def _serialize_direct_request(
 
 
 def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
-    """HU-22: Lista las solicitudes directas dirigidas al técnico autenticado."""
+    """HU-22 / HU-31 / HU-34: Lista las solicitudes directas y abiertas adjudicadas al técnico autenticado."""
     user = _require_technician_user(claims, db)
-    rows = list(
+    direct_rows = list(
         db.scalars(
             select(DirectRequest)
             .where(DirectRequest.tecnico_id.in_((user.firebase_uid, str(user.id))))
             .order_by(DirectRequest.creada_en.desc(), DirectRequest.id.desc())
         ).all()
     )
-    clients_by_uid, services_by_id = _resolve_related_maps(db, rows)
+    open_rows = list(
+        db.scalars(
+            select(OpenRequest)
+            .where(OpenRequest.tecnico_id.in_((user.firebase_uid, str(user.id))))
+            .order_by(OpenRequest.creada_en.desc(), OpenRequest.id.desc())
+        ).all()
+    )
+    rows: list[Any] = [*direct_rows, *open_rows]
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, rows)
     return [
-        _serialize_direct_request(row, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+        _serialize_direct_request(
+            row,
+            clients_by_uid=clients_by_uid,
+            services_by_id=services_by_id,
+            specialties_by_id=specialties_by_id,
+        )
         for row in rows
     ]
 
@@ -182,8 +225,13 @@ def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session) -> D
 def get_technician_direct_request_detail(solicitud_id: str, claims: dict, db: Session) -> dict:
     """HU-22: Obtiene el detalle de una solicitud directa dirigida al técnico autenticado."""
     record = _get_owned_direct_request(solicitud_id, claims, db)
-    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
-    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
 
 
 def respond_to_direct_request(
@@ -213,8 +261,77 @@ def respond_to_direct_request(
     db.commit()
     db.refresh(record)
 
-    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
-    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
+
+
+def start_technician_request_execution(solicitud_id: str, claims: dict, db: Session) -> dict:
+    """Pasa una solicitud directa o abierta adjudicada de ACEPTADA a EN_PROCESO para poder ejecutarla y reportar finalización."""
+    user = _require_technician_user(claims, db)
+    clean_id = (solicitud_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud.")
+
+    bind = db.get_bind()
+    is_postgres = bind is not None and bind.dialect.name == "postgresql"
+    record: Any = None
+    is_open = False
+
+    lookup_id = clean_id
+    can_query_direct = True
+    if is_postgres:
+        try:
+            lookup_id = str(uuid.UUID(clean_id))
+        except ValueError:
+            can_query_direct = False
+    if can_query_direct:
+        record = db.scalar(select(DirectRequest).where(DirectRequest.id == lookup_id))
+
+    if record is None:
+        record = db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id))
+        is_open = record is not None
+
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud.")
+
+    if getattr(record, "tecnico_id", None) not in (user.firebase_uid, str(user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para modificar esta solicitud.",
+        )
+
+    current_state = (getattr(record, "estado", None) or "").strip().upper()
+    if current_state in {"EN PROCESO", "EN_PROCESO"}:
+        clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+        return _serialize_direct_request(
+            record,
+            clients_by_uid=clients_by_uid,
+            services_by_id=services_by_id,
+            specialties_by_id=specialties_by_id,
+        )
+
+    if current_state not in {"ACEPTADA", "ASIGNADA"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Solo puedes iniciar la ejecución de una solicitud en estado ACEPTADA (estado actual: {current_state}).",
+        )
+
+    record.estado = "En proceso" if is_open else "EN_PROCESO"
+    db.commit()
+    db.refresh(record)
+
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
 
 
 @router.get("/me/direct-requests", response_model=list[TechnicianDirectRequestOut], status_code=status.HTTP_200_OK)
@@ -266,6 +383,26 @@ def reject_my_direct_request_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return respond_to_direct_request(solicitud_id, "RECHAZADA", claims, db)
+
+
+@router.patch(
+    "/me/direct-requests/{solicitud_id}/start",
+    response_model=TechnicianDirectRequestOut,
+    status_code=status.HTTP_200_OK,
+)
+@router.post(
+    "/me/requests/{solicitud_id}/start",
+    response_model=TechnicianDirectRequestOut,
+    status_code=status.HTTP_200_OK,
+)
+def start_my_request_execution_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return start_technician_request_execution(solicitud_id, claims, db)
 
 
 from app.service_completion import (  # noqa: E402, F401

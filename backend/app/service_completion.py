@@ -573,7 +573,6 @@ def report_direct_request_completion_endpoint(
         db,
         now=payload.now if payload else None,
         comentario=payload.comentario if payload else None,
-        modalidad_hint="DIRECTA",
     )
 
 
