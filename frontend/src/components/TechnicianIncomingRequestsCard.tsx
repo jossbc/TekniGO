@@ -180,7 +180,7 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
           }}
         >
           <Inbox size={18} style={{ color: "var(--blue)", flexShrink: 0 }} />
-          <span>Cuando recibas una nueva petición directa de un cliente, aparecerá aquí para responder al instante.</span>
+          <span>Cuando recibas una nueva petición directa de un cliente, aparecerá aquí para responder al instante. Si ya te aceptaron en una oferta abierta o solicitud directa, gestiónala en &quot;Ver todas las solicitudes&quot;.</span>
         </div>
       ) : (
         <div style={{ display: "grid", gap: "10px", marginTop: "4px" }}>

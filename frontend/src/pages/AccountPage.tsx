@@ -15,6 +15,7 @@ import PhoneVerification from "../components/PhoneVerification";
 import { AvailabilityToggle } from "../components/AvailabilityToggle";
 import TechnicianDocumentationCard from "../components/TechnicianDocumentationCard";
 import TechnicianIncomingRequestsCard from "../components/TechnicianIncomingRequestsCard";
+import TechnicianActiveJobsCard from "../components/TechnicianActiveJobsCard";
 
 export default function AccountPage({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" }) {
   const location = useLocation();
@@ -227,6 +228,7 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
 
               {/* Tarjeta de Solicitudes entrantes con preview (HU-22) */}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianIncomingRequestsCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianActiveJobsCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>
