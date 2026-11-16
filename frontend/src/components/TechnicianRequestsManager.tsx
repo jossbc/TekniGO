@@ -4,8 +4,12 @@ import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, 
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
+  formatConfirmationWindowStatus,
+  formatTegucigalpaDateTime,
   listTechnicianDirectRequests,
   rejectTechnicianDirectRequest,
+  reportTechnicianRequestCompletion,
+  startTechnicianDirectRequest,
   type TechnicianDirectRequest,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
@@ -13,7 +17,15 @@ import { Button } from "./ui";
 
 export type DirectRequest = TechnicianDirectRequest;
 
-type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "RECHAZADA";
+type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "RECHAZADA" | "COMPLETADA";
+type ModalidadFilter = "TODAS" | "DIRECTA" | "ABIERTA";
+
+function getRequestModality(req: TechnicianDirectRequest): "DIRECTA" | "ABIERTA" {
+  const mod = (req.modalidad || "").trim().toUpperCase();
+  if (mod === "ABIERTA" || mod === "OPEN") return "ABIERTA";
+  if (mod === "DIRECTA" || mod === "DIRECT") return "DIRECTA";
+  return (req.servicio_nombre || "").includes("(Licitación abierta)") ? "ABIERTA" : "DIRECTA";
+}
 
 const estadoConfig: Record<
   string,
@@ -21,13 +33,16 @@ const estadoConfig: Record<
 > = {
   PENDIENTE: { label: "Pendiente", bg: "#fff7ed", color: "#9a3412", border: "#fed7aa", icon: Clock3 },
   ACEPTADA: { label: "Aceptada", bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", icon: CheckCircle2 },
+  EN_PROCESO: { label: "En proceso", bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe", icon: Clock3 },
   RECHAZADA: { label: "Rechazada", bg: "#f8fafc", color: "#475569", border: "#cbd5e1", icon: XCircle },
   CANCELADA: { label: "Cancelada", bg: "#f8fafc", color: "#475569", border: "#cbd5e1", icon: XCircle },
   COMPLETADA: { label: "Completada", bg: "#f0fdf4", color: "#166534", border: "#bbf7d0", icon: CheckCircle2 },
 };
 
 function normalizeEstado(estado?: string): string {
-  return (estado || "PENDIENTE").trim().toUpperCase();
+  const raw = (estado || "PENDIENTE").trim().toUpperCase();
+  if (raw === "EN PROCESO") return "EN_PROCESO";
+  return raw;
 }
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -78,6 +93,8 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     };
   }, [user, refreshTick]);
 
+  const [modalityFilter, setModalityFilter] = useState<ModalidadFilter>("TODAS");
+
   async function handleDecision(id: string, decision: "accept" | "reject") {
     setActionLoading(id);
     setActionError("");
@@ -115,6 +132,61 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     return handleDecision(id, "reject");
   }
 
+  // Iniciar ejecución del servicio (pasa de ACEPTADA a EN_PROCESO)
+  async function handleStartExecution(id: string) {
+    setActionLoading(id);
+    setActionError("");
+    setActionNotice("");
+
+    try {
+      const updated = await startTechnicianDirectRequest(user, id);
+      setRequests((prev) =>
+        prev.map((req) =>
+          req.id === id ? { ...req, ...updated, estado: "EN_PROCESO" } : req,
+        ),
+      );
+      setActionNotice("Servicio iniciado. Ahora se encuentra En proceso y puedes reportar su finalización al terminar.");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  // HU-34: Reportar trabajo finalizado (conserva En proceso con pendiente_recepcion e inicia plazo de 48h)
+  async function handleReportCompletion(id: string) {
+    setActionLoading(id);
+    setActionError("");
+    setActionNotice("");
+
+    try {
+      const res = await reportTechnicianRequestCompletion(user, id);
+      setRequests((prev) =>
+        prev.map((req) =>
+          req.id === id
+            ? {
+                ...req,
+                estado: "EN_PROCESO",
+                pendiente_recepcion: true,
+                finalizacion_reportada_en: res.finalizacion_reportada_en,
+                vencimiento_confirmacion_en: res.vencimiento_confirmacion_en,
+                finalizacion_reportada_local: res.finalizacion_reportada_local,
+                vencimiento_confirmacion_local: res.vencimiento_confirmacion_local,
+              }
+            : req,
+        ),
+      );
+      setActionNotice(
+        res.mensaje ||
+          "Finalización reportada exitosamente. El servicio permanece En proceso pendiente de recepción y se inició el plazo de 48 horas.",
+      );
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   if (loading) {
     return (
       <LoadingState
@@ -126,11 +198,14 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
 
   const countByState = (estado: string) =>
     requests.filter((r) => normalizeEstado(r.estado) === estado).length;
+  const directCount = requests.filter((r) => getRequestModality(r) === "DIRECTA").length;
+  const openCount = requests.filter((r) => getRequestModality(r) === "ABIERTA").length;
   const pendingCount = countByState("PENDIENTE");
-  const filtered =
-    filter === "TODOS"
-      ? requests
-      : requests.filter((r) => normalizeEstado(r.estado) === filter);
+  const filtered = requests.filter((r) => {
+    const matchesState = filter === "TODOS" || normalizeEstado(r.estado) === filter;
+    const matchesModality = modalityFilter === "TODAS" || getRequestModality(r) === modalityFilter;
+    return matchesState && matchesModality;
+  });
 
   return (
     <div>
@@ -138,10 +213,10 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
       <div className="client-requests-page-heading" style={{ marginBottom: "24px" }}>
         <div>
           <h1 style={{ fontSize: "clamp(28px, 4vw, 38px)", letterSpacing: "-1.3px", marginBottom: "8px" }}>
-            Solicitudes entrantes
+            Mis solicitudes y trabajos
           </h1>
           <p style={{ color: "var(--muted)", fontSize: "14px", margin: 0 }}>
-            Revisa y gestiona los trabajos que los clientes te han solicitado directamente.
+            Gestiona tus solicitudes directas y los trabajos de ofertas abiertas donde fuiste seleccionado.
           </p>
         </div>
         {pendingCount > 0 && (
@@ -159,6 +234,18 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
       <div className="client-requests-toolbar">
         <div className="client-requests-filter-controls">
           <div className="client-requests-state-filter">
+            <label htmlFor="filter-modalidad">Modalidad</label>
+            <select
+              id="filter-modalidad"
+              value={modalityFilter}
+              onChange={(e) => setModalityFilter(e.target.value as ModalidadFilter)}
+            >
+              <option value="TODAS">Todas ({requests.length})</option>
+              <option value="DIRECTA">Directas ({directCount})</option>
+              <option value="ABIERTA">Abiertas ({openCount})</option>
+            </select>
+          </div>
+          <div className="client-requests-state-filter">
             <label htmlFor="filter-estado">Filtrar por estado</label>
             <select
               id="filter-estado"
@@ -168,7 +255,9 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
               <option value="TODOS">Todas ({requests.length})</option>
               <option value="PENDIENTE">Pendientes ({pendingCount})</option>
               <option value="ACEPTADA">Aceptadas ({countByState("ACEPTADA")})</option>
+              <option value="EN_PROCESO">En proceso ({countByState("EN_PROCESO")})</option>
               <option value="RECHAZADA">Rechazadas ({countByState("RECHAZADA")})</option>
+              <option value="COMPLETADA">Completadas ({countByState("COMPLETADA")})</option>
             </select>
           </div>
         </div>
@@ -245,8 +334,16 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const normalizedState = normalizeEstado(req.estado);
             const config = estadoConfig[normalizedState] ?? estadoConfig.PENDIENTE;
             const StatusIcon = config.icon;
+            const modality = getRequestModality(req);
             const clientName = req.cliente_nombre || "Cliente";
             const totalEstimado = Number(req.total_estimado ?? 0);
+            const isPendingReception =
+              normalizedState === "EN_PROCESO" &&
+              Boolean(req.pendiente_recepcion || req.finalizacion_reportada_en || req.finalizacion_reportada_local);
+            const hasPendingAdjustment = Boolean(req.tiene_ajuste_pendiente);
+            const reportedAtIso = req.finalizacion_reportada_local || req.finalizacion_reportada_en;
+            const deadlineIso = req.vencimiento_confirmacion_local || req.vencimiento_confirmacion_en;
+            const deadlineStatus = isPendingReception ? formatConfirmationWindowStatus(deadlineIso) : null;
 
             return (
               <div key={req.id} className="client-request-item">
@@ -276,6 +373,18 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     <span
                       className="status-pill"
                       style={{
+                        background: modality === "ABIERTA" ? "#eef2ff" : "#f8fafc",
+                        color: modality === "ABIERTA" ? "#3730a3" : "#475569",
+                        border: `1px solid ${modality === "ABIERTA" ? "#c7d2fe" : "#cbd5e1"}`,
+                        fontWeight: 650,
+                        fontSize: "11px",
+                      }}
+                    >
+                      {modality === "ABIERTA" ? "Solicitud abierta" : "Solicitud directa"}
+                    </span>
+                    <span
+                      className="status-pill"
+                      style={{
                         background: config.bg,
                         color: config.color,
                         border: `1px solid ${config.border}`,
@@ -284,7 +393,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                       }}
                     >
                       <StatusIcon size={14} />
-                      {config.label}
+                      {isPendingReception ? "En proceso · Pendiente de recepción" : config.label}
                     </span>
                   </div>
 
@@ -324,6 +433,64 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                       L. {Number.isFinite(totalEstimado) ? totalEstimado.toFixed(2) : "0.00"}
                     </strong>
                   </div>
+
+                  {/* HU-34 CA-02 & CA-03: Visualización de pendiente de recepción y vencimiento de 48h en America/Tegucigalpa */}
+                  {isPendingReception && (
+                    <div
+                      role="region"
+                      aria-label="Plazo de confirmación del servicio"
+                      style={{
+                        margin: "12px 0 0 48px",
+                        padding: "12px 14px",
+                        background: "#eff6ff",
+                        border: "1px solid #bfdbfe",
+                        borderRadius: "10px",
+                        fontSize: "13px",
+                        color: "#1e3a8a",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                        Trabajo reportado como finalizado · Pendiente de recepción del cliente
+                      </div>
+                      <div>
+                        El servicio permanece En proceso y los fondos continúan retenidos hasta la confirmación o el cierre del plazo.
+                      </div>
+                      {reportedAtIso && (
+                        <div>
+                          <strong>Finalización reportada:</strong> {formatTegucigalpaDateTime(reportedAtIso)}
+                        </div>
+                      )}
+                      {deadlineIso && (
+                        <div>
+                          <strong>Vencimiento de confirmación (48 h):</strong> {formatTegucigalpaDateTime(deadlineIso)}
+                        </div>
+                      )}
+                      {deadlineStatus && (
+                        <div style={{ marginTop: "4px", fontWeight: 600 }}>{deadlineStatus.etiqueta}</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* HU-34 CA-05: Aviso si existe un ajuste pendiente de aprobación */}
+                  {normalizedState === "EN_PROCESO" && !isPendingReception && hasPendingAdjustment && (
+                    <div
+                      role="note"
+                      style={{
+                        margin: "12px 0 0 48px",
+                        padding: "10px 14px",
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
+                        borderRadius: "10px",
+                        fontSize: "13px",
+                        color: "#92400e",
+                      }}
+                    >
+                      <strong>Ajuste pendiente de aprobación:</strong>{" "}
+                      {req.motivo_ajuste_pendiente ||
+                        "No se permite reportar el servicio como terminado hasta resolver el ajuste pendiente."}
+                    </div>
+                  )}
                 </div>
 
                 {/* Botones de acción */}
@@ -362,6 +529,52 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     >
                       <X size={16} strokeWidth={2.5} />
                       {actionLoading === req.id ? "Procesando…" : "Rechazar"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Botón para pasar de ACEPTADA a EN_PROCESO */}
+                {normalizedState === "ACEPTADA" && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() => handleStartExecution(req.id)}
+                      disabled={actionLoading === req.id}
+                      style={{
+                        background: "#eff6ff",
+                        color: "#1d4ed8",
+                        border: "1px solid #bfdbfe",
+                        gap: "8px",
+                        minWidth: "170px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <Clock3 size={16} />
+                      {actionLoading === req.id ? "Iniciando…" : "Iniciar servicio"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado desde En proceso */}
+                {normalizedState === "EN_PROCESO" && !isPendingReception && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() => handleReportCompletion(req.id)}
+                      disabled={actionLoading === req.id || hasPendingAdjustment}
+                      style={{
+                        background: hasPendingAdjustment ? "#f1f5f9" : "#eff6ff",
+                        color: hasPendingAdjustment ? "#64748b" : "#1d4ed8",
+                        border: `1px solid ${hasPendingAdjustment ? "#cbd5e1" : "#bfdbfe"}`,
+                        gap: "8px",
+                        minWidth: "170px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <CheckCircle2 size={16} />
+                      {actionLoading === req.id ? "Reportando…" : "Reportar trabajo finalizado"}
                     </Button>
                   </div>
                 )}

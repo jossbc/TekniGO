@@ -202,3 +202,143 @@ test('shows error notifications when initial fetch or PATCH action fails without
     globalThis.fetch = originalFetch
   }
 })
+
+test('HU-34 ST-03: reports work finished from EN_PROCESO, displays 48h deadline in America/Tegucigalpa, and blocks when adjustment is pending', async () => {
+  harness = { index: 0, state: [], effects: [] }
+  const user = { getIdToken: async () => 'token-123' }
+  const originalFetch = globalThis.fetch
+  const calls = []
+  const cleanups = []
+
+  const inProgressRequests = [
+    {
+      id: 'req-proc-1',
+      cliente_nombre: 'Valeria Cliente',
+      servicio_nombre: 'Mantenimiento de panel eléctrico',
+      fecha_hora: '2026-11-12T15:00:00Z',
+      descripcion: 'Revisión y ajuste de circuitos.',
+      estado: 'EN_PROCESO',
+      total_estimado: 650,
+    },
+    {
+      id: 'req-proc-adj',
+      cliente_nombre: 'Carlos Ajuste',
+      servicio_nombre: 'Instalación de bomba',
+      fecha_hora: '2026-11-12T16:00:00Z',
+      descripcion: 'Requiere materiales adicionales.',
+      estado: 'EN_PROCESO',
+      total_estimado: 900,
+      tiene_ajuste_pendiente: true,
+      motivo_ajuste_pendiente: 'Ajuste de presupuesto por válvula extra pendiente de aprobación.',
+    },
+  ]
+
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET' })
+    if (url.endsWith('/technicians/me/direct-requests') && (options.method || 'GET') === 'GET') {
+      return new Response(JSON.stringify(inProgressRequests), { status: 200 })
+    }
+    if (url.endsWith('/technicians/me/direct-requests/req-proc-1/report-completion') && options.method === 'PATCH') {
+      return new Response(
+        JSON.stringify({
+          id: 'req-proc-1',
+          solicitud_id: 'req-proc-1',
+          modalidad: 'DIRECTA',
+          estado: 'EN_PROCESO',
+          estado_etiqueta: 'En proceso (Pendiente de recepción)',
+          pendiente_recepcion: true,
+          completada: false,
+          fondos_liberados: false,
+          estado_fondos: 'RETENIDOS_PENDIENTE_CONFIRMACION',
+          plazo_confirmacion_horas: 48,
+          finalizacion_reportada_en: '2026-11-12T20:30:00+00:00',
+          vencimiento_confirmacion_en: '2026-11-14T20:30:00+00:00',
+          finalizacion_reportada_local: '2026-11-12T14:30:00-06:00',
+          vencimiento_confirmacion_local: '2026-11-14T14:30:00-06:00',
+          zona_horaria_usuario: 'America/Tegucigalpa',
+          reintento_idempotente: false,
+          mensaje: 'Finalización reportada exitosamente. El servicio permanece En proceso pendiente de recepción y se inició el plazo de 48 horas.',
+        }),
+        { status: 200 },
+      )
+    }
+    return new Response(JSON.stringify({ detail: 'Unexpected call' }), { status: 500 })
+  }
+
+  const render = () => {
+    harness.index = 0
+    const tree = module.exports.TechnicianRequestsManager({ user })
+    for (const effect of harness.effects.splice(0)) {
+      const cleanup = effect()
+      if (cleanup) cleanups.push(cleanup)
+    }
+    return nodes(tree)
+  }
+
+  try {
+    render()
+    await flush()
+    const loadedNodes = render()
+
+    // CA-05: Solicitud con ajuste pendiente muestra nota de bloqueo y botón deshabilitado
+    assert.ok(loadedNodes.some(n => n.props?.role === 'note' && textOf(n).includes('Ajuste pendiente de aprobación')))
+    const reportBtns = loadedNodes.filter(n => textOf(n) === 'Reportar trabajo finalizado' && typeof n.props?.onClick === 'function')
+    assert.equal(reportBtns.length, 2)
+    assert.equal(reportBtns[0].props.disabled, false)
+    assert.equal(reportBtns[1].props.disabled, true)
+
+    // CA-01, CA-02, CA-03: Reportar trabajo finalizado conserva En proceso · Pendiente de recepción y muestra plazo en America/Tegucigalpa
+    await reportBtns[0].props.onClick()
+    const afterReport = render()
+    assert.equal(calls[1].method, 'PATCH')
+    assert.ok(calls[1].url.endsWith('/technicians/me/direct-requests/req-proc-1/report-completion'))
+    assert.ok(afterReport.some(n => textOf(n) === 'En proceso · Pendiente de recepción'))
+    const deadlineRegion = afterReport.find(n => n.props?.role === 'region' && n.props?.['aria-label'] === 'Plazo de confirmación del servicio')
+    assert.ok(deadlineRegion, 'Should render confirmation deadline region')
+    assert.ok(textOf(deadlineRegion).includes('Pendiente de recepción del cliente'))
+    assert.ok(textOf(deadlineRegion).includes('America/Tegucigalpa'))
+    assert.ok(textOf(deadlineRegion).includes('Vencimiento de confirmación (48 h):'))
+  } finally {
+    cleanups.forEach(cleanup => cleanup())
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('HU-34 ST-05: validates controlled clock 48h window status and role/adjustment rejection without altering EN_PROCESO state', async () => {
+  const libResult = await build({
+    entryPoints: ['src/lib/directRequests.ts'],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'cjs',
+    packages: 'external',
+    define: { 'import.meta.env': '{}' },
+  })
+  const libModule = { exports: {} }
+  new Function('require', 'module', 'exports', libResult.outputFiles[0].text)(require, libModule, libModule.exports)
+  const { formatConfirmationWindowStatus, formatTegucigalpaDateTime } = libModule.exports
+
+  const reportUtc = '2026-11-12T20:00:00+00:00'
+  const expUtc = '2026-11-14T20:00:00+00:00'
+
+  // Reloj controlado a t0 (faltan 48 h exactas)
+  const atStart = formatConfirmationWindowStatus(expUtc, reportUtc)
+  assert.equal(atStart.vencido, false)
+  assert.equal(atStart.horasRestantes, 48)
+  assert.ok(atStart.etiqueta.includes('Restan 48 h'))
+
+  // Reloj controlado a t0 + 47h 30m (faltan 30 min)
+  const nearExpiry = formatConfirmationWindowStatus(expUtc, '2026-11-14T19:30:00+00:00')
+  assert.equal(nearExpiry.vencido, false)
+  assert.equal(nearExpiry.horasRestantes, 0)
+  assert.ok(nearExpiry.etiqueta.includes('Restan 30 min'))
+
+  // Reloj controlado exactamente a las 48h (vencido)
+  const atExpiry = formatConfirmationWindowStatus(expUtc, expUtc)
+  assert.equal(atExpiry.vencido, true)
+  assert.equal(atExpiry.horasRestantes, 0)
+  assert.ok(atExpiry.etiqueta.includes('Plazo de 48 horas vencido'))
+
+  // Formato explícito en America/Tegucigalpa
+  assert.ok(formatTegucigalpaDateTime(expUtc).includes('(America/Tegucigalpa)'))
+})

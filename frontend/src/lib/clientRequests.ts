@@ -8,7 +8,7 @@ export type EstadoFiltro =
   | "CON OFERTAS"
   | "PENDIENTE"
   | "ACEPTADA"
-  | "EN PROCESO"
+  | "EN_PROCESO"
   | "RECHAZADA"
   | "CANCELADA"
   | "COMPLETADA";
@@ -30,9 +30,14 @@ export type ClientRequestTechnicianInfo = {
 export type ClientRequestSummary = {
   id: string;
   modalidad: "DIRECTA" | "ABIERTA";
-  estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | "CANCELADA" | "COMPLETADA" | string;
+  estado: "PENDIENTE" | "ACEPTADA" | "EN_PROCESO" | "EN PROCESO" | "RECHAZADA" | "CANCELADA" | "COMPLETADA" | string;
   fecha_hora: string | null;
   creada_en: string | null;
+  finalizacion_reportada_en?: string | null;
+  vencimiento_confirmacion_en?: string | null;
+  finalizacion_reportada_local?: string | null;
+  vencimiento_confirmacion_local?: string | null;
+  pendiente_recepcion?: boolean;
   presupuesto: number | null;
   monto_base: number | null;
   cantidad: number | null;
@@ -139,6 +144,15 @@ export type ClientRequestDetail = ClientRequestSummary & {
   linea_tiempo: ClientRequestTimelineItem[];
   acciones_permitidas: string[];
   propuestas_recibidas?: ReceivedOpenRequestProposal[];
+  eventos?: {
+    evento_id: string;
+    tipo: string;
+    mensaje?: string;
+    finalizacion_reportada_en?: string;
+    vencimiento_confirmacion_en?: string;
+    finalizacion_reportada_local?: string;
+    vencimiento_confirmacion_local?: string;
+  }[];
   seguimiento_recepcion?: ServiceReceptionTracking;
 };
 
@@ -163,26 +177,30 @@ export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
   { value: "CON OFERTAS", label: "Con ofertas" },
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "ACEPTADA", label: "Aceptada" },
-  { value: "EN PROCESO", label: "En proceso" },
+  { value: "EN_PROCESO", label: "En proceso" },
   { value: "COMPLETADA", label: "Completada" },
   { value: "CANCELADA", label: "Cancelada" },
   { value: "RECHAZADA", label: "Rechazada" },
 ];
 
-export function formatRequestStateLabel(estado: string): string {
+export function formatRequestStateLabel(estado: string, pendienteRecepcion?: boolean): string {
+  const normalized = (estado || "").trim().toUpperCase();
+  if ((normalized === "EN_PROCESO" || normalized === "EN PROCESO") && pendienteRecepcion) {
+    return "En proceso · Pendiente de recepción";
+  }
   const map: Record<string, string> = {
     PUBLICADA: "Publicada",
     "CON OFERTAS": "Con ofertas",
     CON_OFERTAS: "Con ofertas",
     PENDIENTE: "Pendiente",
     ACEPTADA: "Aceptada",
-    "EN PROCESO": "En proceso",
     EN_PROCESO: "En proceso",
+    "EN PROCESO": "En proceso",
     RECHAZADA: "Rechazada",
     CANCELADA: "Cancelada",
     COMPLETADA: "Completada",
   };
-  return map[estado.toUpperCase()] || estado;
+  return map[normalized] || estado;
 }
 
 export function formatRequestModalityLabel(modalidad: string): string {
@@ -250,6 +268,11 @@ export async function executeMyRequestAction(
   );
 }
 
+export {
+  TEGUCIGALPA_TIME_ZONE,
+  formatConfirmationWindowStatus,
+  formatTegucigalpaDateTime,
+} from "./directRequests";
 
 export async function rejectProposalApi(
   user: User,

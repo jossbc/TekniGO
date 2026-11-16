@@ -23,13 +23,16 @@ import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePayme
 import {
   ESTADO_OPTIONS,
   MODALIDAD_OPTIONS,
+  TEGUCIGALPA_TIME_ZONE,
   awardProposalApi,
   confirmReceptionApi,
   executeMyRequestAction,
   formatDateTimeTegucigalpa,
+  formatConfirmationWindowStatus,
   formatLempiras,
   formatRequestModalityLabel,
   formatRequestStateLabel,
+  formatTegucigalpaDateTime,
   formatUnitLabel,
   getMyRequestDetail,
   listMyRequests,
@@ -49,16 +52,24 @@ function formatDateTime(iso: string | null | undefined): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return date.toLocaleString("es-HN", {
+    timeZone: TEGUCIGALPA_TIME_ZONE,
     dateStyle: "medium",
     timeStyle: "short",
   });
 }
 
-function StateBadge({ estado }: { estado: string }) {
+function StateBadge({
+  estado,
+  pendienteRecepcion,
+}: {
+  estado: string;
+  pendienteRecepcion?: boolean;
+}) {
   const normalized = (estado || "PENDIENTE").toUpperCase();
+  const slug = normalized.toLowerCase().replaceAll(/\s+/g, "_");
   return (
-    <span className={`request-status-badge request-status-${normalized.toLowerCase()}`}>
-      {formatRequestStateLabel(normalized)}
+    <span className={`request-status-badge request-status-${slug}`}>
+      {formatRequestStateLabel(normalized, pendienteRecepcion)}
     </span>
   );
 }
@@ -564,7 +575,14 @@ export default function ClientRequestsManager({
                 <div className="client-request-item-main">
                   <div className="client-request-badges">
                     <ModalityBadge modalidad={item.modalidad} />
-                    <StateBadge estado={item.estado} />
+                    <StateBadge
+                      estado={item.estado}
+                      pendienteRecepcion={Boolean(
+                        item.pendiente_recepcion ||
+                          item.finalizacion_reportada_en ||
+                          item.finalizacion_reportada_local,
+                      )}
+                    />
                   </div>
                   <h3>{item.servicio?.nombre || "Servicio solicitado"}</h3>
                   <p className="client-request-meta">
@@ -584,6 +602,14 @@ export default function ClientRequestsManager({
                       <span>
                         <MapPin size={14} aria-hidden="true" /> {item.municipio}
                         {item.sector ? `, ${item.sector}` : ""}
+                      </span>
+                    )}
+                    {(item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en) && (
+                      <span>
+                        <Clock3 size={14} aria-hidden="true" /> Vence confirmación (48 h):{" "}
+                        {formatTegucigalpaDateTime(
+                          item.vencimiento_confirmacion_local || item.vencimiento_confirmacion_en,
+                        )}
                       </span>
                     )}
                   </p>
@@ -649,7 +675,14 @@ export default function ClientRequestsManager({
             <section className="client-request-detail" aria-label="Detalle de solicitud seleccionada">
               <div className="client-request-badges" style={{ marginBottom: 12 }}>
                 <ModalityBadge modalidad={detail.modalidad} />
-                <StateBadge estado={detail.estado} />
+                <StateBadge
+                  estado={detail.estado}
+                  pendienteRecepcion={Boolean(
+                    detail.pendiente_recepcion ||
+                      detail.finalizacion_reportada_en ||
+                      detail.finalizacion_reportada_local,
+                  )}
+                />
               </div>
 
               <h2>{detail.propuesta.servicio_nombre || detail.servicio?.nombre || "Detalle del servicio"}</h2>
@@ -657,6 +690,53 @@ export default function ClientRequestsManager({
                 Fecha programada: <strong>{formatDateTime(detail.fecha_hora)}</strong> · Creada:{" "}
                 {formatDateTime(detail.creada_en)}
               </p>
+
+              {/* HU-34 CA-02 & CA-03: Aviso de finalización reportada y plazo máximo de 48h en America/Tegucigalpa */}
+              {Boolean(
+                detail.pendiente_recepcion ||
+                  detail.finalizacion_reportada_en ||
+                  detail.finalizacion_reportada_local,
+              ) && (
+                <section
+                  className="client-request-box"
+                  aria-label="Plazo de confirmación de trabajo finalizado"
+                  style={{
+                    background: "#eff6ff",
+                    borderColor: "#bfdbfe",
+                    color: "#1e3a8a",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <h3>Trabajo reportado como finalizado · Pendiente de recepción</h3>
+                  <p>
+                    El técnico informó que terminó el servicio. La contratación se conserva{" "}
+                    <strong>En proceso (pendiente de recepción)</strong> y no libera fondos de inmediato.
+                    Tienes un plazo máximo de <strong>48 horas</strong> para confirmar la finalización o
+                    abrir una incidencia.
+                  </p>
+                  <p>
+                    <strong>Finalización reportada:</strong>{" "}
+                    {formatTegucigalpaDateTime(
+                      detail.finalizacion_reportada_local || detail.finalizacion_reportada_en,
+                    )}
+                  </p>
+                  <p>
+                    <strong>Vencimiento de confirmación (48 h):</strong>{" "}
+                    {formatTegucigalpaDateTime(
+                      detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
+                    )}
+                  </p>
+                  <p>
+                    <strong>
+                      {
+                        formatConfirmationWindowStatus(
+                          detail.vencimiento_confirmacion_local || detail.vencimiento_confirmacion_en,
+                        ).etiqueta
+                      }
+                    </strong>
+                  </p>
+                </section>
+              )}
 
               <div className="client-request-detail-grid">
                 {/* CA-03: Técnico seleccionado cuando existe */}

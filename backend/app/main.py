@@ -21,6 +21,7 @@ from app.client_requests import router as client_requests_router
 from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
 from app.service_reception import router as service_reception_router
+from app.service_completion import router as service_completion_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,6 +51,7 @@ app.include_router(client_requests_router)
 app.include_router(open_requests_router)
 app.include_router(certifications_router)
 app.include_router(service_reception_router)
+app.include_router(service_completion_router)
 
 @app.get("/health")
 def health():
