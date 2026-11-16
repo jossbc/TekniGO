@@ -32,6 +32,8 @@ CMD ["nginx", "-g", "daemon off;"]
 
 FROM runtime AS azure
 COPY nginx.azure.conf /etc/nginx/conf.d/default.conf
+ARG BUILD_COMMIT
+RUN test -n "$BUILD_COMMIT" && printf '%s\n' "$BUILD_COMMIT" > /usr/share/nginx/html/version.txt
 
 FROM runtime AS compose
 COPY nginx.conf /etc/nginx/conf.d/default.conf

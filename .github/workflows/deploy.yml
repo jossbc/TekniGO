@@ -60,6 +60,7 @@ jobs:
           az acr login --name "${REGISTRY%%.*}"
           docker build -t "$BACKEND_IMAGE" ./backend
           docker build --target azure -t "$FRONTEND_IMAGE" --build-arg VITE_API_URL \
+            --build-arg "BUILD_COMMIT=$GITHUB_SHA" \
             --build-arg "VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY:?Falta configurar Firebase}" \
             --build-arg "VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN:?Falta configurar Firebase}" \
             --build-arg "VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID:?Falta configurar Firebase}" \
@@ -99,5 +100,25 @@ jobs:
           done
           echo "::error::El backend no respondió con la imagen esperada: $BACKEND_IMAGE."
           az containerapp revision list -g "$RG" -n teknigo-backend --only-show-errors \
+            --query '[].{revision:name,activa:properties.active,estado:properties.provisioningState,salud:properties.healthState,imagen:properties.template.containers[0].image}' -o table
+          exit 1
+
+      - name: Verificar la versión publicada del frontend
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          host=$(az containerapp show -g "$RG" -n teknigo-frontend \
+            --query properties.configuration.ingress.fqdn --only-show-errors -o tsv)
+          url="https://${host:?El frontend no tiene hostname}"
+          for attempt in {1..12}; do
+            if served=$(curl --fail --silent --show-error --max-time 10 "$url/version.txt?commit=$GITHUB_SHA") &&
+              [[ "$served" == "$GITHUB_SHA" ]]; then
+              echo "Frontend publicado: $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::El frontend en $url no sirve el commit $GITHUB_SHA."
+          az containerapp revision list -g "$RG" -n teknigo-frontend --only-show-errors \
             --query '[].{revision:name,activa:properties.active,estado:properties.provisioningState,salud:properties.healthState,imagen:properties.template.containers[0].image}' -o table
           exit 1
