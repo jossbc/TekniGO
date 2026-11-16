@@ -2,6 +2,9 @@ name: Deploy a Azure
 
 on:
   workflow_call:
+    secrets:
+      DATABASE_URL:
+        required: true
 
 concurrency:
   group: teknigo-azure-production
