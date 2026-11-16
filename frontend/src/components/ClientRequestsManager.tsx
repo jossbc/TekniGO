@@ -24,13 +24,16 @@ import {
   ESTADO_OPTIONS,
   MODALIDAD_OPTIONS,
   awardProposalApi,
+  confirmReceptionApi,
   executeMyRequestAction,
+  formatDateTimeTegucigalpa,
   formatLempiras,
   formatRequestModalityLabel,
   formatRequestStateLabel,
   formatUnitLabel,
   getMyRequestDetail,
   listMyRequests,
+  openServiceIncidentApi,
   rejectProposalApi,
   type ClientRequestDetail,
   type ClientRequestsPageResponse,
@@ -404,6 +407,56 @@ export default function ClientRequestsManager({
     if (!confirmAwardProp) return;
     setShowAwardGateway(false);
     void executeAwardProposal(confirmAwardProp, "tarjeta", result.referenciaPasarela);
+  }
+
+  const [receptionComment, setReceptionComment] = useState("");
+  const [confirmingReception, setConfirmingReception] = useState(false);
+  const [showIncidentForm, setShowIncidentForm] = useState(false);
+  const [incidentReason, setIncidentReason] = useState("");
+  const [openingIncident, setOpeningIncident] = useState(false);
+
+  async function handleConfirmReception() {
+    if (!detail || confirmingReception) return;
+    setConfirmingReception(true);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const res = await confirmReceptionApi(user, detail.id, receptionComment);
+      setActionNotice(res.mensaje || "Recepción confirmada exitosamente.");
+      setReceptionComment("");
+      setShowIncidentForm(false);
+      const updatedDetail = await getMyRequestDetail(user, detail.id);
+      setDetail(updatedDetail);
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+    } finally {
+      setConfirmingReception(false);
+    }
+  }
+
+  async function handleOpenIncident() {
+    if (!detail || openingIncident) return;
+    if (incidentReason.trim().length < 5) {
+      setDetailError("Describe el motivo de la incidencia con al menos 5 caracteres.");
+      return;
+    }
+    setOpeningIncident(true);
+    setDetailError("");
+    setActionNotice("");
+    try {
+      const res = await openServiceIncidentApi(user, detail.id, incidentReason);
+      setActionNotice(res.mensaje || "Incidencia reportada. Se detuvo el cierre automático.");
+      setIncidentReason("");
+      setShowIncidentForm(false);
+      const updatedDetail = await getMyRequestDetail(user, detail.id);
+      setDetail(updatedDetail);
+      setRefreshTick((v) => v + 1);
+    } catch (err) {
+      setDetailError(errorMessage(err));
+    } finally {
+      setOpeningIncident(false);
+    }
   }
 
   return (
@@ -1102,6 +1155,194 @@ export default function ClientRequestsManager({
                         </div>
                       ))}
                     </div>
+                  )}
+                </section>
+              )}
+
+              {/* HU-35: Confirmación de recepción, plazo de 48h (America/Tegucigalpa) e incidencias */}
+              {(detail.seguimiento_recepcion?.finalizacion_reportada ||
+                ["EN PROCESO", "EN_PROCESO", "COMPLETADA"].includes(
+                  (detail.estado || "").toUpperCase(),
+                )) && (
+                <section
+                  className="client-request-box"
+                  aria-label="Confirmación de recepción del servicio"
+                >
+                  <h3>Recepción del trabajo y cierre del acuerdo</h3>
+                  {detail.seguimiento_recepcion?.finalizacion_reportada_tegucigalpa && (
+                    <p style={{ fontSize: "0.88rem", color: "#334155", marginBottom: "6px" }}>
+                      <strong>Finalización reportada por el técnico:</strong>{" "}
+                      {formatDateTimeTegucigalpa(
+                        detail.seguimiento_recepcion.finalizacion_reportada_tegucigalpa,
+                      )}
+                    </p>
+                  )}
+                  {detail.seguimiento_recepcion?.plazo_confirmacion_vence_tegucigalpa &&
+                    !detail.seguimiento_recepcion?.completada && (
+                      <p style={{ fontSize: "0.88rem", color: "#0369a1", marginBottom: "8px" }}>
+                        <strong>Plazo de 48 horas para confirmar o abrir incidencia:</strong> vence el{" "}
+                        {formatDateTimeTegucigalpa(
+                          detail.seguimiento_recepcion.plazo_confirmacion_vence_tegucigalpa,
+                        )}
+                      </p>
+                    )}
+
+                  {detail.seguimiento_recepcion?.incidencia_abierta && (
+                    <div
+                      role="alert"
+                      style={{
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: "8px",
+                        padding: "10px 12px",
+                        marginBottom: "10px",
+                      }}
+                    >
+                      <strong style={{ color: "#b91c1c", display: "block" }}>
+                        Incidencia abierta — Cierre automático y liberación de fondos detenidos (CA-04)
+                      </strong>
+                      <span style={{ fontSize: "0.85rem", color: "#7f1d1d" }}>
+                        Motivo: {detail.seguimiento_recepcion.incidencia?.motivo}
+                      </span>
+                    </div>
+                  )}
+
+                  {detail.seguimiento_recepcion?.completada ||
+                  (detail.estado || "").toUpperCase() === "COMPLETADA" ? (
+                    <div
+                      style={{
+                        background: "#f0fdf4",
+                        border: "1px solid #86efac",
+                        borderRadius: "8px",
+                        padding: "12px",
+                      }}
+                    >
+                      <strong style={{ color: "#15803d", display: "block", marginBottom: "4px" }}>
+                        Acuerdo completado e inmutable (CA-02)
+                      </strong>
+                      <p style={{ fontSize: "0.85rem", color: "#166534", margin: "2px 0" }}>
+                        <strong>Autor del cierre:</strong>{" "}
+                        {detail.seguimiento_recepcion?.autor_cierre || "CLIENTE"}
+                        {detail.seguimiento_recepcion?.fecha_cierre_tegucigalpa
+                          ? ` — ${formatDateTimeTegucigalpa(detail.seguimiento_recepcion.fecha_cierre_tegucigalpa)}`
+                          : ""}
+                      </p>
+                      {detail.seguimiento_recepcion?.efecto_financiero && (
+                        <p style={{ fontSize: "0.84rem", color: "#166534", margin: "4px 0" }}>
+                          <strong>Efecto financiero único (CA-05):</strong>{" "}
+                          {detail.seguimiento_recepcion.efecto_financiero.tipo_efecto} — Comisión:{" "}
+                          {formatLempiras(
+                            detail.seguimiento_recepcion.efecto_financiero.monto_comision,
+                          )}
+                        </p>
+                      )}
+                      {detail.seguimiento_recepcion?.plazo_resena_vence_tegucigalpa && (
+                        <p style={{ fontSize: "0.84rem", color: "#0f766e", margin: "4px 0 0" }}>
+                          <strong>Plazo independiente de 48h para reseña:</strong> habilitado hasta el{" "}
+                          {formatDateTimeTegucigalpa(
+                            detail.seguimiento_recepcion.plazo_resena_vence_tegucigalpa,
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    ["EN PROCESO", "EN_PROCESO"].includes((detail.estado || "").toUpperCase()) &&
+                    detail.seguimiento_recepcion?.finalizacion_reportada &&
+                    !detail.seguimiento_recepcion?.incidencia_abierta && (
+                      <div style={{ marginTop: "8px" }}>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.84rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                          }}
+                        >
+                          Comentario de recepción (opcional)
+                        </label>
+                        <input
+                          type="text"
+                          value={receptionComment}
+                          onChange={(e) => setReceptionComment(e.target.value)}
+                          placeholder="Ej. Trabajo recibido conforme a lo acordado"
+                          style={{
+                            width: "100%",
+                            padding: "8px 10px",
+                            borderRadius: "6px",
+                            border: "1px solid #cbd5e1",
+                            marginBottom: "10px",
+                            fontSize: "0.88rem",
+                          }}
+                        />
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <Button
+                            type="button"
+                            style={{ width: "auto", background: "#16a34a", color: "#fff" }}
+                            disabled={confirmingReception || openingIncident}
+                            onClick={handleConfirmReception}
+                          >
+                            {confirmingReception
+                              ? "Confirmando recepción…"
+                              : "Confirmar recepción del trabajo"}
+                          </Button>
+                          <Button
+                            type="button"
+                            className="button-outline"
+                            style={{ width: "auto", color: "#b91c1c", borderColor: "#fca5a5" }}
+                            disabled={confirmingReception || openingIncident}
+                            onClick={() => setShowIncidentForm((v) => !v)}
+                          >
+                            {showIncidentForm ? "Cancelar reporte" : "Reportar incidencia"}
+                          </Button>
+                        </div>
+
+                        {showIncidentForm && (
+                          <div
+                            style={{
+                              marginTop: "10px",
+                              padding: "10px",
+                              borderRadius: "8px",
+                              background: "#fff1f2",
+                              border: "1px solid #fecdd3",
+                            }}
+                          >
+                            <label
+                              style={{
+                                display: "block",
+                                fontSize: "0.84rem",
+                                fontWeight: 600,
+                                color: "#9f1239",
+                                marginBottom: "4px",
+                              }}
+                            >
+                              Motivo de la incidencia (detiene el cierre automático y retiene fondos)
+                            </label>
+                            <input
+                              type="text"
+                              value={incidentReason}
+                              onChange={(e) => setIncidentReason(e.target.value)}
+                              placeholder="Describe el problema detectado en el trabajo…"
+                              style={{
+                                width: "100%",
+                                padding: "8px 10px",
+                                borderRadius: "6px",
+                                border: "1px solid #fda4af",
+                                marginBottom: "8px",
+                                fontSize: "0.88rem",
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              style={{ width: "auto", background: "#dc2626", color: "#fff" }}
+                              disabled={openingIncident}
+                              onClick={handleOpenIncident}
+                            >
+                              {openingIncident ? "Registrando incidencia…" : "Confirmar incidencia"}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )
                   )}
                 </section>
               )}

@@ -25,6 +25,8 @@ ALLOWED_ESTADOS = {
     "PENDIENTE",
     "ACEPTADA",
     "RECHAZADA",
+    "EN PROCESO",
+    "EN_PROCESO",
     "CANCELADA",
     "COMPLETADA",
 }
@@ -35,6 +37,8 @@ STATE_TIMELINE_DESCRIPTIONS = {
     "CON_OFERTAS": "Licitación abierta con propuestas de técnicos pendientes de tu decisión.",
     "PENDIENTE": "Solicitud registrada y pendiente de respuesta.",
     "ACEPTADA": "Propuesta aceptada y trabajo programado con el técnico.",
+    "EN PROCESO": "Servicio en ejecución o con finalización reportada pendiente de confirmación.",
+    "EN_PROCESO": "Servicio en ejecución o con finalización reportada pendiente de confirmación.",
     "RECHAZADA": "Solicitud rechazada por el técnico.",
     "CANCELADA": "Solicitud cancelada.",
     "COMPLETADA": "Trabajo marcado como completado.",
@@ -446,9 +450,10 @@ def get_client_request_detail(
         "metodo_pago": summary["metodo_pago"],
         "desglose_medios": summary.get("desglose_medios"),
     }
+    from app.service_reception import get_service_reception_tracking
     summary["linea_tiempo"] = _build_request_timeline(record, estado_normalizado)
     summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
-
+    summary["seguimiento_recepcion"] = get_service_reception_tracking(str(record.id))
     proposal_model = getattr(models, "OpenRequestProposal", None)
     if modalidad == "ABIERTA" and proposal_model is not None:
         from app.open_requests import (

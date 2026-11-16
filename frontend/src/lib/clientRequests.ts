@@ -8,6 +8,7 @@ export type EstadoFiltro =
   | "CON OFERTAS"
   | "PENDIENTE"
   | "ACEPTADA"
+  | "EN PROCESO"
   | "RECHAZADA"
   | "CANCELADA"
   | "COMPLETADA";
@@ -89,11 +90,56 @@ export type ReceivedOpenRequestProposal = {
   };
 };
 
+export type ServiceReceptionTracking = {
+  solicitud_id: string;
+  finalizacion_reportada: boolean;
+  finalizacion_reportada_en: string | null;
+  finalizacion_reportada_tegucigalpa: string | null;
+  plazo_confirmacion_vence_en: string | null;
+  plazo_confirmacion_vence_tegucigalpa: string | null;
+  incidencia_abierta: boolean;
+  cierre_automatico_detenido?: boolean;
+  liberacion_fondos_retenida?: boolean;
+  incidencia: {
+    incidencia_id: string;
+    motivo: string;
+    estado: string;
+    abierta_en_tegucigalpa?: string | null;
+    decision_administrativa?: string | null;
+    resolucion_administrativa?: string | null;
+  } | null;
+  completada: boolean;
+  fecha_cierre: string | null;
+  fecha_cierre_tegucigalpa: string | null;
+  autor_cierre: "CLIENTE" | "SISTEMA" | "ADMIN" | string | null;
+  acuerdo_inmutable: boolean;
+  resenas_habilitadas: boolean;
+  plazo_resena_vence_en: string | null;
+  plazo_resena_vence_tegucigalpa: string | null;
+  evento_cierre?: {
+    evento_id: string;
+    clave_idempotencia: string;
+    tipo_evento: string;
+    metodo_pago: string;
+    monto_bruto: number;
+    monto_comision: number;
+    monto_neto_tecnico: number;
+  } | null;
+  efecto_financiero?: {
+    tipo_efecto: string;
+    monto_comision: number;
+    credito_digital_acreditado: number;
+    deuda_comision_efectivo: number;
+    estado_liquidacion: string;
+  } | null;
+};
+
 export type ClientRequestDetail = ClientRequestSummary & {
   propuesta: ClientRequestProposal;
   linea_tiempo: ClientRequestTimelineItem[];
   acciones_permitidas: string[];
   propuestas_recibidas?: ReceivedOpenRequestProposal[];
+  seguimiento_recepcion?: ServiceReceptionTracking;
 };
 
 export type ClientRequestsPageResponse = {
@@ -117,6 +163,7 @@ export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
   { value: "CON OFERTAS", label: "Con ofertas" },
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "ACEPTADA", label: "Aceptada" },
+  { value: "EN PROCESO", label: "En proceso" },
   { value: "COMPLETADA", label: "Completada" },
   { value: "CANCELADA", label: "Cancelada" },
   { value: "RECHAZADA", label: "Rechazada" },
@@ -129,6 +176,8 @@ export function formatRequestStateLabel(estado: string): string {
     CON_OFERTAS: "Con ofertas",
     PENDIENTE: "Pendiente",
     ACEPTADA: "Aceptada",
+    "EN PROCESO": "En proceso",
+    EN_PROCESO: "En proceso",
     RECHAZADA: "Rechazada",
     CANCELADA: "Cancelada",
     COMPLETADA: "Completada",
@@ -247,6 +296,58 @@ export async function awardProposalApi(
     `/open-requests/${encodeURIComponent(solicitudId)}/proposals/${encodeURIComponent(proposalId)}/award`,
     user,
     payload,
+    "POST",
+  );
+}
+
+export function formatDateTimeTegucigalpa(iso: string | null | undefined): string {
+  if (!iso) return "Sin fecha registrada";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.toLocaleString("es-HN", {
+    timeZone: "America/Tegucigalpa",
+    dateStyle: "medium",
+    timeStyle: "short",
+  })} (America/Tegucigalpa)`;
+}
+
+export async function confirmReceptionApi(
+  user: User,
+  solicitudId: string,
+  comentario?: string,
+): Promise<{
+  mensaje: string;
+  reintento_idempotente: boolean;
+  solicitud_id: string;
+  estado: string;
+  fecha_cierre: string | null;
+  fecha_cierre_tegucigalpa: string | null;
+  autor_cierre: string;
+  acuerdo_inmutable: boolean;
+  seguimiento: ServiceReceptionTracking;
+}> {
+  return api(
+    `/users/me/requests/${encodeURIComponent(solicitudId)}/confirm-reception`,
+    user,
+    { comentario: comentario?.trim() || null },
+    "POST",
+  );
+}
+
+export async function openServiceIncidentApi(
+  user: User,
+  solicitudId: string,
+  motivo: string,
+): Promise<{
+  mensaje: string;
+  solicitud_id: string;
+  estado: string;
+  seguimiento: ServiceReceptionTracking;
+}> {
+  return api(
+    `/users/me/requests/${encodeURIComponent(solicitudId)}/incidents`,
+    user,
+    { motivo: motivo.trim() },
     "POST",
   );
 }
