@@ -11,12 +11,23 @@ export interface TechnicianDirectRequest {
   modalidad?: "DIRECTA" | "ABIERTA" | string | null;
   total_estimado: number | string;
   pendiente_recepcion?: boolean;
+  municipio?: string | null;
+  sector?: string | null;
+  direccion_exacta?: string | null;
+  cliente_telefono?: string | null;
   finalizacion_reportada_en?: string | null;
   vencimiento_confirmacion_en?: string | null;
   finalizacion_reportada_local?: string | null;
   vencimiento_confirmacion_local?: string | null;
   tiene_ajuste_pendiente?: boolean;
   motivo_ajuste_pendiente?: string | null;
+  incidencia_abierta?: boolean;
+  incidencia?: {
+    incidencia_id?: string;
+    motivo: string;
+    estado: string;
+    abierta_en_tegucigalpa?: string | null;
+  } | null;
 }
 
 export interface ReportServiceCompletionResponse {

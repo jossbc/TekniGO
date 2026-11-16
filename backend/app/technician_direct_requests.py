@@ -20,6 +20,7 @@ from app.models import (
     format_tegucigalpa_iso,
 )
 from app.security import get_current_user
+from app.service_reception import get_service_reception_tracking
 from app.service_completion import has_pending_adjustment
 
 router = APIRouter(prefix="/technicians", tags=["Solicitudes Directas del Técnico"])
@@ -41,12 +42,19 @@ class TechnicianDirectRequestOut(BaseModel):
     monto_total: float | None = None
     desglose_medios: dict | None = None
     pendiente_recepcion: bool | None = None
+    municipio: str | None = None
+    sector: str | None = None
+    direccion_exacta: str | None = None
+    cliente_telefono: str | None = None
+    pendiente_recepcion: bool | None = None
     finalizacion_reportada_en: str | None = None
     vencimiento_confirmacion_en: str | None = None
     finalizacion_reportada_local: str | None = None
     vencimiento_confirmacion_local: str | None = None
     tiene_ajuste_pendiente: bool | None = None
     motivo_ajuste_pendiente: str | None = None
+    incidencia_abierta: bool | None = None
+    incidencia: dict | None = None
 
 
 def _require_technician_user(claims: dict, db: Session) -> User:
@@ -134,6 +142,9 @@ def _serialize_direct_request(
         else (f"{spec.nombre} (Licitación abierta)" if spec is not None else "Servicio")
     )
 
+        # Política de Privacidad: Dirección exacta y teléfono solo revelados tras aceptar el trabajo
+    revelar_contacto = estado in {"ACEPTADA", "EN_PROCESO", "EN PROCESO", "COMPLETADA"}
+
     payload = {
         "id": str(row.id),
         "cliente_nombre": client.nombre_completo if client is not None else "Cliente",
@@ -149,13 +160,30 @@ def _serialize_direct_request(
         "metodo_pago_ajuste": row.metodo_pago_ajuste,
         "monto_total": float(row.monto_total or base_val or 0.0),
         "desglose_medios": row.desglose_medios,
+        "municipio": getattr(row, "municipio", None),
+        "sector": getattr(row, "sector", None),
+        "direccion_exacta": getattr(row, "direccion_exacta", None) if revelar_contacto else None,
+        "cliente_telefono": (client.telefono if client is not None else None) if revelar_contacto else None,
     }
+
+    reception_tracking = get_service_reception_tracking(str(row.id), record=row)
+    incidencia_abierta = bool(reception_tracking.get("incidencia_abierta"))
+    incidencia_data = reception_tracking.get("incidencia")
+
     finalizacion_dt = ensure_utc_datetime(getattr(row, "finalizacion_reportada_en", None))
     vencimiento_dt = ensure_utc_datetime(getattr(row, "vencimiento_confirmacion_en", None))
-    pendiente_rec = bool(getattr(row, "pendiente_recepcion", False)) or (
-        finalizacion_dt is not None and estado in {"EN PROCESO", "EN_PROCESO"}
+    es_en_proceso = estado in {"EN PROCESO", "EN_PROCESO"}
+    pendiente_rec = (
+        es_en_proceso
+        and not incidencia_abierta
+        and (bool(getattr(row, "pendiente_recepcion", False)) or finalizacion_dt is not None)
     )
     has_adj, adj_reason = has_pending_adjustment(row)
+
+    if incidencia_abierta:
+        payload["incidencia_abierta"] = True
+        payload["incidencia"] = incidencia_data
+
     if finalizacion_dt is not None or vencimiento_dt is not None or pendiente_rec or has_adj:
         payload["pendiente_recepcion"] = pendiente_rec
         payload["finalizacion_reportada_en"] = finalizacion_dt.isoformat() if finalizacion_dt else None
@@ -164,6 +192,7 @@ def _serialize_direct_request(
         payload["vencimiento_confirmacion_local"] = format_tegucigalpa_iso(vencimiento_dt)
         payload["tiene_ajuste_pendiente"] = has_adj
         payload["motivo_ajuste_pendiente"] = adj_reason
+
     return payload
 
 

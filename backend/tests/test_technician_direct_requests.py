@@ -146,6 +146,7 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
                 "id", "cliente_nombre", "servicio_nombre", "fecha_hora", "descripcion",
                 "estado", "modalidad", "total_estimado", "metodo_pago", "referencia_pasarela",
                 "monto_ajuste", "metodo_pago_ajuste", "monto_total", "desglose_medios",
+                "municipio", "sector", "direccion_exacta", "cliente_telefono",
             },
         )
         self.assertEqual(payload[0]["cliente_nombre"], "Joseline Banegas")
