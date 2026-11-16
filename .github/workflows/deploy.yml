@@ -1,0 +1,83 @@
+name: Deploy a Azure
+
+on:
+  workflow_call:
+
+concurrency:
+  group: teknigo-azure-production
+  cancel-in-progress: false
+
+jobs:
+  azure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      RG: rg-teknigo
+      REGISTRY: acrteknigohydra.azurecr.io
+      BACKEND_IMAGE: acrteknigohydra.azurecr.io/teknigo-backend:${{ github.sha }}
+      FRONTEND_IMAGE: acrteknigohydra.azurecr.io/teknigo-frontend:${{ github.sha }}
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verificar que el commit sigue en main
+        id: main
+        shell: bash
+        run: |
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          echo "deploy=$([[ "$latest" == "$GITHUB_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Construir y publicar imágenes
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          host=$(az containerapp show -g "$RG" -n teknigo-backend --query properties.configuration.ingress.fqdn -o tsv)
+          export VITE_API_URL="https://${host:?El backend no tiene hostname}"
+          echo "BACKEND_URL=$VITE_API_URL" >> "$GITHUB_ENV"
+          az acr login --name "${REGISTRY%%.*}"
+          docker build -t "$BACKEND_IMAGE" ./backend
+          docker build -t "$FRONTEND_IMAGE" --build-arg VITE_API_URL \
+            --build-arg "VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID:?Falta configurar Firebase}" ./frontend
+          docker push "$BACKEND_IMAGE"
+          docker push "$FRONTEND_IMAGE"
+
+      - name: Aplicar migraciones en Supabase
+        if: steps.main.outputs.deploy == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          : "${DATABASE_URL:?Falta el secreto DATABASE_URL en production}"
+          schema=$(az containerapp show -g "$RG" -n teknigo-backend \
+            --query 'properties.template.containers[0].env[?name==`DATABASE_SCHEMA`]' -o json)
+          DATABASE_SCHEMA=$(jq -er 'if length == 0 then "public" else .[0].value // error("DATABASE_SCHEMA debe ser un valor explícito en Azure") end' <<< "$schema")
+          export DATABASE_SCHEMA
+          docker run --rm -e DATABASE_URL -e DATABASE_SCHEMA "$BACKEND_IMAGE" python -m alembic upgrade head
+
+      - name: Actualizar TekniGO en Azure
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          revision=$(az containerapp update -g "$RG" -n teknigo-backend --image "$BACKEND_IMAGE" --query properties.latestRevisionName -o tsv)
+          : "${revision:?Azure no devolvió la revisión del backend}"
+          for attempt in {1..30}; do
+            ready=$(az containerapp show -g "$RG" -n teknigo-backend --query properties.latestReadyRevisionName -o tsv)
+            [[ "$ready" == "$revision" ]] && break
+            sleep 10
+          done
+          [[ "$ready" == "$revision" ]] || { echo "El backend nuevo no quedó listo."; exit 1; }
+          curl --fail --silent --show-error --retry 3 --max-time 20 "$BACKEND_URL/health"
+          az containerapp update -g "$RG" -n teknigo-frontend --image "$FRONTEND_IMAGE" -o none
