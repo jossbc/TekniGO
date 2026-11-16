@@ -4,7 +4,7 @@ import { errorMessage } from '../lib/api'
 import { requestEmailVerification, refreshEmailVerification, resendWaitSeconds, watchEmailVerification, type EmailVerificationStatus } from '../lib/emailVerification'
 import { Button } from './ui'
 
-export default function EmailVerification({ user, initialNotice = '' }: { user: User; initialNotice?: string }) {
+export default function EmailVerification({ user, initialNotice = '', hideWhenVerified = false }: { user: User; initialNotice?: string; hideWhenVerified?: boolean }) {
   const [status, setStatus] = useState<EmailVerificationStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(initialNotice)
@@ -55,6 +55,8 @@ export default function EmailVerification({ user, initialNotice = '' }: { user: 
     } catch (err) { if (generation.current === current) setError(errorMessage(err)) }
     finally { if (generation.current === current) setBusy(false) }
   }
+
+  if (hideWhenVerified && (status?.email_verified || (!status && !checkError))) return null
 
   return <section className="account-card" style={{ marginBottom: 24 }} aria-label="Verificación de correo">
     <h2>Verifica tu correo</h2>

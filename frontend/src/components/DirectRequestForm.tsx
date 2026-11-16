@@ -138,8 +138,6 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
         </header>
 
         <div className="direct-request-body">
-          {error && <div className="alert" role="alert">{error}</div>}
-
           <div className="field-row">
             <label className="field">
               Municipio
@@ -237,6 +235,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
           </section>
         </div>
 
+        {error && <div className="alert direct-request-error" role="alert">{error}</div>}
         <footer className="direct-request-actions">
           <button type="button" className="button button-outline" onClick={onCancel} disabled={loadingSubmit}>Cancelar</button>
           <button type="submit" className="button" disabled={loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)}>

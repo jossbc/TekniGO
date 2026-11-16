@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
+import { Link } from 'react-router-dom'
 import { FolderOpen } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
@@ -7,6 +8,7 @@ import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCertificates from '../components/AdminCertificates'
+import AdminCatalog from '../components/AdminCatalog'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -18,14 +20,23 @@ const labels: Record<string, string> = {
 
 export default function AdminPage({ user }: { user: User }) {
   const { state, retry } = useAccount(user)
+  const [showCatalog, setShowCatalog] = useState(false)
   return <div className="site">
     <Header authenticated email={user.email} accountHref="/admin" accountLabel="Administración" />
     <main className="account admin-panel">
       <div className="admin-page-heading">
-        <h1>Revisión de expedientes</h1>
+        <h1>{showCatalog ? 'Categorías y parámetros' : 'Revisión de expedientes'}</h1>
       </div>
       {state.status !== 'ready' ? <AccountStatus state={state} retry={retry} /> :
-        !state.profile.roles.includes('ADMIN') ? <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p> : <DossierManager user={user} />}
+        !state.profile.roles.includes('ADMIN') ? <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p> :
+        <>
+          <nav className="admin-section-nav" aria-label="Administración">
+            <Button type="button" className={showCatalog ? 'button-outline' : undefined} aria-pressed={!showCatalog} onClick={() => setShowCatalog(false)}>Expedientes</Button>
+            <Button type="button" className={showCatalog ? undefined : 'button-outline'} aria-pressed={showCatalog} onClick={() => setShowCatalog(true)}>Categorías y parámetros</Button>
+            <Link className="button button-outline" to="/perfil">Mi perfil</Link>
+          </nav>
+          {showCatalog ? <AdminCatalog user={user} /> : <DossierManager user={user} />}
+        </>}
     </main>
   </div>
 }

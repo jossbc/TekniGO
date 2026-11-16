@@ -91,7 +91,7 @@ test('loads direct requests via API and updates status on accept and reject PATC
       return new Response(JSON.stringify({ id: 'req-1', estado: 'ACEPTADA' }), { status: 200 })
     }
     if (url.endsWith('/technicians/me/direct-requests/req-2/reject') && options.method === 'PATCH') {
-      return new Response(JSON.stringify({ id: 'req-2', estado: 'RECHAZADA' }), { status: 200 })
+      return new Response(JSON.stringify({ id: 'req-2', estado: 'CANCELADA' }), { status: 200 })
     }
     return new Response(JSON.stringify({ detail: 'Unexpected call' }), { status: 500 })
   }
@@ -136,7 +136,7 @@ test('loads direct requests via API and updates status on accept and reject PATC
     assert.equal(calls[2].method, 'PATCH')
     assert.ok(calls[2].url.endsWith('/technicians/me/direct-requests/req-2/reject'))
     assert.ok(afterReject.some(n => n.props?.role === 'status' && textOf(n).includes('Solicitud rechazada correctamente.')))
-    assert.ok(afterReject.some(n => textOf(n) === 'Rechazada'))
+    assert.ok(afterReject.some(n => textOf(n) === 'Cancelada'))
   } finally {
     cleanups.forEach(cleanup => cleanup())
     globalThis.fetch = originalFetch

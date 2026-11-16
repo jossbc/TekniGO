@@ -494,10 +494,11 @@ export default function OpenRequestForm({
                       {formatLempiras(suggestedRange.rango_sugerido_max)}
                     </strong>{" "}
                     (tarifa base promedio {formatLempiras(suggestedRange.tarifa_promedio)}{" "}
-                    {formatUnitLabel(suggestedRange.unidad_cobro)}, calculada sobre{" "}
-                    {suggestedRange.servicios_comparables}{" "}
-                    {suggestedRange.servicios_comparables === 1 ? "servicio activo" : "servicios activos"}). Esta
-                    referencia es orientativa y no reemplaza el monto que elijas ofrecer.
+                    {formatUnitLabel(suggestedRange.unidad_cobro)},{" "}
+                    {suggestedRange.origen_tarifa === "CONFIGURADA"
+                      ? "configurada por administración"
+                      : `calculada con ${suggestedRange.servicios_comparables} servicios activos`}).{" "}
+                    {suggestedRange.regla_calculo} El monto ofrecido lo define el cliente.
                   </p>
                 ) : (
                   <p>

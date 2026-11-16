@@ -187,6 +187,10 @@ def _incident_item_is_active(item: Any) -> bool:
 
 def has_active_incident(record: Any, db: Session | None = None) -> tuple[bool, str | None]:
     """CA-06: Comprueba si existe una incidencia abierta o activa sobre el servicio antes de solicitar cierre automático."""
+    tracking = getattr(record, "seguimiento_recepcion", None) or {}
+    if tracking.get("incidencia_abierta"):
+        return True, (tracking.get("incidencia") or {}).get("motivo")
+
     solicitud_id = str(getattr(record, "id", "") or "").strip()
 
     # 1. Bandera booleana directa en la entidad

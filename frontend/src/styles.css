@@ -317,6 +317,8 @@ img, video, canvas { max-width: 100%; }
 .admin-panel .button > svg { margin-left: 0; }
 .admin-page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px 24px; margin-bottom: 24px; }
 .admin-page-heading h1 { flex: 1 1 500px; margin: 0; }
+.admin-section-nav { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.admin-section-nav .button { width: auto; }
 .admin-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
 .admin-pagination { padding-top: 8px; margin-bottom: 0; }
 .admin-document-form { display: grid; gap: 18px; margin-top: 24px; }
@@ -466,6 +468,7 @@ img, video, canvas { max-width: 100%; }
 .request-status-publicada { color: var(--blue); background: #eff6ff; border: 1px solid #bfdbfe; }
 .request-status-pendiente { color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; }
 .request-status-aceptada { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
+.request-status-en_proceso { color: #1e40af; background: #eff6ff; border: 1px solid #bfdbfe; }
 .request-status-completada { color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; }
 .request-status-cancelada, .request-status-rechazada { color: #475569; background: #f8fafc; border: 1px solid #cbd5e1; }
 .client-request-meta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 0; color: var(--muted); font-size: 13px; }
@@ -476,6 +479,34 @@ img, video, canvas { max-width: 100%; }
 .client-request-budget strong { font-size: 16px; color: var(--ink); white-space: nowrap; }
 .client-request-item-side .button { display: inline-flex; align-items: center; gap: 7px; width: auto; min-height: 40px; padding: 8px 14px; white-space: nowrap; }
 .client-request-item-side .button > svg { margin: 0; }
+
+.client-request-modal { border-color: #bfdbfe; }
+.client-request-modal::backdrop { background: #102d6266; }
+.client-request-modal .dossier-modal-heading { background: #eff6ff; border-color: #bfdbfe; }
+.client-request-modal .dossier-modal-close { background: #fff; border-color: #bfdbfe; color: var(--blue); }
+.client-request-modal .dossier-modal-close:hover { background: #dbeafe; }
+.start-service-confirmation { width: min(28rem, calc(100vw - 24px)); }
+.start-service-confirmation .dossier-modal-heading h2 { display: flex; align-items: center; gap: 10px; }
+.start-service-confirmation .dossier-modal-heading svg { color: var(--blue); }
+.start-service-confirmation .dossier-modal-body > p { margin: 0 0 20px; }
+.start-service-confirmation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.start-service-confirmation-actions .button { width: auto; }
+.client-request-modal .client-request-box { background: #fff; border-color: #cbdcf5; }
+.client-request-modal .client-request-box h3 { color: var(--ink); }
+
+.opportunity-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.opportunity-card .client-request-item-main { overflow-wrap: anywhere; }
+.opportunity-card .client-request-meta svg { flex-shrink: 0; }
+.opportunity-card .opportunity-card-footer {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.opportunity-card .client-request-budget { text-align: left; }
+.opportunity-card-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
+.opportunity-card-actions .button { max-width: 100%; white-space: normal; text-align: left; }
 
 .client-request-detail { display: grid; gap: 18px; }
 .client-request-detail > h2 { margin: 0; }
@@ -594,6 +625,7 @@ img, video, canvas { max-width: 100%; }
 .direct-request-budget-row .field { margin: 0; }
 .direct-request-total { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); font-size: 13px; }
 .direct-request-total strong { color: var(--blue); font-size: 18px; }
+.direct-request-error { margin: 0 var(--request-padding) 10px; }
 .direct-request-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px var(--request-padding); border-top: 1px solid var(--line); }
 .direct-request-actions .button { width: auto; }
 @media (max-width: 540px) {

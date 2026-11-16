@@ -1,3 +1,4 @@
+import type { ClientRequestTimelineItem } from "./clientRequests";
 import type { User } from "firebase/auth";
 import { api } from "./api";
 
@@ -9,14 +10,16 @@ export type SpecialtyOption = {
 export type SuggestedRangeUnitItem = {
   unidad_cobro: string;
   tarifa_promedio: number;
-  tarifa_minima: number;
-  tarifa_maxima: number;
+  tarifa_minima: number | null;
+  tarifa_maxima: number | null;
   rango_sugerido_min: number;
   rango_sugerido_max: number;
   cantidad_servicios: number;
 };
 
 export type SuggestedRangeResponse = {
+  origen_tarifa?: "CONFIGURADA" | "SERVICIOS_ACTIVOS";
+  regla_calculo?: string;
   especialidad_id: string;
   tiene_referencia: boolean;
   unidad_cobro: string | null;
@@ -130,6 +133,8 @@ export type TechnicianOpportunityItem = {
     telefono?: string | null;
   };
   ubicacion_exacta_protegida: boolean;
+  linea_tiempo?: ClientRequestTimelineItem[];
+  pago_tarjeta_confirmado?: boolean;
   mi_propuesta?: TechnicianProposalSummary | null;
 };
 

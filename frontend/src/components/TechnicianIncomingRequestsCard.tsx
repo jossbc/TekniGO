@@ -66,20 +66,17 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
     setActionLoading(id);
     setActionError("");
     setActionNotice("");
-    const nextState = decision === "accept" ? "ACEPTADA" : "RECHAZADA";
     const successText =
       decision === "accept"
         ? "Solicitud aceptada correctamente."
         : "Solicitud rechazada correctamente.";
 
     try {
-      if (decision === "accept") {
-        await acceptTechnicianDirectRequest(user, id);
-      } else {
-        await rejectTechnicianDirectRequest(user, id);
-      }
+      const updated = decision === "accept"
+        ? await acceptTechnicianDirectRequest(user, id)
+        : await rejectTechnicianDirectRequest(user, id);
       setRequests((prev) =>
-        prev.map((req) => (req.id === id ? { ...req, estado: nextState } : req)),
+        prev.map((req) => (req.id === id ? { ...req, estado: updated.estado } : req)),
       );
       setActionNotice(successText);
     } catch (err) {

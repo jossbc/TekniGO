@@ -122,7 +122,45 @@ class Specialty(Base):
     __tablename__ = "especialidades"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     nombre: Mapped[str] = mapped_column(String(80), unique=True)
+    activa: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SuggestedTariff(Base):
+    __tablename__ = "tarifas_sugeridas"
+    __table_args__ = (CheckConstraint("promedio > 0", name="ck_tarifa_sugerida_positiva"),)
+
+    especialidad_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("especialidades.id"), primary_key=True)
+    unidad: Mapped[str] = mapped_column(String(20), primary_key=True)
+    promedio: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+
+
+class OperationalSettings(Base):
+    __tablename__ = "configuracion_operativa"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_configuracion_unica"),
+        CheckConstraint("comision_porcentaje BETWEEN 0 AND 100", name="ck_configuracion_comision"),
+        CheckConstraint("limite_deuda > 0 AND minimo_retiro > 0", name="ck_configuracion_umbrales"),
+        CheckConstraint("limite_sin_liquidar = 5", name="ck_configuracion_liquidaciones"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    comision_porcentaje: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    limite_deuda: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    minimo_retiro: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    limite_sin_liquidar: Mapped[int] = mapped_column(Integer, default=5, server_default="5")
+    valores_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class CatalogChange(Base):
+    __tablename__ = "historial_configuracion_catalogo"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recurso: Mapped[str] = mapped_column(String(90))
+    anterior: Mapped[dict | None] = mapped_column(JSON)
+    nuevo: Mapped[dict] = mapped_column(JSON)
+    administrador_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"))
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TechnicianSpecialty(Base):
@@ -244,6 +282,8 @@ class CoverageZone(Base):
 
 class _CompletionTrackingMixin:
     """HU-34 ST-01: Propiedades y utilidades compartidas de finalización reportada y vencimiento de confirmación."""
+
+    seguimiento_recepcion = Column(JSON, nullable=True)
 
     @property
     def finalizacion_reportada(self) -> datetime | None:
@@ -417,6 +457,21 @@ class OpenRequest(_CompletionTrackingMixin, Base):
             "monto_total": str(total_dec),
             "permite_cambio_metodo": (self.estado or "").strip().lower().replace("_", " ") in {"publicada", "con ofertas", "negociacion"},
         }
+
+
+class RequestStateEvent(Base):
+    __tablename__ = "historial_estados_solicitud"
+    __table_args__ = (
+        Index("ix_historial_estado_solicitud", "modalidad", "solicitud_id", "id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    estado = Column(String(30), nullable=False)
+    fecha = Column(DateTime(timezone=True), nullable=True)
+    responsable = Column(String(20), nullable=True)
+    responsable_id = Column(String(128), nullable=True)
 
 
 class DiscardedOpenRequest(Base):

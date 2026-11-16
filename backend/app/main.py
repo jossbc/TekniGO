@@ -20,6 +20,7 @@ from app.technician_direct_requests import router as technician_direct_requests_
 from app.client_requests import router as client_requests_router
 from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
+from app.admin_catalog import router as admin_catalog_router
 from app.service_reception import router as service_reception_router
 from app.service_completion import router as service_completion_router
 
@@ -50,6 +51,7 @@ app.include_router(technician_direct_requests_router)
 app.include_router(client_requests_router)
 app.include_router(open_requests_router)
 app.include_router(certifications_router)
+app.include_router(admin_catalog_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
 

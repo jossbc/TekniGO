@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.admin_catalog import CategoryInput, TariffInput, save_tariff, update_category
 from app.client_requests import get_client_request_detail, list_client_requests
 from app.database import Base
 from app.models import (
@@ -26,6 +27,8 @@ from app.models import (
     User,
     UserRole,
 )
+from app.request_states import transition_request
+from app.request_states import request_timeline
 from app.open_requests import (
     AwardProposalSchema,
     CreateOpenRequestSchema,
@@ -47,6 +50,7 @@ from app.open_requests import (
     RejectProposalSchema,
     reject_open_request_proposal_by_owner,
     router,
+    start_open_request_endpoint,
     validate_technician_can_bid_on_open_request,
     CounterOfferSchema,
     get_open_request_events,
@@ -95,6 +99,51 @@ class OpenRequestsSt01Tests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
+
+    def test_start_awarded_open_request_records_one_event(self):
+        technician = User(
+            firebase_uid="tech-start", correo="start@example.com",
+            nombre_completo="Técnico de prueba", dni="0801200000099", telefono="+50490000099",
+        )
+        self.db.add(technician)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=technician.id, rol="TECNICO"))
+        owner_claims = {"uid": self.client.firebase_uid}
+        created = publish_open_request(self._valid_payload(metodo_pago="efectivo"), owner_claims, self.db)
+        record = self.db.get(OpenRequest, created["id"])
+        record.tecnico_id = technician.firebase_uid
+        record.estado = "ACEPTADA"
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as failure:
+            start_open_request_endpoint(record.id, Response(), owner_claims, self.db)
+        self.assertEqual(failure.exception.status_code, 403)
+        claims = {"uid": technician.firebase_uid}
+        first = start_open_request_endpoint(record.id, Response(), claims, self.db)
+        retry = start_open_request_endpoint(record.id, Response(), claims, self.db)
+        self.assertEqual(first["estado"], "EN PROCESO")
+        self.assertIsNotNone(first["linea_tiempo"][-1]["fecha"])
+        self.assertEqual(retry["linea_tiempo"], first["linea_tiempo"])
+
+    def test_catalog_updates_keep_existing_open_request_budget(self):
+        editor = User(firebase_uid="catalog-editor", correo="editor@example.com",
+                      nombre_completo="Administración", dni="0801200000098", telefono="+50490000098")
+        self.db.add(editor)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=editor.id, rol="ADMIN"))
+        payload = self._valid_payload(presupuesto=Decimal("800.00"))
+        owner = {"uid": self.client.firebase_uid}
+        admin = {"uid": editor.firebase_uid}
+        published = publish_open_request(payload, owner, self.db)
+        save_tariff(self.specialty.id, "POR_HORA", TariffInput(promedio=250), admin, self.db)
+        update_category(self.specialty.id, CategoryInput(nombre=self.specialty.nombre, activa=False), admin, self.db)
+
+        with self.assertRaises(HTTPException) as failure:
+            publish_open_request(payload, owner, self.db)
+        self.assertEqual(failure.exception.status_code, 400)
+        detail = get_open_request_for_viewer(published["id"], owner, self.db)
+        self.assertEqual(detail["presupuesto"], 800)
+        self.assertEqual(detail["linea_tiempo"][0]["estado"], "PUBLICADA")
 
     def _valid_payload(self, **overrides) -> CreateOpenRequestSchema:
         base = {
@@ -1250,7 +1299,10 @@ class OpenRequestsSt01Tests(unittest.TestCase):
 
         # CA-06: Si la solicitud ya fue adjudicada a otro técnico, rechaza sin modificar la contratación
         req_row = self.db.get(OpenRequest, req_id)
-        req_row.estado = "Aceptada"
+        detail = get_client_request_detail(req_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertEqual([e["estado"] for e in detail["linea_tiempo"]], ["PUBLICADA", "CON OFERTAS"])
+        self.assertEqual(detail["linea_tiempo"][-1]["responsable"], "TECNICO")
+        transition_request(self.db, req_row, "ACEPTADA", role="CLIENTE", uid=self.client.firebase_uid)
         req_row.tecnico_id = tech_1.firebase_uid
         self.db.commit()
 
@@ -1262,7 +1314,30 @@ class OpenRequestsSt01Tests(unittest.TestCase):
             )
         self.assertEqual(adj_err.exception.status_code, 409)
         self.assertEqual(self.db.get(OpenRequest, req_id).tecnico_id, tech_1.firebase_uid)
-        self.assertEqual(self.db.get(OpenRequest, req_id).estado, "Aceptada")
+        self.assertEqual(self.db.get(OpenRequest, req_id).estado, "ACEPTADA")
+
+        with self.assertRaises(HTTPException) as foreign_start:
+            transition_request(self.db, req_row, "EN PROCESO", role="TECNICO", uid=tech_2.firebase_uid)
+        self.assertEqual(foreign_start.exception.status_code, 403)
+        transition_request(self.db, req_row, "EN PROCESO", role="TECNICO", uid=tech_1.firebase_uid)
+        self.db.commit()
+        selected = get_open_request_for_viewer(req_id, {"uid": tech_1.firebase_uid}, self.db)
+        self.assertEqual(selected["direccion_exacta"], req_row.direccion_exacta)
+        self.assertEqual(selected["linea_tiempo"][-1]["estado"], "EN PROCESO")
+        with self.assertRaises(HTTPException) as foreign_view:
+            get_open_request_for_viewer(req_id, {"uid": tech_2.firebase_uid}, self.db)
+        self.assertEqual(foreign_view.exception.status_code, 403)
+
+        transition_request(self.db, req_row, "COMPLETADA", role="SISTEMA")
+        self.db.commit()
+        with self.assertRaises(HTTPException) as final_state:
+            transition_request(self.db, req_row, "CANCELADA", role="CLIENTE", uid=self.client.firebase_uid)
+        self.assertEqual(final_state.exception.status_code, 409)
+        detail = get_client_request_detail(req_id, {"uid": self.client.firebase_uid}, self.db)
+        self.assertEqual(
+            [e["estado"] for e in detail["linea_tiempo"]],
+            ["PUBLICADA", "CON OFERTAS", "ACEPTADA", "EN PROCESO", "COMPLETADA"],
+        )
 
     def test_hu28_st04_emit_new_offer_event_and_client_views_proposal_while_privacy_remains(self):
         tech = User(
@@ -1643,6 +1718,11 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         )
         self.assertTrue(retry_offer1["reintento_idempotente"])
         self.assertEqual(retry_offer1["propuesta"]["id"], offer1["propuesta"]["id"])
+
+        timeline = request_timeline(self.db, req_db)
+        self.assertEqual([event["estado"] for event in timeline], ["PUBLICADA", "CON OFERTAS"])
+        self.assertEqual(timeline[-1]["responsable"], "TECNICO")
+        self.assertIsNotNone(timeline[-1]["fecha"])
 
         # 5. Unicidad: El mismo técnico NO puede enviar otra contraoferta distinta compitiendo contra sí mismo (CA-06)
         with self.assertRaises(HTTPException) as dup_err:
@@ -2026,6 +2106,10 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         req_db_after_2 = self.db.get(OpenRequest, solicitud_id)
         self.assertEqual(req_db_after_2.estado, "Publicada")
         self.assertNotEqual(req_db_after_2.estado, "Cancelada")
+        timeline = request_timeline(self.db, req_db_after_2)
+        self.assertEqual([event["estado"] for event in timeline], ["PUBLICADA", "CON OFERTAS", "PUBLICADA"])
+        self.assertEqual(timeline[-1]["responsable"], "CLIENTE")
+        self.assertIsNotNone(timeline[-1]["fecha"])
 
     def test_hu31_st05_award_cash_card_failed_payment_concurrency_and_privacy(self):
         """HU-31 ST-05 (CA-01 a CA-06): Probar adjudicación en efectivo y tarjeta, pago fallido, selección concurrente, elegibilidad en vivo y privacidad."""
@@ -2219,6 +2303,8 @@ class OpenRequestsSt01Tests(unittest.TestCase):
         self.assertFalse(winner_detail["ubicacion_exacta_protegida"])
         self.assertEqual(winner_detail["direccion_exacta"], "Avenida República de Panamá, casa #24")
         self.assertEqual(winner_detail["cliente"]["telefono"], "+50498765432")
+        self.assertTrue(winner_detail["pago_tarjeta_confirmado"])
+        self.assertEqual(winner_detail["linea_tiempo"][-1]["estado"], "ACEPTADA")
 
         with self.assertRaises(HTTPException) as discarded_tech_detail_ctx:
             get_open_request_for_viewer(req1_id, {"uid": tech1.firebase_uid}, self.db)

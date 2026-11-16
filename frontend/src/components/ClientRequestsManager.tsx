@@ -1,3 +1,4 @@
+import RequestTimeline from "./RequestTimeline";
 import { useEffect, useId, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
@@ -47,6 +48,11 @@ import {
 } from "../lib/clientRequests";
 
 const PAGE_SIZE = 10;
+const JOB_STATES = ["ACEPTADA", "EN_PROCESO", "COMPLETADA"];
+const JOB_STATUS_OPTIONS = ESTADO_OPTIONS.filter(({ value }) =>
+  value === "TODOS" || JOB_STATES.includes(value),
+);
+const REQUEST_STATUS_OPTIONS = ESTADO_OPTIONS.filter(({ value }) => !JOB_STATES.includes(value));
 
 function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "Sin fecha registrada";
@@ -165,19 +171,17 @@ const ACTION_LABELS: Record<string, { label: string; hint: string }> = {
     label: "Cancelar solicitud",
     hint: "Puedes cancelar esta solicitud mientras no haya finalizado.",
   },
-  COMPLETAR: {
-    label: "Confirmar finalización",
-    hint: "Disponible cuando el trabajo acordado fue realizado.",
-  },
 };
 
 export default function ClientRequestsManager({
   user,
   initialRequestId = "",
+  jobsOnly = false,
   onSelectRequestId,
 }: {
   user: User;
   initialRequestId?: string;
+  jobsOnly?: boolean;
   onSelectRequestId?: (id: string) => void;
 }) {
   const [modalidad, setModalidad] = useState<ModalidadFiltro>("TODOS");
@@ -223,7 +227,8 @@ export default function ClientRequestsManager({
     let active = true;
     setLoadingList(true);
     setListError("");
-    listMyRequests(user, { modalidad, estado, offset, limit: PAGE_SIZE })
+    const stateFilter = estado === "TODOS" ? (jobsOnly ? "TRABAJOS" : "SOLICITUDES") : estado;
+    listMyRequests(user, { modalidad, estado: stateFilter, offset, limit: PAGE_SIZE })
       .then((result) => {
         if (!active) return;
         setPage(result);
@@ -240,7 +245,7 @@ export default function ClientRequestsManager({
     return () => {
       active = false;
     };
-  }, [user, modalidad, estado, offset, refreshTick]);
+  }, [user, modalidad, estado, offset, refreshTick, jobsOnly]);
 
   useEffect(() => {
     let active = true;
@@ -511,7 +516,7 @@ export default function ClientRequestsManager({
                 setOffset(0);
               }}
             >
-              {ESTADO_OPTIONS.map((opt) => (
+              {(jobsOnly ? JOB_STATUS_OPTIONS : REQUEST_STATUS_OPTIONS).map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
                 </option>
@@ -541,15 +546,17 @@ export default function ClientRequestsManager({
       {page && page.solicitudes.length === 0 && !listError && (
         <section className="catalog-empty client-requests-empty" role="status">
           <ClipboardList size={36} aria-hidden="true" />
-          <h3>No hay solicitudes para mostrar</h3>
+          <h3>{jobsOnly ? "No hay trabajos para mostrar" : "No hay solicitudes para mostrar"}</h3>
           <p>
             {modalidad === "TODOS" && estado === "TODOS"
-              ? "Aún no has registrado contrataciones directas ni solicitudes abiertas. Explora el catálogo de técnicos para solicitar un servicio."
+              ? jobsOnly
+                ? "Aquí aparecerán tus trabajos cuando se acepte una solicitud directa o adjudiques una abierta."
+                : "Aquí aparecerán las solicitudes que aún no se han convertido en trabajos y las canceladas o rechazadas."
               : "No se encontraron solicitudes que coincidan con los filtros seleccionados."}
           </p>
           {modalidad === "TODOS" && estado === "TODOS" ? (
-            <Link className="button" to="/catalogo">
-              Buscar servicios
+            <Link className="button" to={jobsOnly ? "/mis-solicitudes" : "/catalogo"}>
+              {jobsOnly ? "Ver mis solicitudes" : "Buscar servicios"}
             </Link>
           ) : (
             <Button
@@ -570,7 +577,7 @@ export default function ClientRequestsManager({
       {page && page.solicitudes.length > 0 && (
         <section className="account-card client-requests-card" aria-label="Historial de contrataciones">
           <div className="client-requests-card-header">
-            <h2>Solicitudes encontradas ({page.total})</h2>
+            <h2>{jobsOnly ? "Trabajos" : "Solicitudes encontradas"} ({page.total})</h2>
             <span>
               Mostrando {offset + 1}–{Math.min(offset + page.solicitudes.length, page.total)} de {page.total}
             </span>
@@ -850,21 +857,7 @@ export default function ClientRequestsManager({
               {/* HU-28 CA-05: Propuestas recibidas en solicitudes abiertas */}
               {detail.modalidad === "ABIERTA" && (
                 <section className="client-request-box" aria-label="Propuestas recibidas">
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: "8px" }}>
-                    <h3 style={{ margin: 0 }}>Propuestas recibidas ({detail.propuestas_recibidas?.length || 0})</h3>
-                    <span style={{ fontSize: "0.8rem", color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: isOffline ? "#ef4444" : "#22c55e",
-                          display: "inline-block",
-                        }}
-                      />
-                      {isOffline ? "Sin conexión (Reconectando…)" : "Actualización en vivo activa"}
-                    </span>
-                  </div>
+                  <h3 style={{ margin: "0 0 0.75rem" }}>Propuestas recibidas ({detail.propuestas_recibidas?.length || 0})</h3>
 
                   {isOffline && (
                     <div className="alert" role="status" style={{ marginBottom: "1rem" }}>
@@ -1469,26 +1462,7 @@ export default function ClientRequestsManager({
                 </section>
               )}
 
-              {/* CA-03: Línea de tiempo de cambios */}
-              <section className="client-request-box" aria-label="Línea de tiempo de cambios">
-                <h3>Línea de tiempo de cambios</h3>
-                <ol className="request-timeline">
-                  {detail.linea_tiempo.map((evento, index) => (
-                    <li key={`${evento.estado}-${index}`} className="request-timeline-item">
-                      <span className="request-timeline-dot" aria-hidden="true">
-                        <CheckCircle2 size={16} />
-                      </span>
-                      <div className="request-timeline-content">
-                        <div className="request-timeline-header">
-                          <strong>{formatRequestStateLabel(evento.estado)}</strong>
-                          <span>{formatDateTime(evento.fecha)}</span>
-                        </div>
-                        <p>{evento.descripcion}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </section>
+              <RequestTimeline items={detail.linea_tiempo} />
 
               {/* CA-04: Acciones permitidas según situación */}
               <section className="client-request-box" aria-label="Acciones disponibles">

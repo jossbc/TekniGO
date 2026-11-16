@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
+from app.client_requests import get_client_request_detail
 from app.main import app as fastapi_app
 from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User, UserRole
 from app.technician_direct_requests import (
@@ -16,6 +17,7 @@ from app.technician_direct_requests import (
     get_my_direct_request_detail_endpoint,
     get_my_direct_requests_endpoint,
     reject_my_direct_request_endpoint,
+    start_my_direct_request_endpoint,
 )
 
 
@@ -110,6 +112,36 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
         self.assertIn("get", paths["/technicians/me/direct-requests/{solicitud_id}"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/accept"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/reject"])
+        self.assertIn("post", paths["/technicians/me/direct-requests/{solicitud_id}/start"])
+
+    def test_start_service_rejects_unauthorized_state_and_unconfirmed_card(self):
+        owner = self.tech_owner.firebase_uid
+        record = self._add_direct_request(tecnico_uid=owner, estado="Aceptada")
+        for uid in (self.client_user.firebase_uid, self.tech_other.firebase_uid):
+            with self.subTest(uid=uid), self.assertRaises(HTTPException) as failure:
+                start_my_direct_request_endpoint(record.id, Response(), {"uid": uid}, self.db)
+            self.assertEqual(failure.exception.status_code, 403)
+        for state, method in (("Cancelada", "efectivo"), ("Pendiente", "efectivo"), ("Aceptada", "tarjeta")):
+            record.estado, record.metodo_pago = state, method
+            self.db.commit()
+            with self.subTest(state=state, method=method), self.assertRaises(HTTPException) as failure:
+                start_my_direct_request_endpoint(record.id, Response(), {"uid": owner}, self.db)
+            self.assertEqual(failure.exception.status_code, 409)
+            self.db.refresh(record)
+            self.assertEqual(record.estado, state)
+
+    def test_cash_start_persists_one_timestamp_visible_to_both_parties(self):
+        owner = self.tech_owner.firebase_uid
+        record = self._add_direct_request(tecnico_uid=owner, estado="Aceptada")
+        first = start_my_direct_request_endpoint(record.id, Response(), {"uid": owner}, self.db)
+        self.assertEqual(first["estado"], "EN_PROCESO")
+        event = first["linea_tiempo"][-1]
+        self.assertEqual(event["responsable"], "TECNICO")
+        self.assertIsNotNone(event["fecha"])
+        retry = start_my_direct_request_endpoint(record.id, Response(), {"uid": owner}, self.db)
+        self.assertEqual(retry["linea_tiempo"], first["linea_tiempo"])
+        client = get_client_request_detail(record.id, {"uid": self.client_user.firebase_uid}, self.db)
+        self.assertEqual(client["linea_tiempo"][-1], event)
 
     def test_get_my_direct_requests_returns_only_technician_requests_with_expected_fields(self):
         req_older = self._add_direct_request(
@@ -155,6 +187,10 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
         self.assertEqual(payload[0]["total_estimado"], 800.0)
         self.assertEqual(payload[1]["estado"], "PENDIENTE")
         self.assertEqual(payload[1]["total_estimado"], 400.0)
+        self.assertEqual(payload[0]["direccion_exacta"], req_newer.direccion_exacta)
+        self.assertEqual(payload[0]["cliente_telefono"], self.client_user.telefono)
+        self.assertIsNone(payload[1]["direccion_exacta"])
+        self.assertIsNone(payload[1]["cliente_telefono"])
 
         detail = get_my_direct_request_detail_endpoint(
             solicitud_id=req_older.id,
@@ -185,7 +221,14 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
             claims=owner_claims,
             db=self.db,
         )
-        self.assertEqual(rejected["estado"], "RECHAZADA")
+        self.assertEqual(rejected["estado"], "CANCELADA")
+        detail = get_my_direct_request_detail_endpoint(
+            solicitud_id=req_2.id, response=Response(), claims=owner_claims, db=self.db,
+        )
+        self.assertEqual(detail["modalidad"], "DIRECTA")
+        self.assertEqual([event["estado"] for event in detail["linea_tiempo"]], ["PENDIENTE", "CANCELADA"])
+        self.assertEqual(detail["linea_tiempo"][-1]["responsable"], "TECNICO")
+        self.assertTrue(detail["linea_tiempo"][-1]["fecha"])
 
         with self.assertRaises(HTTPException) as repeat_err:
             reject_my_direct_request_endpoint(
