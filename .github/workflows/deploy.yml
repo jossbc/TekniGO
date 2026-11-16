@@ -84,13 +84,20 @@ jobs:
         if: steps.main.outputs.deploy == 'true'
         shell: bash
         run: |
-          revision=$(az containerapp update -g "$RG" -n teknigo-backend --image "$BACKEND_IMAGE" --query properties.latestRevisionName -o tsv)
-          : "${revision:?Azure no devolvió la revisión del backend}"
-          for attempt in {1..30}; do
-            ready=$(az containerapp show -g "$RG" -n teknigo-backend --query properties.latestReadyRevisionName -o tsv)
-            [[ "$ready" == "$revision" ]] && break
+          az containerapp update -g "$RG" -n teknigo-backend --image "$BACKEND_IMAGE" --only-show-errors -o none
+          # En Express, una petición despierta el backend cuando está escalado a cero.
+          for attempt in {1..18}; do
+            if curl --fail --silent --show-error --max-time 10 "$BACKEND_URL/health" &&
+              az containerapp revision list -g "$RG" -n teknigo-backend --only-show-errors -o json |
+              jq -e --arg image "$BACKEND_IMAGE" 'any(.[];
+                .properties.active and .properties.provisioningState == "Provisioned" and
+                any(.properties.template.containers[]?; .image == $image))' > /dev/null; then
+              az containerapp update -g "$RG" -n teknigo-frontend --image "$FRONTEND_IMAGE" --only-show-errors -o none
+              exit 0
+            fi
             sleep 10
           done
-          [[ "$ready" == "$revision" ]] || { echo "El backend nuevo no quedó listo."; exit 1; }
-          curl --fail --silent --show-error --retry 3 --max-time 20 "$BACKEND_URL/health"
-          az containerapp update -g "$RG" -n teknigo-frontend --image "$FRONTEND_IMAGE" -o none
+          echo "::error::El backend no respondió con la imagen esperada: $BACKEND_IMAGE."
+          az containerapp revision list -g "$RG" -n teknigo-backend --only-show-errors \
+            --query '[].{revision:name,activa:properties.active,estado:properties.provisioningState,salud:properties.healthState,imagen:properties.template.containers[0].image}' -o table
+          exit 1
