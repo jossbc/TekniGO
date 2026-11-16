@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, FormEvent } from "react";
 import type { User } from "firebase/auth";
-import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw, ArrowLeft } from "lucide-react";
+import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw, ArrowLeft, Star } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, errorMessage } from "./lib/api";
 import { TechnicianCard, type CatalogTechnician } from "./components/TechnicianCard";
@@ -18,10 +18,11 @@ export default function CatalogPage({ user }: { user: User }) {
   const [especialidad, setEspecialidad] = useState("");
   const [municipio, setMunicipio] = useState("");
   const [departamento, setDepartamento] = useState("");
+  const [calificacionMinima, setCalificacionMinima] = useState("");
 
   // Función para llamar al backend con los filtros aplicados
   const fetchCatalog = useCallback(
-    (queryEspec = "", queryMuni = "", queryDepto = "") => {
+    (queryEspec = "", queryMuni = "", queryDepto = "", queryMinCal = "") => {
       setLoading(true);
       setError("");
 
@@ -30,6 +31,7 @@ export default function CatalogPage({ user }: { user: User }) {
       if (queryEspec.trim()) params.append("especialidad", queryEspec.trim());
       if (queryMuni.trim()) params.append("municipio", queryMuni.trim());
       if (queryDepto) params.append("departamento", queryDepto);
+      if (queryMinCal) params.append("calificacion_minima", queryMinCal);
 
       const query = params.toString();
       setHasAppliedFilters(Boolean(query));
@@ -53,7 +55,7 @@ export default function CatalogPage({ user }: { user: User }) {
   // Manejar el clic en "Aplicar filtros"
   const handleFilterSubmit = (e: FormEvent) => {
     e.preventDefault();
-    fetchCatalog(especialidad, municipio, departamento);
+    fetchCatalog(especialidad, municipio, departamento, calificacionMinima);
   };
 
   // Manejar el clic en "Limpiar filtros"
@@ -61,10 +63,11 @@ export default function CatalogPage({ user }: { user: User }) {
     setEspecialidad("");
     setMunicipio("");
     setDepartamento("");
+    setCalificacionMinima("");
     fetchCatalog();
   };
 
-  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento);
+  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento || calificacionMinima);
 
   return (
     <main className="account catalog-page">
@@ -112,6 +115,18 @@ export default function CatalogPage({ user }: { user: User }) {
             <div className="catalog-input-wrap">
               <MapPin size={18} aria-hidden="true" />
               <input id="catalog-municipality" type="search" placeholder="Ej. Tegucigalpa" value={municipio} onChange={(e) => setMunicipio(e.target.value)} />
+            </div>
+          </div>
+          <div className="catalog-filter-field">
+            <label htmlFor="catalog-min-rating">Calificación mínima</label>
+            <div className="catalog-input-wrap">
+              <Star size={18} aria-hidden="true" />
+              <select id="catalog-min-rating" value={calificacionMinima} onChange={(e) => setCalificacionMinima(e.target.value)}>
+                <option value="">Todas</option>
+                <option value="4.5">★ 4.5 o más</option>
+                <option value="4.0">★ 4.0 o más</option>
+                <option value="3.0">★ 3.0 o más</option>
+              </select>
             </div>
           </div>
           <button type="submit" className="button catalog-search-button" disabled={loading}>

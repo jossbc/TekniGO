@@ -3,9 +3,10 @@ import LoadingState from "./components/LoadingState";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { signOut, type User } from "firebase/auth";
-import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock, MessageSquare, Star, ThumbsUp } from "lucide-react";
 import { auth } from "./lib/firebase";
 import { api, errorMessage, type Profile } from "./lib/api";
+import { getUserPublicReviews, formatReviewDate, type UserPublicReviewsResponse } from "./lib/reviews";
 import { Button, Field } from "./components/ui";
 import SpecialtySelector from "./components/SpecialtySelector";
 import ServiceManager from "./components/ServiceManager";
@@ -130,6 +131,8 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [errors, setErrors] = useState<Errors>({});
+  const [reviewsData, setReviewsData] = useState<UserPublicReviewsResponse | null>(null);
+  const [loadingReviews, setLoadingReviews] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -139,6 +142,20 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
         setProfile(value);
         setIdentityStatus(docsInfo ? docsInfo.estado_identidad : value.estado_identidad);
         onName?.(value.nombre_completo);
+
+        // Fetch user public reviews and reputation
+        if (value.id) {
+          setLoadingReviews(true);
+          getUserPublicReviews(user, value.id)
+            .then((res) => {
+              if (active) setReviewsData(res);
+            })
+            .catch(() => {})
+            .finally(() => {
+              if (active) setLoadingReviews(false);
+            });
+        }
+
         if (value.roles.includes("TECNICO")) {
           api<TechnicianActivationStatus>("/technicians/me/activation-status", user)
             .then((activation) => {
@@ -292,6 +309,123 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                 )}
               </Item>
             </div>
+          </section>
+
+          {/* Reputación y reseñas recibidas (EP-08: HU-44, HU-45, HU-46) */}
+          <section className="account-card profile-card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "0.75rem", marginBottom: "1.25rem" }}>
+              <h2 style={{ ...cardTitle, margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <MessageSquare size={22} color="#4b5563" /> Reputación y reseñas recibidas
+              </h2>
+              {reviewsData && reviewsData.total_resenas > 0 && (
+                <span style={{ fontSize: "0.95rem", color: "#4b5563", fontWeight: 600 }}>
+                  {reviewsData.total_resenas} {reviewsData.total_resenas === 1 ? "evaluación verificada" : "evaluaciones verificadas"}
+                </span>
+              )}
+            </div>
+
+            {loadingReviews ? (
+              <p style={{ color: "#6b7280", margin: 0 }}>Cargando calificaciones y reputación...</p>
+            ) : reviewsData && !reviewsData.sin_calificacion && reviewsData.promedio != null ? (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", padding: "1rem 1.25rem", background: "#f8fafc", borderRadius: 12, marginBottom: "1.25rem", border: "1px solid var(--line)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, color: "#eab308" }}>
+                      <Star size={24} fill="currentColor" />
+                    </div>
+                    <span style={{ fontSize: "1.6rem", fontWeight: 800, color: "var(--ink)" }}>
+                      {reviewsData.promedio.toFixed(1)}
+                    </span>
+                    <span style={{ color: "#6b7280", fontSize: "0.95rem" }}>/ 5.0</span>
+                  </div>
+                  <div style={{ height: "24px", width: "1px", background: "#cbd5e1" }} />
+                  <span style={{ fontSize: "0.95rem", color: "#374151", fontWeight: 500 }}>
+                    Basado en {reviewsData.total_resenas} {reviewsData.total_resenas === 1 ? "reseña de servicio" : "reseñas de servicios"} completados
+                  </span>
+                </div>
+
+                {reviewsData.resenas && reviewsData.resenas.length > 0 ? (
+                  <div style={{ display: "grid", gap: "1rem" }}>
+                    {reviewsData.resenas.map((r) => (
+                      <article
+                        key={r.id}
+                        style={{
+                          padding: "1rem 1.25rem",
+                          border: "1px solid #e5e7eb",
+                          borderRadius: 10,
+                          background: "#fff",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem", flexWrap: "wrap", gap: "6px" }}>
+                          <div>
+                            <strong style={{ fontSize: "0.95rem", color: "var(--ink)" }}>{r.evaluador_nombre}</strong>
+                            <span style={{ marginLeft: "8px", fontSize: "0.82rem", color: "#6b7280" }}>
+                              ({r.rol_evaluador === "TECNICO" ? "Técnico" : "Cliente"}) · {formatReviewDate(r.publicada_en || r.fecha)}
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 2, color: "#eab308" }}>
+                            {[...Array(5)].map((_, i) => (
+                              <Star
+                                key={i}
+                                size={14}
+                                fill={i < r.puntuacion ? "currentColor" : "none"}
+                                strokeWidth={i < r.puntuacion ? 0 : 1.5}
+                                stroke="#d1d5db"
+                              />
+                            ))}
+                          </div>
+                        </div>
+
+                        {r.aspectos_destacados && r.aspectos_destacados.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", marginBottom: "0.5rem" }}>
+                            {r.aspectos_destacados.map((asp, idx) => (
+                              <span
+                                key={idx}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  background: "#f0fdf4",
+                                  color: "#166534",
+                                  border: "1px solid #bbf7d0",
+                                  padding: "0.15rem 0.5rem",
+                                  borderRadius: 999,
+                                  fontSize: "0.75rem",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <ThumbsUp size={10} /> {asp}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <p style={{ margin: 0, color: "#374151", fontSize: "0.92rem", lineHeight: 1.5 }}>
+                          "{r.comentario}"
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "1.75rem 1.25rem",
+                  background: "#f9fafb",
+                  borderRadius: 12,
+                  textAlign: "center",
+                  border: "1px dashed #d1d5db",
+                }}
+              >
+                <p style={{ margin: "0 0 0.4rem", fontWeight: 700, fontSize: "1.05rem", color: "var(--ink)" }}>
+                  Sin calificaciones aún · Nuevo en TekniGO
+                </p>
+                <p style={{ margin: 0, color: "#6b7280", fontSize: "0.9rem", lineHeight: 1.5, maxWidth: "480px", marginInline: "auto" }}>
+                  Tus calificaciones y reseñas aparecerán aquí una vez que completes servicios y ambas partes se califiquen mutuamente o expire el plazo de 48 horas.
+                </p>
+              </div>
+            )}
           </section>
 
           {isTechnician && (

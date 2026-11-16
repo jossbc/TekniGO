@@ -1,5 +1,5 @@
 """HU-25: Consulta paginada y seguimiento de solicitudes/contrataciones del cliente."""
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 import uuid
@@ -497,6 +497,8 @@ def apply_client_request_action(
         )
 
     record.estado = ACTION_TARGET_STATE[norm_accion]
+    if norm_accion == "COMPLETAR":
+        record.completada_en = datetime.now(timezone.utc)
     db.commit()
     db.refresh(record)
     return get_client_request_detail(solicitud_id, claims, db)

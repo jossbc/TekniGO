@@ -92,3 +92,7 @@ export const acceptTechnicianDirectRequest = (user: User, solicitudId: string) =
 
 export const rejectTechnicianDirectRequest = (user: User, solicitudId: string) =>
   api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/reject`, user, undefined, "PATCH");
+
+export const completeTechnicianDirectRequest = (user: User, solicitudId: string) =>
+  api<TechnicianDirectRequest>(`${TECHNICIAN_DIRECT_REQUESTS_PATH}/${encodeURIComponent(solicitudId)}/complete`, user, undefined, "PATCH");
+

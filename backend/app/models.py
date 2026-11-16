@@ -222,6 +222,7 @@ class DirectRequest(Base):
 
     estado = Column(String, nullable=False, default="PENDIENTE") # PENDIENTE, ACEPTADA, RECHAZADA, CANCELADA, COMPLETADA
     creada_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    completada_en = Column(DateTime(timezone=True), nullable=True)
 
     # Relaciones para facilitar consultas en SQLAlchemy
     cliente = relationship("User", foreign_keys=[cliente_id])
@@ -251,6 +252,7 @@ class OpenRequest(Base):
 
     estado = Column(String(30), nullable=False, default="Publicada", server_default="Publicada")
     creada_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    completada_en = Column(DateTime(timezone=True), nullable=True)
 
     cliente = relationship("User", foreign_keys=[cliente_id])
     tecnico = relationship("User", foreign_keys=[tecnico_id])
@@ -378,3 +380,34 @@ class TradeCertificateDecision(Base):
     estado: Mapped[str] = mapped_column(String(20))
     observaciones: Mapped[str | None] = mapped_column(Text)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ServiceReview(Base):
+    __tablename__ = "resenas_servicio"
+    __table_args__ = (
+        CheckConstraint("tipo_solicitud IN ('DIRECTA', 'ABIERTA')", name="ck_resena_tipo_solicitud"),
+        CheckConstraint("rol_evaluador IN ('CLIENTE', 'TECNICO')", name="ck_resena_rol_evaluador"),
+        CheckConstraint("puntuacion >= 1 AND puntuacion <= 5", name="ck_resena_puntuacion"),
+        CheckConstraint("estado_publicacion IN ('PENDIENTE', 'PUBLICADA')", name="ck_resena_estado_publicacion"),
+        UniqueConstraint("tipo_solicitud", "solicitud_id", "rol_evaluador", name="uq_resena_por_solicitud_y_rol"),
+        Index("ix_resenas_evaluado_publicacion", "evaluado_id", "estado_publicacion"),
+        Index("ix_resenas_solicitud", "tipo_solicitud", "solicitud_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(FlexibleUuid, primary_key=True, default=uuid.uuid4)
+    tipo_solicitud: Mapped[str] = mapped_column(String(20), nullable=False)
+    solicitud_id: Mapped[str] = mapped_column(FlexibleUuid, nullable=False)
+    evaluador_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    evaluado_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    rol_evaluador: Mapped[str] = mapped_column(String(20), nullable=False)  # 'CLIENTE' o 'TECNICO'
+    puntuacion: Mapped[int] = mapped_column(Integer, nullable=False)
+    comentario: Mapped[str] = mapped_column(Text, nullable=False)
+    aspectos_destacados: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    estado_publicacion: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    fecha_completado_servicio: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    publicada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    evaluador = relationship("User", foreign_keys=[evaluador_id])
+    evaluado = relationship("User", foreign_keys=[evaluado_id])
+

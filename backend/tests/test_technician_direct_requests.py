@@ -13,6 +13,7 @@ from app.main import app as fastapi_app
 from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User, UserRole
 from app.technician_direct_requests import (
     accept_my_direct_request_endpoint,
+    complete_my_direct_request_endpoint,
     get_my_direct_request_detail_endpoint,
     get_my_direct_requests_endpoint,
     reject_my_direct_request_endpoint,
@@ -110,6 +111,7 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
         self.assertIn("get", paths["/technicians/me/direct-requests/{solicitud_id}"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/accept"])
         self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/reject"])
+        self.assertIn("patch", paths["/technicians/me/direct-requests/{solicitud_id}/complete"])
 
     def test_get_my_direct_requests_returns_only_technician_requests_with_expected_fields(self):
         req_older = self._add_direct_request(
@@ -242,3 +244,32 @@ class TechnicianDirectRequestsTests(unittest.TestCase):
         # Original request remains Pendiente
         self.db.refresh(req_owner)
         self.assertEqual(req_owner.estado, "Pendiente")
+
+    def test_complete_my_direct_request_updates_status_and_completada_en(self):
+        req = self._add_direct_request(tecnico_uid=self.tech_owner.firebase_uid, estado="ACEPTADA")
+        owner_claims = {"uid": self.tech_owner.firebase_uid}
+
+        response = Response()
+        completed = complete_my_direct_request_endpoint(
+            solicitud_id=req.id,
+            response=response,
+            claims=owner_claims,
+            db=self.db,
+        )
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store, private")
+        self.assertEqual(completed["estado"], "COMPLETADA")
+
+        self.db.refresh(req)
+        self.assertEqual(req.estado, "COMPLETADA")
+        self.assertIsNotNone(req.completada_en)
+        self.assertIsInstance(req.completada_en, datetime)
+
+        # Reintentar completar o completar una que no está aceptada/en proceso retorna 409
+        with self.assertRaises(HTTPException) as conflict_err:
+            complete_my_direct_request_endpoint(
+                solicitud_id=req.id,
+                response=Response(),
+                claims=owner_claims,
+                db=self.db,
+            )
+        self.assertEqual(conflict_err.exception.status_code, 409)

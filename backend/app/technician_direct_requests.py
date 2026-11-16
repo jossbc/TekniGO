@@ -1,4 +1,5 @@
 """HU-22, HU-23, HU-24: Consulta y respuesta de solicitudes directas por parte del técnico."""
+from datetime import datetime, timezone
 from decimal import Decimal
 import uuid
 
@@ -218,3 +219,41 @@ def reject_my_direct_request_endpoint(
 ):
     response.headers["Cache-Control"] = "no-store, private"
     return respond_to_direct_request(solicitud_id, "RECHAZADA", claims, db)
+
+
+def complete_direct_request(
+    solicitud_id: str,
+    claims: dict,
+    db: Session,
+) -> dict:
+    """HU-44 / HU-45: Permite al técnico marcar como COMPLETADA una solicitud aceptada."""
+    record = _get_owned_direct_request(solicitud_id, claims, db)
+    current_state = (record.estado or "PENDIENTE").strip().upper()
+    if current_state not in ("ACEPTADA", "EN_PROCESO"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Solo puedes completar solicitudes en estado ACEPTADA o EN_PROCESO (estado actual: {current_state}).",
+        )
+    record.estado = "COMPLETADA"
+    record.completada_en = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+
+    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+
+
+@router.patch(
+    "/me/direct-requests/{solicitud_id}/complete",
+    response_model=TechnicianDirectRequestOut,
+    status_code=status.HTTP_200_OK,
+)
+def complete_my_direct_request_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    return complete_direct_request(solicitud_id, claims, db)
+

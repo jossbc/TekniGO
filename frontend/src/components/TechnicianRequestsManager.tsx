@@ -1,19 +1,21 @@
 import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
-import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, RefreshCw } from "lucide-react";
+import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, RefreshCw, Star } from "lucide-react";
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
+  completeTechnicianDirectRequest,
   listTechnicianDirectRequests,
   rejectTechnicianDirectRequest,
   type TechnicianDirectRequest,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
+import ReviewModal from "./ReviewModal";
 import { Button } from "./ui";
 
 export type DirectRequest = TechnicianDirectRequest;
 
-type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "RECHAZADA";
+type EstadoFilter = "TODOS" | "PENDIENTE" | "ACEPTADA" | "COMPLETADA" | "RECHAZADA";
 
 const estadoConfig: Record<
   string,
@@ -53,6 +55,11 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [actionNotice, setActionNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const [filter, setFilter] = useState<EstadoFilter>("TODOS");
+  const [ratingTarget, setRatingTarget] = useState<{
+    solicitud_id: string;
+    cliente_nombre: string;
+  } | null>(null);
+  const [reviewedIds, setReviewedIds] = useState<Record<string, boolean>>({});
 
   // HU-22: Consultar Solicitudes directas recibidas desde el backend
   useEffect(() => {
@@ -115,6 +122,24 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     return handleDecision(id, "reject");
   }
 
+  // HU-44/45: Marcar servicio completado
+  async function handleComplete(id: string) {
+    setActionLoading(id);
+    setActionError("");
+    setActionNotice("");
+    try {
+      await completeTechnicianDirectRequest(user, id);
+      setRequests((prev) =>
+        prev.map((req) => (req.id === id ? { ...req, estado: "COMPLETADA" } : req)),
+      );
+      setActionNotice("Trabajo marcado como completado exitosamente.");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   if (loading) {
     return (
       <LoadingState
@@ -168,6 +193,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
               <option value="TODOS">Todas ({requests.length})</option>
               <option value="PENDIENTE">Pendientes ({pendingCount})</option>
               <option value="ACEPTADA">Aceptadas ({countByState("ACEPTADA")})</option>
+              <option value="COMPLETADA">Completadas ({countByState("COMPLETADA")})</option>
               <option value="RECHAZADA">Rechazadas ({countByState("RECHAZADA")})</option>
             </select>
           </div>
@@ -365,10 +391,73 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     </Button>
                   </div>
                 )}
+
+                {normalizedState === "ACEPTADA" && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() => handleComplete(req.id)}
+                      disabled={actionLoading === req.id}
+                      style={{
+                        background: "#eff6ff",
+                        color: "var(--blue)",
+                        border: "1px solid #bfdbfe",
+                        gap: "8px",
+                        minWidth: "160px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <CheckCircle2 size={16} />
+                      {actionLoading === req.id ? "Procesando…" : "Marcar como completada"}
+                    </Button>
+                  </div>
+                )}
+
+                {normalizedState === "COMPLETADA" && (
+                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                    <Button
+                      type="button"
+                      onClick={() =>
+                        setRatingTarget({
+                          solicitud_id: req.id,
+                          cliente_nombre: req.cliente_nombre || "Cliente",
+                        })
+                      }
+                      style={{
+                        background: reviewedIds[req.id] ? "#f9fafb" : "#fefce8",
+                        color: reviewedIds[req.id] ? "#4b5563" : "#854d0e",
+                        border: reviewedIds[req.id] ? "1px solid #e5e7eb" : "1px solid #fef08a",
+                        gap: "6px",
+                        minWidth: "140px",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <Star size={16} fill={reviewedIds[req.id] ? "none" : "currentColor"} />
+                      {reviewedIds[req.id] ? "Evaluación enviada" : "Calificar cliente"}
+                    </Button>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {ratingTarget && (
+        <ReviewModal
+          user={user}
+          tipo_solicitud="DIRECTA"
+          solicitud_id={ratingTarget.solicitud_id}
+          evaluadoNombre={ratingTarget.cliente_nombre}
+          rolEvaluador="TECNICO"
+          onClose={() => setRatingTarget(null)}
+          onSuccess={(res) => {
+            setReviewedIds((prev) => ({ ...prev, [ratingTarget.solicitud_id]: true }));
+            setActionNotice(res.mensaje);
+          }}
+        />
       )}
     </div>
   );

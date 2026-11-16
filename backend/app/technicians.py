@@ -230,6 +230,7 @@ class CatalogTechnician(BaseModel):
     #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
     #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
+    total_resenas: Optional[int] = 0
 
     class Config:
         from_attributes = True
@@ -241,7 +242,12 @@ def get_technicians_catalog(
     municipio: str = Query(None, description="Filtrar por municipio"),
     db: Session = Depends(get_db),
     departamento: str | None = None,
+    calificacion_minima: Optional[float] = None,
 ):
+    from app.reviews import sync_expired_reviews
+    from app.models import ServiceReview
+    sync_expired_reviews(db)
+
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.
     query = (
@@ -255,6 +261,9 @@ def get_technicians_catalog(
             TechnicianProfile.restriccion_financiera == False,
         )
     )
+
+    if isinstance(calificacion_minima, (int, float)):
+        query = query.where(TechnicianProfile.calificacion_promedio >= calificacion_minima)
 
     # Filtros de la HU-13 + Búsqueda por nombre
     if nombre:
@@ -305,6 +314,18 @@ def get_technicians_catalog(
         specs = db.scalars(specs_query).all()
 
         # CA-03: Mostrar Técnico Verificado separado de certificación y calificación, sin datos privados
+        published_reviews_count = db.scalar(
+            select(func.count(ServiceReview.id)).where(
+                ServiceReview.evaluado_id == user.id,
+                ServiceReview.estado_publicacion == "PUBLICADA",
+            )
+        ) or 0
+        avg_rating = (
+            float(profile.calificacion_promedio)
+            if profile.calificacion_promedio is not None
+            else None
+        )
+
         catalog.append({
             "usuario_id": str(user.id),
             "nombre_completo": user.nombre_completo,
@@ -314,9 +335,8 @@ def get_technicians_catalog(
             "estado_certificacion": "CERTIFICADO" if user.id in certified else "NO_CERTIFICADO",
             #"tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
             #"unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA", #SE QUITARON ESTOS CAMPOS DE PERFILES TECNICOS
-            "calificacion_promedio": (
-                float(profile.calificacion_promedio) if profile.calificacion_promedio is not None else None
-            ),
+            "calificacion_promedio": avg_rating,
+            "total_resenas": published_reviews_count,
         })
 
     if state_changed:
@@ -346,12 +366,18 @@ class TechnicianPublicProfile(BaseModel):
     #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE LA TABLA DE PERFILES TECNICOS
     #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
+    total_resenas: Optional[int] = 0
+    resenas: Optional[List[dict]] = []
     
     class Config:
         from_attributes = True
 
 @router.get("/profile/{user_id}", response_model=TechnicianPublicProfile, status_code=status.HTTP_200_OK)
 def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    from app.models import ServiceReview
+    from app.reviews import sync_expired_reviews, _serialize_review
+    sync_expired_reviews(db)
+
     # Buscar al usuario y su perfil de técnico
     user = db.get(User, user_id)
     if not user:
@@ -397,6 +423,27 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         for s in services
     ]
 
+    published_reviews = list(
+        db.scalars(
+            select(ServiceReview)
+            .where(
+                ServiceReview.evaluado_id == user.id,
+                ServiceReview.estado_publicacion == "PUBLICADA",
+            )
+            .order_by(ServiceReview.publicada_en.desc(), ServiceReview.creada_en.desc())
+        ).all()
+    )
+    total_revs = len(published_reviews)
+    if total_revs > 0:
+        avg_calc = round(float(sum(r.puntuacion for r in published_reviews)) / total_revs, 2)
+        if tech_profile.calificacion_promedio != avg_calc:
+            tech_profile.calificacion_promedio = avg_calc
+            db.commit()
+    else:
+        avg_calc = float(tech_profile.calificacion_promedio) if tech_profile.calificacion_promedio is not None else None
+
+    serialized_reviews = [_serialize_review(r, db).model_dump() for r in published_reviews]
+
     return {
         "usuario_id": str(user.id),
         "nombre_completo": user.nombre_completo,
@@ -408,9 +455,9 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         "estado_certificacion": "CERTIFICADO" if approved_certificate_owners(db, [user.id]) else "NO_CERTIFICADO",
         #"tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0, #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
         #"unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
-        "calificacion_promedio": (
-            float(tech_profile.calificacion_promedio) if tech_profile.calificacion_promedio is not None else None
-        ),
+        "calificacion_promedio": avg_calc,
+        "total_resenas": total_revs,
+        "resenas": serialized_reviews,
     }
 
 

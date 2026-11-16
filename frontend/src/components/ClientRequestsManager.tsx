@@ -10,9 +10,11 @@ import {
   FileText,
   MapPin,
   RefreshCw,
+  Star,
   UserCheck,
   X,
 } from "lucide-react";
+import ReviewModal from "./ReviewModal";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
 import {
@@ -162,6 +164,12 @@ export default function ClientRequestsManager({
   const [detailError, setDetailError] = useState("");
   const [executingAction, setExecutingAction] = useState("");
   const [actionNotice, setActionNotice] = useState("");
+  const [ratingTarget, setRatingTarget] = useState<{
+    tipo_solicitud: "DIRECTA" | "ABIERTA";
+    solicitud_id: string;
+    evaluadoNombre: string;
+  } | null>(null);
+  const [reviewedIds, setReviewedIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setSelectedId(initialRequestId);
@@ -391,6 +399,30 @@ export default function ClientRequestsManager({
                     <FileText size={15} />
                     Ver detalle
                   </Button>
+                  {item.estado.toUpperCase() === "COMPLETADA" && item.tecnico?.nombre_completo && (
+                    <Button
+                      type="button"
+                      className="button"
+                      style={{
+                        marginTop: "6px",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: "0.85rem",
+                        padding: "0.45rem 0.8rem",
+                      }}
+                      onClick={() =>
+                        setRatingTarget({
+                          tipo_solicitud: item.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                          solicitud_id: item.id,
+                          evaluadoNombre: item.tecnico?.nombre_completo || "Técnico",
+                        })
+                      }
+                    >
+                      <Star size={14} fill="currentColor" />
+                      {reviewedIds[item.id] ? "Calificación enviada" : "Calificar técnico"}
+                    </Button>
+                  )}
                 </div>
               </article>
             ))}
@@ -615,9 +647,46 @@ export default function ClientRequestsManager({
                   </div>
                 )}
               </section>
+
+              {detail.estado.toUpperCase() === "COMPLETADA" && detail.tecnico?.nombre_completo && (
+                <section className="client-request-box" aria-label="Calificación del técnico">
+                  <h3>Calificación del servicio</h3>
+                  <p>El servicio ha sido marcado como completado. Puedes evaluar el trabajo realizado por el profesional.</p>
+                  <Button
+                    type="button"
+                    className="button"
+                    style={{ width: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}
+                    onClick={() =>
+                      setRatingTarget({
+                        tipo_solicitud: detail.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                        solicitud_id: detail.id,
+                        evaluadoNombre: detail.tecnico?.nombre_completo || "Técnico",
+                      })
+                    }
+                  >
+                    <Star size={16} fill="currentColor" />
+                    {reviewedIds[detail.id] ? "Evaluación enviada" : "Calificar técnico"}
+                  </Button>
+                </section>
+              )}
             </section>
           )}
         </RequestDetailModal>
+      )}
+
+      {ratingTarget && (
+        <ReviewModal
+          user={user}
+          tipo_solicitud={ratingTarget.tipo_solicitud}
+          solicitud_id={ratingTarget.solicitud_id}
+          evaluadoNombre={ratingTarget.evaluadoNombre}
+          rolEvaluador="CLIENTE"
+          onClose={() => setRatingTarget(null)}
+          onSuccess={(res) => {
+            setReviewedIds((prev) => ({ ...prev, [ratingTarget.solicitud_id]: true }));
+            setActionNotice(res.mensaje);
+          }}
+        />
       )}
     </div>
   );
