@@ -59,7 +59,7 @@ jobs:
           echo "BACKEND_URL=$VITE_API_URL" >> "$GITHUB_ENV"
           az acr login --name "${REGISTRY%%.*}"
           docker build -t "$BACKEND_IMAGE" ./backend
-          docker build -t "$FRONTEND_IMAGE" --build-arg VITE_API_URL \
+          docker build --target azure -t "$FRONTEND_IMAGE" --build-arg VITE_API_URL \
             --build-arg "VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY:?Falta configurar Firebase}" \
             --build-arg "VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN:?Falta configurar Firebase}" \
             --build-arg "VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID:?Falta configurar Firebase}" \

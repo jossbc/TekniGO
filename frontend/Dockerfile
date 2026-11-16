@@ -22,12 +22,16 @@ ENV VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID
 
 RUN npm run build
 
-FROM nginx:alpine
-
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+FROM nginx:alpine AS runtime
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]
+
+FROM runtime AS azure
+COPY nginx.azure.conf /etc/nginx/conf.d/default.conf
+
+FROM runtime AS compose
+COPY nginx.conf /etc/nginx/conf.d/default.conf
