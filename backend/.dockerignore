@@ -10,3 +10,4 @@ __pycache__/
 .venv-*/
 .identity_models/
 .test-temp/
+secrets/
