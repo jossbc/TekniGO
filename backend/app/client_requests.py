@@ -60,8 +60,8 @@ ALLOWED_ACTIONS_BY_STATE: dict[str, list[str]] = {
     "CON_OFERTAS": ["CANCELAR"],
     "PENDIENTE": ["CANCELAR"],
     "ACEPTADA": ["CANCELAR", "COMPLETAR"],
-    "EN PROCESO": ["COMPLETAR"],
-    "EN_PROCESO": ["COMPLETAR"],
+    "EN PROCESO": [],
+    "EN_PROCESO": [],
     "RECHAZADA": [],
     "CANCELADA": [],
     "COMPLETADA": [],
@@ -173,8 +173,15 @@ def _serialize_request_summary(
     estado_normalizado = raw_estado.upper()
     finalizacion_dt = ensure_utc_datetime(getattr(record, "finalizacion_reportada_en", None))
     vencimiento_dt = ensure_utc_datetime(getattr(record, "vencimiento_confirmacion_en", None))
-    pendiente_recepcion = bool(getattr(record, "pendiente_recepcion", False)) or (
-        finalizacion_dt is not None and estado_normalizado in {"EN PROCESO", "EN_PROCESO"}
+    from app.service_reception import get_service_reception_tracking
+
+    reception_tracking = get_service_reception_tracking(str(record.id), record=record)
+    incidencia_abierta = bool(reception_tracking.get("incidencia_abierta"))
+    es_en_proceso = estado_normalizado in {"EN PROCESO", "EN_PROCESO"}
+    pendiente_recepcion = (
+        es_en_proceso
+        and not incidencia_abierta
+        and (bool(getattr(record, "pendiente_recepcion", False)) or finalizacion_dt is not None)
     )
 
     return {
@@ -188,6 +195,7 @@ def _serialize_request_summary(
         "finalizacion_reportada_local": format_tegucigalpa_iso(finalizacion_dt),
         "vencimiento_confirmacion_local": format_tegucigalpa_iso(vencimiento_dt),
         "pendiente_recepcion": pendiente_recepcion,
+        "incidencia_abierta": incidencia_abierta,
         "presupuesto": presupuesto,
         "monto_base": monto_base if monto_base is not None else presupuesto,
         "monto_ajuste": monto_ajuste_val,
@@ -475,7 +483,7 @@ def get_client_request_detail(
     from app.service_reception import get_service_reception_tracking
     summary["linea_tiempo"] = _build_request_timeline(record, estado_normalizado)
     summary["acciones_permitidas"] = list(ALLOWED_ACTIONS_BY_STATE.get(estado_normalizado, []))
-    summary["seguimiento_recepcion"] = get_service_reception_tracking(str(record.id))
+    summary["seguimiento_recepcion"] = get_service_reception_tracking(str(record.id), record=record)
     proposal_model = getattr(models, "OpenRequestProposal", None)
     from app.service_completion import get_completion_events
 

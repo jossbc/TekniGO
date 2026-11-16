@@ -38,6 +38,7 @@ export type ClientRequestSummary = {
   finalizacion_reportada_local?: string | null;
   vencimiento_confirmacion_local?: string | null;
   pendiente_recepcion?: boolean;
+  incidencia_abierta?: boolean;
   presupuesto: number | null;
   monto_base: number | null;
   cantidad: number | null;
@@ -183,8 +184,15 @@ export const ESTADO_OPTIONS: { value: EstadoFiltro; label: string }[] = [
   { value: "RECHAZADA", label: "Rechazada" },
 ];
 
-export function formatRequestStateLabel(estado: string, pendienteRecepcion?: boolean): string {
+export function formatRequestStateLabel(
+  estado: string,
+  pendienteRecepcion?: boolean,
+  incidenciaAbierta?: boolean,
+): string {
   const normalized = (estado || "").trim().toUpperCase();
+  if ((normalized === "EN_PROCESO" || normalized === "EN PROCESO") && incidenciaAbierta) {
+    return "En revisión por incidencia";
+  }
   if ((normalized === "EN_PROCESO" || normalized === "EN PROCESO") && pendienteRecepcion) {
     return "En proceso · Pendiente de recepción";
   }
@@ -204,7 +212,7 @@ export function formatRequestStateLabel(estado: string, pendienteRecepcion?: boo
 }
 
 export function formatRequestModalityLabel(modalidad: string): string {
-  return modalidad.toUpperCase() === "ABIERTA" ? "Abierta" : "Directa";
+  return modalidad.toUpperCase() === "ABIERTA" ? "Licitación" : "Contratación directa";
 }
 
 export function formatLempiras(amount: number | null | undefined): string {
@@ -373,4 +381,57 @@ export async function openServiceIncidentApi(
     { motivo: motivo.trim() },
     "POST",
   );
+}
+
+export type ReceptionUiPhase =
+  | "EN_EJECUCION_SIN_REPORTE"
+  | "PENDIENTE_CONFIRMACION_48H"
+  | "BLOQUEADO_POR_INCIDENCIA"
+  | "CERRADO_INMUTABLE";
+
+/**
+ * Patrón State / View-State Resolver (SRP + OCP):
+ * Unifica el estado visual entre HU-34 (reporte de finalización) y HU-35 (confirmación e incidencias).
+ */
+export function resolveReceptionUiState(
+  item: ClientRequestSummary,
+  seguimiento?: ServiceReceptionTracking | null,
+) {
+  const normState = (item.estado || "").trim().toUpperCase().replaceAll("_", " ");
+  const isInProgress = normState === "EN PROCESO";
+  const isClosed =
+    normState === "COMPLETADA" ||
+    normState === "CANCELADA" ||
+    Boolean(seguimiento?.completada);
+
+  const hasReportedCompletion = Boolean(
+    seguimiento?.finalizacion_reportada ||
+      item.pendiente_recepcion ||
+      item.finalizacion_reportada_en ||
+      item.finalizacion_reportada_local,
+  );
+
+    const isBlockedByIncident = Boolean(
+    isInProgress && (seguimiento?.incidencia_abierta || item.incidencia_abierta),
+  );
+
+  let phase: ReceptionUiPhase = "EN_EJECUCION_SIN_REPORTE";
+  if (isClosed) {
+    phase = "CERRADO_INMUTABLE";
+  } else if (isBlockedByIncident) {
+    phase = "BLOQUEADO_POR_INCIDENCIA";
+  } else if (isInProgress && hasReportedCompletion) {
+    phase = "PENDIENTE_CONFIRMACION_48H";
+  }
+
+  return {
+    phase,
+    isInProgress,
+    isClosed,
+    hasReportedCompletion,
+    isBlockedByIncident,
+    // El badge "Pendiente de recepción" y el reloj de 48h SOLO se muestran cuando sigue en proceso, con reporte y SIN incidencia abierta
+    isPendingReceptionBadge: phase === "PENDIENTE_CONFIRMACION_48H",
+    showConfirmationCountdown: phase === "PENDIENTE_CONFIRMACION_48H",
+  };
 }

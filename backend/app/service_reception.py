@@ -1,7 +1,7 @@
 """HU-35: Confirmar recepción del servicio, cierre automático a las 48h, bloqueo por incidencia y evento financiero único."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -74,10 +74,37 @@ def _find_locked_request(db: Session, solicitud_id: str) -> tuple[str, Any]:
     raise HTTPException(404, "No se encontró la solicitud")
 
 
-def get_service_reception_tracking(solicitud_id: str) -> dict[str, Any]:
+def get_service_reception_tracking(solicitud_id: str, record: Any = None) -> dict[str, Any]:
     """Devuelve el estado de seguimiento, plazos, evento único y efecto financiero de una contratación."""
     clean_id = (solicitud_id or "").strip()
-    state = _RECEPTION_STATE_BY_REQUEST.get(clean_id)
+    state = dict(_RECEPTION_STATE_BY_REQUEST.get(clean_id) or {})
+
+    # Sincronizar con las columnas persistidas por HU-34 en base de datos (DirectRequest / OpenRequest)
+    if record is not None:
+        db_reported_at = getattr(record, "finalizacion_reportada_en", None)
+        db_deadline_at = getattr(record, "vencimiento_confirmacion_en", None)
+        db_pending_reception = bool(getattr(record, "pendiente_recepcion", False))
+        if (db_reported_at is not None or db_pending_reception) and not state.get("finalizacion_reportada"):
+            reported_utc = _ensure_utc(db_reported_at) if db_reported_at is not None else _ensure_utc()
+            deadline_utc = (
+                _ensure_utc(db_deadline_at)
+                if db_deadline_at is not None
+                else reported_utc + timedelta(hours=CONFIRMATION_WINDOW_HOURS)
+            )
+            state.update(
+                {
+                    "solicitud_id": clean_id,
+                    "finalizacion_reportada": True,
+                    "finalizacion_reportada_en": reported_utc.isoformat(),
+                    "finalizacion_reportada_tegucigalpa": _to_tegucigalpa_iso(reported_utc),
+                    "plazo_confirmacion_vence_en": deadline_utc.isoformat(),
+                    "plazo_confirmacion_vence_tegucigalpa": _to_tegucigalpa_iso(deadline_utc),
+                    "_reported_at_dt": reported_utc,
+                    "_confirmation_deadline_dt": deadline_utc,
+                }
+            )
+            _RECEPTION_STATE_BY_REQUEST[clean_id] = state
+
     if not state:
         return {
             "solicitud_id": clean_id,
@@ -216,7 +243,7 @@ def confirm_service_reception_by_client(
         raise HTTPException(403, "Solo el cliente propietario puede confirmar la recepción de este servicio")
 
     current_state = _canonical_state(getattr(record, "estado", None))
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(str(record.id), {})
+    tracking = get_service_reception_tracking(str(record.id), record=record)
 
         # CA-02 y CA-07: Si ya fue completada (por el cliente o por cierre automático concurrente), el acuerdo es inmutable
     if current_state == "COMPLETADA" or tracking.get("completada"):
@@ -265,8 +292,10 @@ def confirm_service_reception_by_client(
     closed_at = _ensure_utc(now)
     review_deadline = closed_at + timedelta(hours=REVIEW_WINDOW_HOURS)
 
-    # CA-02: Transición transaccional a Completada e inmutabilidad
+        # CA-02: Transición transaccional a Completada e inmutabilidad
     record.estado = "Completada"
+    if hasattr(record, "pendiente_recepcion"):
+        record.pendiente_recepcion = False
     db.commit()
     db.refresh(record)
 
@@ -552,7 +581,7 @@ def open_service_incident_by_client(
         raise HTTPException(403, "Solo el cliente propietario puede reportar una incidencia en este servicio")
 
     current_state = _canonical_state(getattr(record, "estado", None))
-    tracking = _RECEPTION_STATE_BY_REQUEST.get(str(record.id), {})
+    tracking = get_service_reception_tracking(str(record.id), record=record)
 
     if tracking.get("completada") or current_state == "COMPLETADA":
         raise HTTPException(409, "No se puede abrir una incidencia porque el servicio ya fue completado y es inmutable")
@@ -605,6 +634,15 @@ def open_service_incident_by_client(
         "incidencia": incident_data,
     }
     _RECEPTION_STATE_BY_REQUEST[str(record.id)] = updated_tracking
+    # Patrón Adapter/Mediator: sincroniza la incidencia con HU-34 (service_completion.py)
+    from app.service_completion import register_service_incident
+
+    register_service_incident(
+        str(record.id),
+        incidencia_id=incident_data["incidencia_id"],
+        motivo=motivo_clean,
+        estado="ABIERTA",
+    )
 
     return {
         "mensaje": "Incidencia registrada. Se ha detenido el cierre automático y la liberación de fondos hasta resolución administrativa.",
@@ -668,9 +706,15 @@ def resolve_service_incident_by_admin(
         }
     )
 
+    from app.service_completion import resolve_service_incidents
+
+    resolve_service_incidents(str(record.id), nuevo_estado="RESUELTA")
+
     if decision_norm == "COMPLETAR_SERVICIO":
         review_deadline = eval_now + timedelta(hours=REVIEW_WINDOW_HOURS)
         record.estado = "Completada"
+        if hasattr(record, "pendiente_recepcion"):
+            record.pendiente_recepcion = False
         db.commit()
         db.refresh(record)
 
@@ -809,6 +853,62 @@ _COMPLETION_EVENTS_BY_REQUEST: dict[str, dict[str, Any]] = {}
 _FINANCIAL_EFFECTS_BY_REQUEST: dict[str, dict[str, Any]] = {}
 
 
+class FinancialEffectStrategy(Protocol):
+    """
+    Patrón Strategy + Principios SOLID (SRP, OCP, LSP, DIP):
+    Contrato desacoplado para calcular el efecto financiero del cierre según el medio de pago.
+    """
+
+    def matches(self, metodo_pago: str) -> bool: ...
+
+    def compute_effect(
+        self,
+        monto_comision: Decimal,
+        monto_neto_tecnico: Decimal,
+    ) -> tuple[str, Decimal, Decimal]: ...
+
+
+class CashCommissionDebtStrategy:
+    """Estrategia para pagos en efectivo (Sprint 2 - CA-05 y CA-06): registra deuda por comisión al técnico."""
+
+    def matches(self, metodo_pago: str) -> bool:
+        return metodo_pago == "efectivo"
+
+    def compute_effect(
+        self,
+        monto_comision: Decimal,
+        monto_neto_tecnico: Decimal,
+    ) -> tuple[str, Decimal, Decimal]:
+        return ("DEUDA_COMISION_EFECTIVO_REGISTRADA", Decimal("0.00"), monto_comision)
+
+
+class DigitalFundsAccreditationStrategy:
+    """Estrategia para pagos digitales/tarjeta (CA-05): acredita fondos digitales netos al técnico."""
+
+    def matches(self, metodo_pago: str) -> bool:
+        return metodo_pago != "efectivo"
+
+    def compute_effect(
+        self,
+        monto_comision: Decimal,
+        monto_neto_tecnico: Decimal,
+    ) -> tuple[str, Decimal, Decimal]:
+        return ("FONDOS_DIGITALES_ACREDITADOS", monto_neto_tecnico, Decimal("0.00"))
+
+
+_FINANCIAL_STRATEGIES: tuple[FinancialEffectStrategy, ...] = (
+    CashCommissionDebtStrategy(),
+    DigitalFundsAccreditationStrategy(),
+)
+
+
+def _resolve_financial_strategy(metodo_pago: str) -> FinancialEffectStrategy:
+    for strategy in _FINANCIAL_STRATEGIES:
+        if strategy.matches(metodo_pago):
+            return strategy
+    return CashCommissionDebtStrategy()
+
+
 def emit_and_process_idempotent_completion_event(
     record: Any,
     *,
@@ -820,11 +920,7 @@ def emit_and_process_idempotent_completion_event(
     """
     HU-35 ST-04 (CA-05, CA-06, CA-07):
     - Emite y persiste un ÚNICO evento `SERVICIO_COMPLETADO` por solicitud_id.
-    - Ejecuta de manera idempotente el consumidor financiero:
-      * Calcula la comisión de plataforma una sola vez.
-      * Si el método de pago es `efectivo` (Sprint 2), registra la deuda de comisión del técnico.
-      * Si el método de pago es `tarjeta` / digital, acredita los fondos digitales netos al técnico.
-      * Habilita reseñas con su ventana independiente de 48 horas.
+    - Delega el cálculo financiero al patrón Strategy (`FinancialEffectStrategy`) de forma idempotente.
     - Si ocurre una confirmación simultánea con el cierre automático o un reintento, reutiliza el
       evento y efecto financiero existentes sin generar doble comisión, doble crédito ni doble evento.
     """
@@ -863,16 +959,11 @@ def emit_and_process_idempotent_completion_event(
     monto_neto_tecnico = (monto_bruto - monto_comision).quantize(Decimal("0.01"))
 
     raw_metodo = (getattr(record, "metodo_pago", None) or "efectivo").strip().lower()
-    es_efectivo = raw_metodo == "efectivo"
-
-    if es_efectivo:
-        tipo_efecto = "DEUDA_COMISION_EFECTIVO_REGISTRADA"
-        credito_digital_tecnico = Decimal("0.00")
-        deuda_comision_efectivo = monto_comision
-    else:
-        tipo_efecto = "FONDOS_DIGITALES_ACREDITADOS"
-        credito_digital_tecnico = monto_neto_tecnico
-        deuda_comision_efectivo = Decimal("0.00")
+    strategy = _resolve_financial_strategy(raw_metodo)
+    tipo_efecto, credito_digital_tecnico, deuda_comision_efectivo = strategy.compute_effect(
+        monto_comision,
+        monto_neto_tecnico,
+    )
 
     event_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"teknigo-cierre-{solicitud_id}"))
     idempotency_key = f"CIERRE-SERVICIO-{solicitud_id}"
