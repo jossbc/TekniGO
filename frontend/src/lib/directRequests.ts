@@ -29,6 +29,7 @@ export interface TechnicianDirectRequest {
     estado: string;
     abierta_en_tegucigalpa?: string | null;
   } | null;
+  reportante_rol?: string | null;
 }
 
 export interface ReportServiceCompletionResponse {

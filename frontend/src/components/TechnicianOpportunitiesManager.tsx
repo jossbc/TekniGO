@@ -646,7 +646,9 @@ export default function TechnicianOpportunitiesManager({
                     ) : (
                       <Button type="button" className="button-outline" disabled>
                         <CheckCircle2 size={15} />
-                        Propuesta enviada ({item.mi_propuesta.tipo === "CONTRAOFERTA" ? "Contraoferta enviada (Pendiente)" : "Propuesta enviada (Pendiente)"})
+                        {item.mi_propuesta.tipo === "CONTRAOFERTA"
+                          ? "Contraoferta enviada (pendiente)"
+                          : "Propuesta enviada (pendiente)"}
                       </Button>
                     )}
                     <Button

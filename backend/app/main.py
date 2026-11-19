@@ -1,8 +1,12 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
+import logging
 
 from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+from app.database import get_engine
 from app.firebase import initialize_firebase
 from app.database_errors import database_error_response
 from app.cors import configure_cors
@@ -21,14 +25,44 @@ from app.client_requests import router as client_requests_router
 from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
 from app.admin_catalog import router as admin_catalog_router
-from app.service_reception import router as service_reception_router
+from app.service_reception import (
+    router as service_reception_router,
+    run_scheduled_auto_completion,
+)
 from app.service_completion import router as service_completion_router
+from app.incident_management import router as incident_management_router
+
+logger = logging.getLogger(__name__)
+AUTO_COMPLETION_INTERVAL_SECONDS = 60
+
+
+def _run_auto_completion_once() -> None:
+    with Session(get_engine()) as session:
+        result = run_scheduled_auto_completion(session)
+        total = result.get("total_completadas_automaticamente", 0)
+        if total:
+            logger.info("Cierre automático 48h completó %s servicio(s).", total)
+
+
+async def _auto_completion_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_run_auto_completion_once)
+        except Exception as exc:
+            logger.warning("Error en proceso automático de cierre 48h: %s", exc)
+        await asyncio.sleep(AUTO_COMPLETION_INTERVAL_SECONDS)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_firebase()
-    yield
-
+    auto_complete_task = asyncio.create_task(_auto_completion_worker())
+    try:
+        yield
+    finally:
+        auto_complete_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await auto_complete_task
 
 app = FastAPI(
     title="TekniGO API",
@@ -54,6 +88,7 @@ app.include_router(certifications_router)
 app.include_router(admin_catalog_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
+app.include_router(incident_management_router)
 
 @app.get("/health")
 def health():

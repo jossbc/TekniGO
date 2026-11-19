@@ -412,8 +412,8 @@ export function resolveReceptionUiState(
       item.finalizacion_reportada_local,
   );
 
-    const isBlockedByIncident = Boolean(
-    isInProgress && (seguimiento?.incidencia_abierta || item.incidencia_abierta),
+  const isBlockedByIncident = Boolean(
+  !isClosed && (seguimiento?.incidencia_abierta || item.incidencia_abierta),
   );
 
   let phase: ReceptionUiPhase = "EN_EJECUCION_SIN_REPORTE";

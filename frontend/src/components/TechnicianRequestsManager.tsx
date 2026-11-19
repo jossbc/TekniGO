@@ -20,6 +20,8 @@ import LoadingState from "./LoadingState";
 import { Button } from "./ui";
 import StartServiceConfirmation from "./StartServiceConfirmation";
 import ServiceLocationContactCard from "../lib/ServiceLocationContactCard";
+import { AlertTriangle } from "lucide-react";
+import ReportIncidentModal from "./ReportIncidentModal";
 
 export type DirectRequest = TechnicianDirectRequest;
 
@@ -76,6 +78,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [startedRequestId, setStartedRequestId] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const [filter, setFilter] = useState<EstadoFilter>("TODOS");
+  const [reportIncidentSolicitudId, setReportIncidentSolicitudId] = useState<string | null>(null);
 
   const [startConfirmationId, setStartConfirmationId] = useState<string | null>(null);
   const [trackingId, setTrackingId] = useState("");
@@ -488,7 +491,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
 
                   {/* HU-34 CA-02 & CA-03: Visualización de pendiente de recepción y vencimiento de 48h en America/Tegucigalpa */}
                                     {/* HU-35 CA-04: Aviso al técnico cuando el cliente abre una incidencia */}
-                  {req.incidencia_abierta && (
+                                    {req.incidencia_abierta && (
                     <div
                       role="alert"
                       style={{
@@ -502,12 +505,34 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                         lineHeight: 1.6,
                       }}
                     >
-                      <div style={{ fontWeight: 700, marginBottom: "4px" }}>
-                        Incidencia reportada por el cliente · Cierre automático y fondos retenidos
-                      </div>
-                      <div>
-                        El cliente abrió una incidencia dentro del plazo de 48 horas. El cierre automático se ha detenido y la liberación de fondos permanece retenida hasta la resolución administrativa.
-                      </div>
+                      {(req as any).es_disputa_cruzada ? (
+                        <>
+                          <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                            Disputa bilateral en mediación administrativa · Cierre automático y fondos retenidos
+                          </div>
+                          <div>
+                            Ambas partes (tú y el cliente) han registrado sus reportes y evidencias sobre este servicio. La administración de TekniGO está evaluando el caso para emitir una resolución.
+                          </div>
+                        </>
+                      ) : (req as any).tecnico_reporto_incidencia || (req.incidencia as any)?.reportante_rol === "TECNICO" ? (
+                        <>
+                          <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                            Incidencia o justificación reportada por ti · Cierre automático y fondos retenidos
+                          </div>
+                          <div>
+                            Has registrado un reporte o justificación técnica para este servicio. El cierre automático se ha detenido y el expediente está en revisión administrativa.
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+                            Incidencia reportada por el cliente · Cierre automático y fondos retenidos
+                          </div>
+                          <div>
+                            El cliente abrió una incidencia dentro del plazo de 48 horas. El cierre automático se ha detenido y la liberación de fondos permanece retenida hasta la resolución administrativa.
+                          </div>
+                        </>
+                      )}
                       {req.incidencia?.motivo && (
                         <div style={{ marginTop: "6px" }}>
                           <strong>Motivo reportado:</strong> {req.incidencia.motivo}
@@ -643,55 +668,102 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   </div>
                 )}
 
-                {/* Botón para pasar de ACEPTADA a EN_PROCESO */}
-                {normalizedState === "ACEPTADA" && (
+                  {/* Botón para pasar de ACEPTADA a EN_PROCESO */}
+                  {normalizedState === "ACEPTADA" && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
-                    <Button
-                      type="button"
-                      onClick={() => setStartConfirmationId(req.id)}
-                      disabled={actionLoading !== null}
-                      style={{
-                        background: "#eff6ff",
-                        color: "#1d4ed8",
-                        border: "1px solid #bfdbfe",
-                        gap: "8px",
-                        minWidth: "170px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                      }}
-                    >
-                      <Clock3 size={16} />
-                      {actionLoading === req.id ? "Iniciando…" : "Iniciar servicio"}
-                    </Button>
+                    {!req.incidencia_abierta && (
+                      <Button
+                        type="button"
+                        onClick={() => setStartConfirmationId(req.id)}
+                        disabled={actionLoading !== null}
+                        style={{
+                          background: "#eff6ff",
+                          color: "#1d4ed8",
+                          border: "1px solid #bfdbfe",
+                          gap: "8px",
+                          minWidth: "170px",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                        }}
+                      >
+                        <Clock3 size={16} />
+                        {actionLoading === req.id ? "Iniciando…" : "Iniciar servicio"}
+                      </Button>
+                    )}
+                      {(req as any).tecnico_reporto_incidencia ? (
+                      <Button type="button" className="button-outline" disabled style={{ fontSize: "12px", minWidth: "170px" }}>
+                        <CheckCircle2 size={14} color="#16a34a" /> Reporte enviado (En revisión)
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="button-outline"
+                        style={{ color: "#b91c1c", borderColor: "#fca5a5", fontSize: "12px", minWidth: "170px" }}
+                        onClick={() => setReportIncidentSolicitudId(req.id)}
+                      >
+                        <AlertTriangle size={14} /> Reportar incidencia o justificación
+                      </Button>
+                    )}
                   </div>
                 )}
 
-                {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado desde En proceso */}
+                {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado o incidencia desde En proceso */}
                 {normalizedState === "EN_PROCESO" && !isPendingReception && !req.incidencia_abierta && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
-                    <Button
-                      type="button"
-                      onClick={() => handleReportCompletion(req.id)}
-                      disabled={actionLoading === req.id || hasPendingAdjustment}
-                      style={{
-                        background: hasPendingAdjustment ? "#f1f5f9" : "#eff6ff",
-                        color: hasPendingAdjustment ? "#64748b" : "#1d4ed8",
-                        border: `1px solid ${hasPendingAdjustment ? "#cbd5e1" : "#bfdbfe"}`,
-                        gap: "8px",
-                        minWidth: "170px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                      }}
-                    >
-                      <CheckCircle2 size={16} />
-                      {actionLoading === req.id ? "Reportando…" : "Reportar trabajo finalizado"}
-                    </Button>
+                    {!isPendingReception && (
+                      <Button
+                        type="button"
+                        onClick={() => handleReportCompletion(req.id)}
+                        disabled={actionLoading === req.id || hasPendingAdjustment}
+                        style={{
+                          background: hasPendingAdjustment ? "#f1f5f9" : "#eff6ff",
+                          color: hasPendingAdjustment ? "#64748b" : "#1d4ed8",
+                          border: `1px solid ${hasPendingAdjustment ? "#cbd5e1" : "#bfdbfe"}`,
+                          gap: "8px",
+                          minWidth: "170px",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                        }}
+                      >
+                        <CheckCircle2 size={16} />
+                        {actionLoading === req.id ? "Reportando…" : "Reportar trabajo finalizado"}
+                      </Button>
+                    )}
+                    {(req.incidencia as any)?.reportante_rol === "TECNICO" ? (
+                      <Button type="button" className="button-outline" disabled style={{ fontSize: "12px", minWidth: "170px" }}>
+                        <CheckCircle2 size={14} color="#16a34a" /> Justificación enviada (En revisión)
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="button-outline"
+                        style={{ color: "#b91c1c", borderColor: "#fca5a5", fontSize: "12px", minWidth: "170px" }}
+                        onClick={() => setReportIncidentSolicitudId(req.id)}
+                      >
+                        <AlertTriangle size={14} /> Reportar incidencia / justificación
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Paso 3.4: Modal de reporte e incidencias para el técnico montado a nivel de página (CA-01, CA-05) */}
+      {reportIncidentSolicitudId && (
+        <ReportIncidentModal
+          isOpen={Boolean(reportIncidentSolicitudId)}
+          onClose={() => setReportIncidentSolicitudId(null)}
+          onSuccess={(msg) => {
+            setActionNotice(msg);
+            setRefreshTick((v) => v + 1);
+          }}
+          user={user}
+          solicitudId={reportIncidentSolicitudId}
+          rol="TECNICO"
+        />
       )}
       {startConfirmationId && (
         <StartServiceConfirmation
@@ -702,3 +774,4 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     </div>
   );
 }
+

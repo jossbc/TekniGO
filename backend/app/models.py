@@ -595,3 +595,37 @@ class TradeCertificateDecision(Base):
     estado: Mapped[str] = mapped_column(String(20))
     observaciones: Mapped[str | None] = mapped_column(Text)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class IncidentTicketRecord(Base):
+    __tablename__ = "tickets_incidencias"
+    __table_args__ = (
+        Index("ix_tickets_incidencias_solicitud_estado", "solicitud_id", "estado"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    solicitud_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    modalidad: Mapped[str] = mapped_column(String(20), nullable=False)
+    reportante_uid: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    contraparte_uid: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    rol_reportante: Mapped[str] = mapped_column(String(20), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(50), nullable=False)
+    prioridad: Mapped[str] = mapped_column(String(20), nullable=False, default="ALTA")
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="ABIERTO", index=True)
+    es_apelacion_justificada: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    falta_computada: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    bloquea_cierre_automatico: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    bloquea_liberacion_fondos: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

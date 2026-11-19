@@ -4,6 +4,7 @@ import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
 import {
   ArrowUpRight,
+  AlertTriangle,
   Award,
   Calendar,
   CheckCircle2,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
+import ReportIncidentModal from "./ReportIncidentModal";
 import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
@@ -438,6 +440,7 @@ export default function ClientRequestsManager({
   const [receptionComment, setReceptionComment] = useState("");
   const [confirmingReception, setConfirmingReception] = useState(false);
   const [showIncidentForm, setShowIncidentForm] = useState(false);
+  const [showIncidentModal, setShowIncidentModal] = useState(false);
   const [incidentReason, setIncidentReason] = useState("");
   const [openingIncident, setOpeningIncident] = useState(false);
 
@@ -722,14 +725,38 @@ export default function ClientRequestsManager({
                     marginBottom: "16px",
                   }}
                 >
-                  <h3>Incidencia reportada · Cierre automático de 48 horas detenido</h3>
-                  <p>
-                    Has abierto una incidencia sobre este servicio. Se ha <strong>detenido el plazo de cierre automático de 48 horas</strong> y la liberación de fondos permanece retenida hasta la resolución administrativa.
-                  </p>
-                  {detail.seguimiento_recepcion?.incidencia?.motivo && (
-                    <p>
-                      <strong>Motivo reportado:</strong> {detail.seguimiento_recepcion.incidencia.motivo}
-                    </p>
+                  
+                  {(detail.seguimiento_recepcion as any)?.cliente_reporto_incidencia && (detail.seguimiento_recepcion as any)?.tecnico_reporto_incidencia ? (
+                    <>
+                      <h3>Disputa bilateral en revisión administrativa</h3>
+                      <p>
+                        Ambas partes (cliente y técnico) han registrado sus reportes sobre este servicio. La administración está mediando el caso.
+                      </p>
+                    </>
+                  ) : (detail.seguimiento_recepcion as any)?.tecnico_reporto_incidencia ? (
+                    <>
+                      <h3>Incidencia o justificación reportada por el técnico</h3>
+                      <p>
+                        El técnico registró un reporte sobre este servicio. El cierre automático está pausado. Puedes registrar tu versión o descargo a continuación.
+                      </p>
+                      {detail.seguimiento_recepcion?.incidencia?.motivo && (
+                        <p style={{ marginTop: "6px" }}>
+                          <strong>Motivo manifestado por el técnico:</strong> {detail.seguimiento_recepcion.incidencia.motivo}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <h3>Incidencia reportada por ti · Cierre automático detenido</h3>
+                      <p>
+                        Has abierto una incidencia sobre este servicio. Se encuentra en revisión administrativa.
+                      </p>
+                      {detail.seguimiento_recepcion?.incidencia?.motivo && (
+                        <p style={{ marginTop: "6px" }}>
+                          <strong>Motivo reportado:</strong> {detail.seguimiento_recepcion.incidencia.motivo}
+                        </p>
+                      )}
+                    </>
                   )}
                 </section>
               ) : (
@@ -1265,6 +1292,7 @@ export default function ClientRequestsManager({
 
               {/* HU-35: Confirmación de recepción, plazo de 48h (America/Tegucigalpa) e incidencias */}
               {(detail.seguimiento_recepcion?.finalizacion_reportada ||
+                detail.seguimiento_recepcion?.incidencia_abierta ||
                 ["EN PROCESO", "EN_PROCESO", "COMPLETADA"].includes(
                   (detail.estado || "").toUpperCase(),
                 )) && (
@@ -1350,110 +1378,88 @@ export default function ClientRequestsManager({
                         </p>
                       )}
                     </div>
-                                    ) : !(
-                    detail.seguimiento_recepcion?.finalizacion_reportada ||
-                    detail.pendiente_recepcion ||
-                    detail.finalizacion_reportada_en ||
-                    detail.finalizacion_reportada_local
-                  ) ? (
+                    ) : !detail.seguimiento_recepcion?.incidencia_abierta &&
+                    !(
+                      detail.seguimiento_recepcion?.finalizacion_reportada ||
+                      detail.pendiente_recepcion ||
+                      detail.finalizacion_reportada_en ||
+                      detail.finalizacion_reportada_local
+                    ) ? (
                     <p style={{ fontSize: "0.88rem", color: "#475569", margin: "4px 0 0" }}>
                       El técnico inició la ejecución del servicio. Los botones para{" "}
                       <strong>confirmar recepción</strong> o <strong>reportar incidencia</strong> se
                       habilitarán automáticamente en cuanto el técnico marque el trabajo como finalizado.
                     </p>
                   ) : (
-                    ["EN PROCESO", "EN_PROCESO"].includes((detail.estado || "").toUpperCase()) &&
-                    !detail.seguimiento_recepcion?.incidencia_abierta && (
+                    (detail.seguimiento_recepcion?.incidencia_abierta ||
+                      ["EN PROCESO", "EN_PROCESO"].includes((detail.estado || "").toUpperCase())) && (
                       <div style={{ marginTop: "8px" }}>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "0.84rem",
-                            fontWeight: 600,
-                            marginBottom: "4px",
-                          }}
-                        >
-                          Comentario de recepción (opcional)
-                        </label>
-                        <input
-                          type="text"
-                          value={receptionComment}
-                          onChange={(e) => setReceptionComment(e.target.value)}
-                          placeholder="Ej. Trabajo recibido conforme a lo acordado"
-                          style={{
-                            width: "100%",
-                            padding: "8px 10px",
-                            borderRadius: "6px",
-                            border: "1px solid #cbd5e1",
-                            marginBottom: "10px",
-                            fontSize: "0.88rem",
-                          }}
-                        />
-                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                          <Button
-                            type="button"
-                            style={{ width: "auto", background: "#16a34a", color: "#fff" }}
-                            disabled={confirmingReception || openingIncident}
-                            onClick={handleConfirmReception}
-                          >
-                            {confirmingReception
-                              ? "Confirmando recepción…"
-                              : "Confirmar recepción del trabajo"}
-                          </Button>
-                          <Button
-                            type="button"
-                            className="button-outline"
-                            style={{ width: "auto", color: "#b91c1c", borderColor: "#fca5a5" }}
-                            disabled={confirmingReception || openingIncident}
-                            onClick={() => setShowIncidentForm((v) => !v)}
-                          >
-                            {showIncidentForm ? "Cancelar reporte" : "Reportar incidencia"}
-                          </Button>
-                        </div>
-
-                        {showIncidentForm && (
-                          <div
-                            style={{
-                              marginTop: "10px",
-                              padding: "10px",
-                              borderRadius: "8px",
-                              background: "#fff1f2",
-                              border: "1px solid #fecdd3",
-                            }}
-                          >
+                        {/* Si no hay incidencia abierta, se puede confirmar normalmente o reportar */}
+                        {!detail.seguimiento_recepcion?.incidencia_abierta ? (
+                          <>
                             <label
                               style={{
                                 display: "block",
                                 fontSize: "0.84rem",
                                 fontWeight: 600,
-                                color: "#9f1239",
                                 marginBottom: "4px",
                               }}
                             >
-                              Motivo de la incidencia (detiene el cierre automático y retiene fondos)
+                              Comentario de recepción (opcional)
                             </label>
                             <input
                               type="text"
-                              value={incidentReason}
-                              onChange={(e) => setIncidentReason(e.target.value)}
-                              placeholder="Describe el problema detectado en el trabajo…"
+                              value={receptionComment}
+                              onChange={(e) => setReceptionComment(e.target.value)}
+                              placeholder="Ej. Trabajo recibido conforme a lo acordado"
                               style={{
                                 width: "100%",
                                 padding: "8px 10px",
                                 borderRadius: "6px",
-                                border: "1px solid #fda4af",
-                                marginBottom: "8px",
+                                border: "1px solid #cbd5e1",
+                                marginBottom: "10px",
                                 fontSize: "0.88rem",
                               }}
                             />
+                            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                              <Button
+                                type="button"
+                                style={{ width: "auto", background: "#16a34a", color: "#fff" }}
+                                disabled={confirmingReception}
+                                onClick={handleConfirmReception}
+                              >
+                                {confirmingReception
+                                  ? "Confirmando recepción…"
+                                  : "Confirmar recepción del trabajo"}
+                              </Button>
+                              <Button
+                                type="button"
+                                className="button-outline"
+                                disabled={confirmingReception}
+                                onClick={() => setShowIncidentModal(true)}
+                              >
+                                Reportar incidencia o disputa
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          /* Si ya hay una incidencia abierta (por el técnico o por el cliente) */
+                          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                          {/* Si la abrió el técnico y el cliente aún no ha dado su versión */}
+                          {(detail.seguimiento_recepcion as any)?.tecnico_reporto_incidencia && !(detail.seguimiento_recepcion as any)?.cliente_reporto_incidencia ? (
                             <Button
                               type="button"
-                              style={{ width: "auto", background: "#dc2626", color: "#fff" }}
-                              disabled={openingIncident}
-                              onClick={handleOpenIncident}
+                              className="button-outline"
+                              style={{ color: "#dc2626", borderColor: "#fca5a5", fontWeight: 700 }}
+                              onClick={() => setShowIncidentModal(true)}
                             >
-                              {openingIncident ? "Registrando incidencia…" : "Confirmar incidencia"}
+                              <AlertTriangle size={15} /> Registrar tu versión o descargo
                             </Button>
+                          ) : (
+                            <Button type="button" className="button-outline" disabled style={{ fontSize: "12px" }}>
+                              <CheckCircle2 size={14} color="#16a34a" /> Tu reporte está registrado y en mediación
+                            </Button>
+                          )}
                           </div>
                         )}
                       </div>
@@ -1512,6 +1518,20 @@ export default function ClientRequestsManager({
             />
           )}
         </RequestDetailModal>
+      )}
+      {detail && (
+        <ReportIncidentModal
+          isOpen={showIncidentModal}
+          onClose={() => setShowIncidentModal(false)}
+          onSuccess={(msg) => {
+            setActionNotice(msg);
+            getMyRequestDetail(user, detail.id).then((d) => setDetail(d));
+            setRefreshTick((v) => v + 1);
+          }}
+          user={user}
+          solicitudId={detail.id}
+          rol="CLIENTE"
+        />
       )}
     </div>
   );

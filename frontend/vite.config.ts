@@ -12,6 +12,8 @@ const devProxy = {
   '/admin/': { target: backendTarget, changeOrigin: true },
   '/open-requests': { target: backendTarget, changeOrigin: true },
   '/requests': { target: backendTarget, changeOrigin: true },
+  '/incident-tickets': { target: backendTarget, changeOrigin: true },
+  '/service-requests': { target: backendTarget, changeOrigin: true },
   '/health': { target: backendTarget, changeOrigin: true },
 }
 
