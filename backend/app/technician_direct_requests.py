@@ -191,14 +191,16 @@ def _serialize_direct_request(
     )
     has_adj, adj_reason = has_pending_adjustment(row)
 
-    if incidencia_abierta:
+    if incidencia_abierta or reception_tracking.get("tecnico_reporto_incidencia") or reception_tracking.get("cliente_reporto_incidencia"):
         payload["incidencia_abierta"] = True
         if incidencia_data is not None:
-            payload["incidencia"] = {
+            payload["incidencia"] = reception_tracking.get("incidencia") or {
                 key: incidencia_data.get(key)
                 for key in ("incidencia_id", "motivo", "estado", "abierta_en_tegucigalpa")
             }
-
+        payload["tecnico_reporto_incidencia"] = bool(reception_tracking.get("tecnico_reporto_incidencia"))
+        payload["cliente_reporto_incidencia"] = bool(reception_tracking.get("cliente_reporto_incidencia"))
+        payload["es_disputa_cruzada"] = bool(reception_tracking.get("es_disputa_cruzada"))
     if finalizacion_dt is not None or vencimiento_dt is not None or pendiente_rec or has_adj:
         payload["pendiente_recepcion"] = pendiente_rec
         payload["finalizacion_reportada_en"] = finalizacion_dt.isoformat() if finalizacion_dt else None

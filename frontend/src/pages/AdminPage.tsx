@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { Link } from 'react-router-dom'
-import { FolderOpen } from 'lucide-react'
+import { FolderOpen, ShieldAlert } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCertificates from '../components/AdminCertificates'
-import AdminCatalog from '../components/AdminCatalog'
+import AdminIncidentsManager from '../lib/AdminIncidentsManager'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -20,25 +19,51 @@ const labels: Record<string, string> = {
 
 export default function AdminPage({ user }: { user: User }) {
   const { state, retry } = useAccount(user)
-  const [showCatalog, setShowCatalog] = useState(false)
-  return <div className="site">
-    <Header authenticated email={user.email} accountHref="/admin" accountLabel="Administración" />
-    <main className="account admin-panel">
-      <div className="admin-page-heading">
-        <h1>{showCatalog ? 'Categorías y parámetros' : 'Revisión de expedientes'}</h1>
-      </div>
-      {state.status !== 'ready' ? <AccountStatus state={state} retry={retry} /> :
-        !state.profile.roles.includes('ADMIN') ? <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p> :
-        <>
-          <nav className="admin-section-nav" aria-label="Administración">
-            <Button type="button" className={showCatalog ? 'button-outline' : undefined} aria-pressed={!showCatalog} onClick={() => setShowCatalog(false)}>Expedientes</Button>
-            <Button type="button" className={showCatalog ? undefined : 'button-outline'} aria-pressed={showCatalog} onClick={() => setShowCatalog(true)}>Categorías y parámetros</Button>
-            <Link className="button button-outline" to="/perfil">Mi perfil</Link>
-          </nav>
-          {showCatalog ? <AdminCatalog user={user} /> : <DossierManager user={user} />}
-        </>}
-    </main>
-  </div>
+  const [tab, setTab] = useState<'dossiers' | 'incidents'>('dossiers')
+
+  return (
+    <div className="site">
+      <Header authenticated email={user.email} accountHref="/admin" accountLabel="Administración" />
+      <main className="account admin-panel">
+        <div className="admin-page-heading">
+          <h1>Panel de Administración</h1>
+        </div>
+        {state.status !== 'ready' ? (
+          <AccountStatus state={state} retry={retry} />
+        ) : !state.profile.roles.includes('ADMIN') ? (
+          <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p>
+        ) : (
+          <>
+            {/* Pestañas de administración (CA-02) */}
+            <div className="admin-toolbar" style={{ marginBottom: "20px" }}>
+              <div className="dossier-filters" role="tablist" aria-label="Secciones de administración">
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'dossiers' ? '' : 'button-outline'}
+                  aria-selected={tab === 'dossiers'}
+                  onClick={() => setTab('dossiers')}
+                >
+                  <FolderOpen size={16} /> Expedientes de identidad
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'incidents' ? '' : 'button-outline'}
+                  aria-selected={tab === 'incidents'}
+                  onClick={() => setTab('incidents')}
+                >
+                  <ShieldAlert size={16} /> Incidencias y moderación
+                </Button>
+              </div>
+            </div>
+
+            {tab === 'dossiers' ? <DossierManager user={user} /> : <AdminIncidentsManager user={user} />}
+          </>
+        )}
+      </main>
+    </div>
+  )
 }
 
 function RoleBadges({ roles }: { roles: string[] }) {

@@ -123,7 +123,7 @@ def get_service_reception_tracking(solicitud_id: str, record: Any = None) -> dic
             )
 
     if not state:
-        return {
+        state = {
             "solicitud_id": clean_id,
             "finalizacion_reportada": False,
             "finalizacion_reportada_en": None,
@@ -143,6 +143,35 @@ def get_service_reception_tracking(solicitud_id: str, record: Any = None) -> dic
             "evento_cierre": None,
             "efecto_financiero": None,
         }
+    # Sincronización inequívoca con el registro de tickets de incidencias
+    from app.incident_management import _TICKETS_BY_SERVICE, _INCIDENT_TICKETS
+    active_ticket_ids = _TICKETS_BY_SERVICE.get(clean_id, [])
+    active_tickets = [
+        _INCIDENT_TICKETS[tid] for tid in active_ticket_ids
+        if tid in _INCIDENT_TICKETS and _INCIDENT_TICKETS[tid].get("estado") in {"ABIERTO", "EN_REVISION"}
+    ]
+    tech_ticket = next((t for t in active_tickets if t.get("rol_reportante") == "TECNICO"), None)
+    client_ticket = next((t for t in active_tickets if t.get("rol_reportante") == "CLIENTE"), None)
+
+    state["tecnico_reporto_incidencia"] = tech_ticket is not None
+    state["cliente_reporto_incidencia"] = client_ticket is not None
+    state["es_disputa_cruzada"] = (tech_ticket is not None and client_ticket is not None)
+
+    if active_tickets:
+        state["incidencia_abierta"] = True
+        state["cierre_automatico_detenido"] = True
+        state["liberacion_fondos_retenida"] = True
+        primary = tech_ticket or client_ticket or active_tickets[0]
+        state["incidencia"] = {
+            "incidencia_id": primary.get("ticket_id"),
+            "motivo": primary.get("motivo"),
+            "estado": primary.get("estado"),
+            "reportante_rol": primary.get("rol_reportante"),
+            "reportante_nombre": primary.get("reportante_nombre"),
+            "abierta_en_tegucigalpa": primary.get("creado_en_tegucigalpa"),
+            "es_apelacion_justificada": primary.get("es_apelacion_justificada", False),
+        }
+
     return dict(state)
 
 class ReportCompletionSchema(BaseModel):
@@ -406,7 +435,11 @@ def run_scheduled_auto_completion(
             already_completed_ids.append(solicitud_id)
             continue
 
-        if snapshot.get("incidencia_abierta"):
+    # Patrón Interceptor (HU-51 CA-03): Comprobar bloqueo tanto en estado local como en tickets de moderación
+        from app.incident_management import has_active_incident_ticket
+
+        tiene_ticket_bloqueante = has_active_incident_ticket(solicitud_id)
+        if snapshot.get("incidencia_abierta") or tiene_ticket_bloqueante:
             skipped_by_incident_ids.append(solicitud_id)
             continue
 
@@ -427,7 +460,7 @@ def run_scheduled_auto_completion(
             already_completed_ids.append(solicitud_id)
             continue
 
-        if locked_tracking.get("incidencia_abierta"):
+        if locked_tracking.get("incidencia_abierta") or has_active_incident_ticket(solicitud_id):
             skipped_by_incident_ids.append(solicitud_id)
             continue
 
@@ -620,6 +653,61 @@ def open_service_incident_by_client(
     _save_tracking(record, updated_tracking)
     db.commit()
 
+    # Patrón Adapter / Bridge (HU-51 CA-01): Registra el ticket en la bandeja prioritaria de administración
+    from app.incident_management import (
+        _INCIDENT_TICKETS,
+        _TICKETS_BY_SERVICE,
+        PrioridadTicketEnum,
+        EstadoTicketEnum,
+        _persist_ticket_to_db,
+    )
+    
+    ticket_id = incident_data["incidencia_id"]
+    if not str(ticket_id).startswith("TICK-"):
+        ticket_id = f"TICK-{str(ticket_id)[:8].upper()}"
+
+    ticket_data = {
+        "ticket_id": ticket_id,
+        "solicitud_id": str(record.id),
+        "modalidad": modalidad,
+        "estado_servicio_al_reportar": current_state,
+        "reportante_uid": user.firebase_uid,
+        "reportante_nombre": user.nombre_completo or "Cliente",
+        "rol_reportante": "CLIENTE",
+        "contraparte_uid": getattr(record, "tecnico_id", None),
+        "tipo": "INCUMPLIMIENTO_SERVICIO",
+        "motivo": motivo_clean,
+        "prioridad": PrioridadTicketEnum.ALTA.value,
+        "estado": EstadoTicketEnum.ABIERTO.value,
+        "es_apelacion_justificada": False,
+        "falta_computada": True,
+        "bloquea_cierre_automatico": True,
+        "bloquea_liberacion_fondos": True,
+        "creado_en": eval_now.isoformat(),
+        "creado_en_tegucigalpa": _to_tegucigalpa_iso(eval_now),
+        "actualizado_en": eval_now.isoformat(),
+        "evidencias_privadas": [payload.evidencia_url] if payload.evidencia_url else [],
+        "historial_actuaciones": [
+            {
+                "actuacion_id": str(uuid.uuid4()),
+                "instante": eval_now.isoformat(),
+                "instante_tegucigalpa": _to_tegucigalpa_iso(eval_now),
+                "autor_uid": user.firebase_uid,
+                "autor_rol": "CLIENTE",
+                "accion": "CREACION_TICKET",
+                "observaciones": motivo_clean,
+                "evidencias": [payload.evidencia_url] if payload.evidencia_url else [],
+            }
+        ],
+        "resolucion_final": None,
+    }
+    _persist_ticket_to_db(db, ticket_data)
+    _INCIDENT_TICKETS[ticket_id] = ticket_data
+    if str(record.id) not in _TICKETS_BY_SERVICE:
+        _TICKETS_BY_SERVICE[str(record.id)] = []
+    if ticket_id not in _TICKETS_BY_SERVICE[str(record.id)]:
+        _TICKETS_BY_SERVICE[str(record.id)].append(ticket_id)
+
     return {
         "mensaje": "Incidencia registrada. Se ha detenido el cierre automático y la liberación de fondos hasta resolución administrativa.",
         "solicitud_id": str(record.id),
@@ -681,6 +769,14 @@ def resolve_service_incident_by_admin(
             "resuelta_en_tegucigalpa": _to_tegucigalpa_iso(eval_now),
         }
     )
+    from app.incident_management import _INCIDENT_TICKETS, _TICKETS_BY_SERVICE, _save_persistent_incidents, _persist_ticket_to_db
+    for tid in _TICKETS_BY_SERVICE.get(str(record.id), []):
+        if tid in _INCIDENT_TICKETS:
+            _INCIDENT_TICKETS[tid]["estado"] = "RESUELTO"
+            _INCIDENT_TICKETS[tid]["bloquea_cierre_automatico"] = False
+            _INCIDENT_TICKETS[tid]["bloquea_liberacion_fondos"] = False
+            _persist_ticket_to_db(db, _INCIDENT_TICKETS[tid])
+    _save_persistent_incidents()
 
     if decision_norm == "COMPLETAR_SERVICIO":
         review_deadline = eval_now + timedelta(hours=REVIEW_WINDOW_HOURS)
