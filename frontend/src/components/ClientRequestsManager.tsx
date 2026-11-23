@@ -22,6 +22,8 @@ import {
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
 import ReportIncidentModal from "./ReportIncidentModal";
+import ContractChatPanel from "./ContractChatPanel";
+import { isChatEnabledForState } from "../lib/contractChat";
 import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
@@ -1505,6 +1507,20 @@ export default function ClientRequestsManager({
                       );
                     })}
                   </div>
+                )}
+                {isChatEnabledForState(detail.estado) && (
+                  <ContractChatPanel
+                    user={user}
+                    modalidad={detail.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA"}
+                    solicitudId={detail.id}
+                    estadoSolicitud={detail.estado}
+                    currentRole="CLIENTE"
+                    counterpartName={detail.tecnico?.nombre_completo || "Técnico asignado"}
+                    onChatClosed={() => {
+                      getMyRequestDetail(user, detail.id).then((d) => setDetail(d)).catch(() => {});
+                      setRefreshTick((v) => v + 1);
+                    }}
+                  />
                 )}
               </section>
             </section>

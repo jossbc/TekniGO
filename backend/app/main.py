@@ -31,6 +31,9 @@ from app.service_reception import (
 )
 from app.service_completion import router as service_completion_router
 from app.incident_management import router as incident_management_router
+from app.settlements_router import router as settlements_router
+from app.payouts_router import router as payouts_router
+from app.chat_router import router as chat_router
 
 logger = logging.getLogger(__name__)
 AUTO_COMPLETION_INTERVAL_SECONDS = 60
@@ -89,6 +92,9 @@ app.include_router(admin_catalog_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
 app.include_router(incident_management_router)
+app.include_router(settlements_router)
+app.include_router(payouts_router)
+app.include_router(chat_router)
 
 @app.get("/health")
 def health():

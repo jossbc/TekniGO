@@ -20,8 +20,10 @@ import LoadingState from "./LoadingState";
 import { Button } from "./ui";
 import StartServiceConfirmation from "./StartServiceConfirmation";
 import ServiceLocationContactCard from "../lib/ServiceLocationContactCard";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, MessageSquare } from "lucide-react";
 import ReportIncidentModal from "./ReportIncidentModal";
+import ContractChatPanel from "./ContractChatPanel";
+import { isChatEnabledForState } from "../lib/contractChat";
 
 export type DirectRequest = TechnicianDirectRequest;
 
@@ -85,6 +87,15 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [trackingModality, setTrackingModality] = useState<"DIRECTA" | "ABIERTA">("DIRECTA");
   const [tracking, setTracking] = useState<TechnicianDirectRequestDetail | TechnicianOpportunityItem | null>(null);
   const [trackingError, setTrackingError] = useState("");
+  const [openChatId, setOpenChatId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openChatId) return;
+    const target = requests.find((item) => item.id === openChatId);
+    if (!target || !isChatEnabledForState(target.estado)) {
+      setOpenChatId(null);
+    }
+  }, [openChatId, requests]);
 
   useEffect(() => {
     if (!trackingId) return;
@@ -665,6 +676,31 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                     {trackingError && <p role="alert">{trackingError}</p>}
                     {!tracking && !trackingError && <p role="status">Cargando seguimiento…</p>}
                     {tracking?.linea_tiempo && <RequestTimeline items={tracking.linea_tiempo} />}
+                  </div>
+                )}
+
+                {isChatEnabledForState(req.estado) && (
+                  <div style={{ flexBasis: "100%", marginTop: "8px" }}>
+                    <Button
+                      type="button"
+                      className="button-outline"
+                      style={{ width: "auto", gap: "6px", fontSize: "13px" }}
+                      onClick={() => setOpenChatId((prev) => (prev === req.id ? null : req.id))}
+                    >
+                      <MessageSquare size={15} />
+                      {openChatId === req.id ? "Ocultar chat" : "Abrir chat con cliente"}
+                    </Button>
+                    {openChatId === req.id && (
+                      <ContractChatPanel
+                        user={user}
+                        modalidad={modality}
+                        solicitudId={req.id}
+                        estadoSolicitud={req.estado}
+                        currentRole="TECNICO"
+                        counterpartName={req.cliente_nombre || "Cliente"}
+                        onChatClosed={() => setRefreshTick((v) => v + 1)}
+                      />
+                    )}
                   </div>
                 )}
 

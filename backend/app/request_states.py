@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.models import DirectRequest, OpenRequest, RequestStateEvent, User
@@ -121,6 +121,24 @@ def transition_request(
 
     record.estado = {"CON OFERTAS": "Con ofertas", "PUBLICADA": "Publicada"}.get(target, target)
     db.add(_event(record, target, now or datetime.now(timezone.utc), role, uid))
+    if target in {"COMPLETADA", "CANCELADA"}:
+        db.info.setdefault("_pending_chat_closures", []).append((mode, str(record.id), target))
+
+
+@event.listens_for(Session, "after_commit")
+def _flush_pending_chat_closures(session: Session) -> None:
+    pending = session.info.pop("_pending_chat_closures", None)
+    if not pending:
+        return
+    from app.chat_realtime import notify_conversation_closed_sync
+
+    for mode, solicitud_id, estado in pending:
+        notify_conversation_closed_sync(mode, solicitud_id, estado=estado)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_pending_chat_closures(session: Session) -> None:
+    session.info.pop("_pending_chat_closures", None)
 
 
 def start_request_service(db: Session, record: Request, uid: str) -> None:
