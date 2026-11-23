@@ -413,7 +413,7 @@ def get_client_request_detail(
         "cantidad": summary["cantidad"],
         "tarifa_aplicada": summary["tarifa_aplicada"],
         "unidad_cobro": summary["unidad_cobro"],
-        "monto_pactado": summary["presupuesto"],
+        "monto_pactado": summary["monto_total"],
         "metodo_pago": summary["metodo_pago"],
         "desglose_medios": summary.get("desglose_medios"),
     }

@@ -25,6 +25,7 @@ PRIVATE_BUCKET = "documentos-identidad"
 PRIVATE_DOCUMENT_TYPES = frozenset({
     "DNI_FRONTAL", "DNI_REVERSO", "SELFIE",
     "ANTECEDENTES_POLICIALES", "ANTECEDENTES_PENALES", "CERTIFICACION_OFICIO",
+    "EVIDENCIA_CANCELACION",
 })
 DEFAULT_LOCAL_DIR = Path(__file__).resolve().parent.parent / ".private_storage"
 

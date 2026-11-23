@@ -1009,21 +1009,23 @@ def emit_and_process_idempotent_completion_event(
             "reutilizado_idempotente": True,
         }
 
-    raw_amount = (
-        getattr(record, "monto_total", None)
-        or getattr(record, "presupuesto", None)
-        or getattr(record, "monto_base", 0)
-    )
-    monto_bruto = Decimal(str(raw_amount or 0)).quantize(Decimal("0.01"))
-    monto_comision = (monto_bruto * commission_rate).quantize(Decimal("0.01"))
-    monto_neto_tecnico = (monto_bruto - monto_comision).quantize(Decimal("0.01"))
+    from app.financial_settlement import calculate_payment_split
 
-    raw_metodo = (getattr(record, "metodo_pago", None) or "efectivo").strip().lower()
-    strategy = _resolve_financial_strategy(raw_metodo)
-    tipo_efecto, credito_digital_tecnico, deuda_comision_efectivo = strategy.compute_effect(
-        monto_comision,
-        monto_neto_tecnico,
-    )
+    split = calculate_payment_split(record, commission_rate=commission_rate)
+    monto_bruto = split.monto_total
+    monto_comision = split.monto_comision
+    monto_neto_tecnico = split.monto_neto_tecnico
+    raw_metodo = split.metodo_pago_base
+    if split.estrategia == "MIXTO_TARJETA_EFECTIVO":
+        tipo_efecto = "REPARTO_MIXTO_TARJETA_EFECTIVO"
+        credito_digital_tecnico = split.credito_digital_tecnico
+        deuda_comision_efectivo = split.deuda_comision_efectivo
+    else:
+        strategy = _resolve_financial_strategy(raw_metodo)
+        tipo_efecto, credito_digital_tecnico, deuda_comision_efectivo = strategy.compute_effect(
+            monto_comision,
+            monto_neto_tecnico,
+        )
 
     event_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"teknigo-cierre-{solicitud_id}"))
     idempotency_key = f"CIERRE-SERVICIO-{solicitud_id}"
@@ -1068,6 +1070,7 @@ def emit_and_process_idempotent_completion_event(
         "validado_sprint_3_en": None,
         "aplicaciones_financieras": 1,
         "reutilizado_idempotente": False,
+        "reparto_medios": split.to_dict(),
     }
 
     _save_tracking(record, {**tracking, "evento_cierre": event_payload, "efecto_financiero": financial_effect})

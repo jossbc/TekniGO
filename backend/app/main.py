@@ -6,9 +6,12 @@ from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.adjustment_router import router as adjustment_router
 from app.database import get_engine
 from app.firebase import initialize_firebase
 from app.database_errors import database_error_response
+from app.cancellation_justification_router import router as cancellation_justification_router
+from app.cancellation_router import router as cancellation_router
 from app.cors import configure_cors
 from app.users import router
 from app.specialties import router as specialties_router
@@ -31,6 +34,7 @@ from app.service_reception import (
 )
 from app.service_completion import router as service_completion_router
 from app.incident_management import router as incident_management_router
+
 
 logger = logging.getLogger(__name__)
 AUTO_COMPLETION_INTERVAL_SECONDS = 60
@@ -89,6 +93,9 @@ app.include_router(admin_catalog_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
 app.include_router(incident_management_router)
+app.include_router(cancellation_router)
+app.include_router(adjustment_router)
+app.include_router(cancellation_justification_router)
 
 @app.get("/health")
 def health():

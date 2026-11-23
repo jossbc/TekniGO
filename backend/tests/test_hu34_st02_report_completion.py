@@ -335,40 +335,39 @@ class Hu34St02ReportCompletionEndpointTests(unittest.TestCase):
             )
         self.assertEqual(attr_err.exception.status_code, 409)
 
-        # 4. Simular tabla/modelo ServiceAdjustment de HU-36
-        class SimulatedServiceAdjustment(Base):
-            __tablename__ = "ajustes_servicio_sim_st02"
-            id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-            solicitud_id = Column(String, nullable=False)
-            estado = Column(String, nullable=False, default="PENDIENTE")
+        # 4. Modelo real ServiceAdjustment de HU-36 en base de datos
+        req_3 = self._create_open_request(estado="En proceso")
+        adj_row = models.ServiceAdjustment(
+            modalidad="ABIERTA",
+            solicitud_id=req_3.id,
+            tecnico_uid=self.tech_selected.firebase_uid,
+            cliente_uid=self.client.firebase_uid,
+            motivo="Ajuste real de presupuesto en sitio",
+            monto_base=Decimal("500.00"),
+            nuevo_total=Decimal("650.00"),
+            diferencia=Decimal("150.00"),
+            estado="PENDIENTE",
+            solicitado_en=datetime.now(timezone.utc),
+        )
+        self.db.add(adj_row)
+        self.db.commit()
 
-        SimulatedServiceAdjustment.__table__.create(self.engine, checkfirst=True)
-        models.ServiceAdjustment = SimulatedServiceAdjustment
-        try:
-            req_3 = self._create_open_request(estado="En proceso")
-            adj_row = SimulatedServiceAdjustment(solicitud_id=req_3.id, estado="PENDIENTE")
-            self.db.add(adj_row)
-            self.db.commit()
-
-            with self.assertRaises(HTTPException) as db_adj_err:
-                report_service_completion(
-                    req_3.id,
-                    {"uid": self.tech_selected.firebase_uid},
-                    self.db,
-                )
-            self.assertEqual(db_adj_err.exception.status_code, 409)
-
-            adj_row.estado = "RECHAZADO"
-            self.db.commit()
-            res_3 = report_service_completion(
+        with self.assertRaises(HTTPException) as db_adj_err:
+            report_service_completion(
                 req_3.id,
                 {"uid": self.tech_selected.firebase_uid},
                 self.db,
             )
-            self.assertTrue(res_3["pendiente_recepcion"])
-        finally:
-            if hasattr(models, "ServiceAdjustment"):
-                delattr(models, "ServiceAdjustment")
+        self.assertEqual(db_adj_err.exception.status_code, 409)
+
+        adj_row.estado = "RECHAZADO"
+        self.db.commit()
+        res_3 = report_service_completion(
+            req_3.id,
+            {"uid": self.tech_selected.firebase_uid},
+            self.db,
+        )
+        self.assertTrue(res_3["pendiente_recepcion"])
 
 
 if __name__ == "__main__":
