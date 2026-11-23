@@ -3,7 +3,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "031_liquidaciones_comisiones"
-down_revision = "025_tickets_incidencias"
+down_revision = "030_finanzas_reembolsos"
 branch_labels = None
 depends_on = None
 

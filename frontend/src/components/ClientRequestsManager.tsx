@@ -21,6 +21,9 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
+import CancellationNotice from "./CancellationNotice";
+import AdjustmentPanel from "./AdjustmentPanel";
+import { CancelRequestModal } from "./CancellationForms";
 import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
@@ -201,6 +204,7 @@ export default function ClientRequestsManager({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [executingAction, setExecutingAction] = useState("");
+  const [showCancel, setShowCancel] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
@@ -329,6 +333,10 @@ export default function ClientRequestsManager({
 
   async function handleAction(accion: string) {
     if (!detail || executingAction) return;
+    if (accion === "CANCELAR") {
+      setShowCancel(true);
+      return;
+    }
     setExecutingAction(accion);
     setDetailError("");
     setActionNotice("");
@@ -640,7 +648,7 @@ export default function ClientRequestsManager({
                   <div className="client-request-item-side">
                     <div className="client-request-budget">
                       <span>Presupuesto</span>
-                      <strong>{formatLempiras(item.presupuesto)}</strong>
+                      <strong>{formatLempiras((item as any).monto_total ?? item.presupuesto)}</strong>
                     </div>
                     <Button
                       type="button"
@@ -844,6 +852,12 @@ export default function ClientRequestsManager({
                         {formatLempiras(detail.propuesta.monto_pactado)}
                       </dd>
                     </div>
+                    {Number((detail as any).monto_ajuste || 0) !== 0 && (
+                      <div>
+                        <dt>Monto base original</dt>
+                        <dd>{formatLempiras(detail.monto_base)}</dd>
+                      </div>
+                    )}
                     {detail.propuesta.tarifa_aplicada != null && (
                       <div>
                         <dt>Tarifa aplicada</dt>
@@ -1468,8 +1482,20 @@ export default function ClientRequestsManager({
                     )
                   )}
                 </section>
+                
               )}
-
+              
+              {!detail.incidencia_abierta && (
+                <AdjustmentPanel
+                  user={user} solicitudId={detail.id} rol="CLIENTE" estado={detail.estado}
+                  montoBase={String((detail as any).monto_total ?? detail.monto_base ?? "")}
+                  onChanged={() => setRefreshTick((v) => v + 1)}
+                />
+              )}
+              {(detail.estado || "").toUpperCase() === "CANCELADA" && (
+                <CancellationNotice user={user} solicitudId={detail.id} rol="CLIENTE"
+                  onChanged={() => setRefreshTick((v) => v + 1)} />
+              )}
               <RequestTimeline items={detail.linea_tiempo} />
 
               {/* CA-04: Acciones permitidas según situación */}
@@ -1547,6 +1573,13 @@ export default function ClientRequestsManager({
           user={user}
           solicitudId={detail.id}
           rol="CLIENTE"
+        />
+      )}
+            {detail && (
+        <CancelRequestModal
+          isOpen={showCancel} onClose={() => setShowCancel(false)}
+          user={user} solicitudId={detail.id} rol="CLIENTE" estado={detail.estado}
+          onDone={(msg) => { setActionNotice(msg); setRefreshTick((v) => v + 1); }}
         />
       )}
     </div>

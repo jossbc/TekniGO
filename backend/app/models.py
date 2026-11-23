@@ -432,7 +432,9 @@ class OpenRequest(_CompletionTrackingMixin, Base):
     monto_total = Column(Numeric(10, 2), nullable=True)
     estado = Column(String(30), nullable=False, default="Publicada", server_default="Publicada")
     creada_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
-
+    # HU-36 ST-02: enlace a la solicitud cancelada que originó esta licitación
+    solicitud_origen_id = Column(String(36), nullable=True, index=True)
+    solicitud_origen_modalidad = Column(String(10), nullable=True)
     # HU-34 ST-01: Finalización reportada y vencimiento de confirmación (48 horas)
     finalizacion_reportada_en = Column(DateTime(timezone=True), nullable=True, default=None)
     vencimiento_confirmacion_en = Column(DateTime(timezone=True), nullable=True, default=None)
@@ -970,3 +972,129 @@ class ContractChatMessage(Base):
     )
 
     autor = relationship("User", foreign_keys=[autor_id])
+
+
+class RequestCancellation(Base):
+    """HU-36 ST-01: auditoría de cancelación (autor, fecha, estado previo, evidencia, falta)."""
+    __tablename__ = "cancelaciones_solicitud"
+    __table_args__ = (
+        UniqueConstraint("modalidad", "solicitud_id", name="uq_cancelacion_solicitud"),
+        UniqueConstraint("solicitud_reabierta_id", name="uq_cancelaciones_reabierta"),
+        Index("ix_cancelaciones_responsable", "responsable_uid", "estado_incumplimiento"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    autor_uid = Column(String(128), nullable=False)
+    autor_rol = Column(String(20), nullable=False)
+    estado_previo = Column(String(30), nullable=False)
+    causa = Column(String(40), nullable=False)
+    motivo = Column(Text, nullable=False)
+    evidencias = Column(JSON, nullable=False, default=list)
+    regla_aplicada = Column(String(60), nullable=False)
+    genera_incumplimiento = Column(Boolean, nullable=False, default=False, server_default="false")
+    responsable_rol = Column(String(20), nullable=True)
+    responsable_uid = Column(String(128), nullable=True)
+    estado_incumplimiento = Column(String(30), nullable=False, default="NO_APLICA", server_default="NO_APLICA")
+    permite_reapertura = Column(Boolean, nullable=False, default=False, server_default="false")
+    cancelada_en = Column(DateTime(timezone=True), nullable=False)
+    solicitud_reabierta_id = Column(String(36), nullable=True)
+    reabierta_en = Column(DateTime(timezone=True), nullable=True)
+
+class ServiceAdjustment(Base):
+    """HU-36 ST-03: ajuste único de presupuesto durante En proceso.
+
+    El nombre y las columnas solicitud_id/estado los consume DatabaseAdjustmentStrategy (HU-34).
+    No definir columna `activo`.
+    """
+    __tablename__ = "ajustes_servicio"
+    __table_args__ = (
+        UniqueConstraint("modalidad", "solicitud_id", name="uq_ajuste_unico_solicitud"),
+        CheckConstraint("monto_base > 0", name="ck_ajuste_monto_base_positivo"),
+        CheckConstraint("nuevo_total > 0", name="ck_ajuste_nuevo_total_positivo"),
+        CheckConstraint("estado IN ('PENDIENTE', 'APROBADO', 'RECHAZADO')", name="ck_ajuste_estado"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    tecnico_uid = Column(String(128), nullable=False)
+    cliente_uid = Column(String(128), nullable=False)
+    motivo = Column(Text, nullable=False)
+    monto_base = Column(Numeric(10, 2), nullable=False)
+    nuevo_total = Column(Numeric(10, 2), nullable=False)
+    diferencia = Column(Numeric(10, 2), nullable=False)
+    estado = Column(String(12), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    solicitado_en = Column(DateTime(timezone=True), nullable=False)
+    respondido_en = Column(DateTime(timezone=True), nullable=True)
+    respuesta_uid = Column(String(128), nullable=True)
+    comentario_respuesta = Column(Text, nullable=True)
+
+class CancellationJustification(Base):
+    """HU-36 ST-04 (CA-09): justificación con evidencia enviada a administración."""
+    __tablename__ = "justificaciones_cancelacion"
+    __table_args__ = (UniqueConstraint("cancelacion_id", name="uq_justificacion_cancelacion"),)
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cancelacion_id = Column(Integer, ForeignKey("cancelaciones_solicitud.id"), nullable=False)
+    autor_uid = Column(String(128), nullable=False)
+    motivo = Column(Text, nullable=False)
+    evidencias = Column(JSON, nullable=False, default=list)
+    estado = Column(String(12), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    enviada_en = Column(DateTime(timezone=True), nullable=False)
+    resuelta_en = Column(DateTime(timezone=True), nullable=True)
+    admin_uid = Column(String(128), nullable=True)
+    observaciones_admin = Column(Text, nullable=True)
+
+class PaymentRefund(Base):
+    """HU-36 ST-05 (CA-06, CA-08): devolución idempotente del 100% digital cobrado, sin comisión."""
+    __tablename__ = "reembolsos_solicitud"
+    __table_args__ = (
+        UniqueConstraint("modalidad", "solicitud_id", name="uq_reembolso_solicitud"),
+        CheckConstraint("monto_reembolso > 0", name="ck_reembolso_monto_positivo"),
+        CheckConstraint("monto_comision = 0", name="ck_reembolso_sin_comision"),
+        CheckConstraint(
+            "estado_pasarela IN ('EN_PROCESO_PASARELA', 'CONFIRMADO_PASARELA')",
+            name="ck_reembolso_estado_pasarela",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    cliente_uid = Column(String(128), nullable=False)
+    monto_base_reembolsado = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+    monto_ajuste_reembolsado = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+    monto_reembolso = Column(Numeric(10, 2), nullable=False)
+    monto_comision = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0.00")
+    referencia_pasarela_origen = Column(String(220), nullable=False)
+    referencia_reembolso_pasarela = Column(String(120), nullable=False)
+    estado_pasarela = Column(String(30), nullable=False, default="EN_PROCESO_PASARELA", server_default="EN_PROCESO_PASARELA")
+    iniciado_en = Column(DateTime(timezone=True), nullable=False)
+    confirmado_en = Column(DateTime(timezone=True), nullable=True)
+
+
+class FinancialLedgerEntry(Base):
+    """HU-36 ST-05 (Condición transversal): movimientos idempotentes del libro financiero."""
+    __tablename__ = "movimientos_libro_financiero"
+    __table_args__ = (
+        UniqueConstraint("clave_idempotencia", name="uq_libro_financiero_idempotencia"),
+        Index("ix_libro_financiero_solicitud", "modalidad", "solicitud_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    clave_idempotencia = Column(String(120), nullable=False)
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    tipo_movimiento = Column(String(40), nullable=False)
+    moneda = Column(String(5), nullable=False, default="HNL", server_default="HNL")
+    monto_base = Column(Numeric(10, 2), nullable=False)
+    monto_ajuste = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+    monto_total = Column(Numeric(10, 2), nullable=False)
+    tasa_comision = Column(Numeric(6, 4), nullable=False, default=Decimal("0.0000"))
+    monto_comision = Column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+    metodo_pago = Column(String(30), nullable=False)
+    referencia_pasarela = Column(String(220), nullable=True)
+    detalle = Column(JSON, nullable=False, default=dict)
+    creado_en = Column(DateTime(timezone=True), nullable=False)

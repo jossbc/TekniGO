@@ -17,6 +17,9 @@ import {
   type TechnicianDirectRequestDetail,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
+import CancellationNotice from "./CancellationNotice";
+import AdjustmentPanel from "./AdjustmentPanel";
+import { CancelRequestModal } from "./CancellationForms";
 import { Button } from "./ui";
 import StartServiceConfirmation from "./StartServiceConfirmation";
 import ServiceLocationContactCard from "../lib/ServiceLocationContactCard";
@@ -81,7 +84,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [actionError, setActionError] = useState("");
   const [filter, setFilter] = useState<EstadoFilter>("TODOS");
   const [reportIncidentSolicitudId, setReportIncidentSolicitudId] = useState<string | null>(null);
-
+  const [cancelTarget, setCancelTarget] = useState<{ id: string; estado: string } | null>(null);
   const [startConfirmationId, setStartConfirmationId] = useState<string | null>(null);
   const [trackingId, setTrackingId] = useState("");
   const [trackingModality, setTrackingModality] = useState<"DIRECTA" | "ABIERTA">("DIRECTA");
@@ -383,7 +386,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
             const StatusIcon = config.icon;
             const modality = getRequestModality(req);
             const clientName = req.cliente_nombre || "Cliente";
-            const totalEstimado = Number(req.total_estimado ?? 0);
+            const totalEstimado = Number((req as any).monto_total ?? req.total_estimado ?? 0);
             const isPendingReception =
               normalizedState === "EN_PROCESO" &&
               !req.incidencia_abierta &&
@@ -493,11 +496,16 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   />
 
                   {/* Total */}
-                  <div style={{ margin: "12px 0 0 48px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <div style={{ margin: "12px 0 0 48px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "13px", color: "var(--muted)" }}>Total a cobrar:</span>
                     <strong style={{ fontSize: "17px", color: "var(--blue)", fontWeight: 800 }}>
                       L. {Number.isFinite(totalEstimado) ? totalEstimado.toFixed(2) : "0.00"}
                     </strong>
+                    {Number((req as any).monto_ajuste || 0) !== 0 && (req as any).desglose_medios?.monto_base && (
+                      <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                        (base original: L. {(req as any).desglose_medios.monto_base})
+                      </span>
+                    )}
                   </div>
 
                   {/* HU-34 CA-02 & CA-03: Visualización de pendiente de recepción y vencimiento de 48h en America/Tegucigalpa */}
@@ -740,6 +748,14 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                         <AlertTriangle size={14} /> Reportar incidencia o justificación
                       </Button>
                     )}
+                    <Button
+                      type="button"
+                      className="button-outline"
+                      style={{ fontSize: "12px", minWidth: "170px" }}
+                      onClick={() => setCancelTarget({ id: req.id, estado: normalizedState })}
+                    >
+                      Cancelar servicio
+                    </Button>
                   </div>
                 )}
 
@@ -779,11 +795,31 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                         <AlertTriangle size={14} /> Reportar incidencia / justificación
                       </Button>
                     )}
+                    <Button
+                      type="button"
+                      className="button-outline"
+                      style={{ fontSize: "12px", minWidth: "170px" }}
+                      onClick={() => setCancelTarget({ id: req.id, estado: normalizedState })}
+                    >
+                      Cancelar servicio
+                    </Button>
                   </div>
+                )}
+                {normalizedState === "EN_PROCESO" && !req.incidencia_abierta && (
+                  <AdjustmentPanel
+                    user={user} solicitudId={req.id} rol="TECNICO" estado={req.estado}
+                    montoBase={String((req as any).desglose_medios?.monto_total ?? (req as any).monto_total ?? req.total_estimado)}
+                    onChanged={() => setRefreshTick((v) => v + 1)}
+                  />
+                )}
+                {normalizedState === "CANCELADA" && (
+                  <CancellationNotice user={user} solicitudId={req.id} rol="TECNICO"
+                    onChanged={() => setRefreshTick((v) => v + 1)} />
                 )}
               </div>
             );
           })}
+          
         </div>
       )}
 
@@ -799,6 +835,14 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
           user={user}
           solicitudId={reportIncidentSolicitudId}
           rol="TECNICO"
+        />
+        
+      )}
+      {cancelTarget && (
+        <CancelRequestModal
+          isOpen onClose={() => setCancelTarget(null)}
+          user={user} solicitudId={cancelTarget.id} rol="TECNICO" estado={cancelTarget.estado}
+          onDone={(msg) => { setActionNotice(msg); setRefreshTick((v) => v + 1); }}
         />
       )}
       {startConfirmationId && (
