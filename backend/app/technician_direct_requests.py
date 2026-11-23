@@ -142,9 +142,12 @@ def _serialize_direct_request(
     spec_key = str(getattr(row, "especialidad_id", "")) if getattr(row, "especialidad_id", None) is not None else ""
     spec = (specialties_by_id or {}).get(spec_key)
     base_val = getattr(row, "monto_base", None) or getattr(row, "presupuesto", None)
+    effective_total = getattr(row, "monto_total", None)
+    if effective_total is None:
+        effective_total = base_val
     total = (
-        float(Decimal(str(base_val)).quantize(Decimal("0.01")))
-        if base_val is not None
+        float(Decimal(str(effective_total)).quantize(Decimal("0.01")))
+        if effective_total is not None
         else 0.0
     )
     estado = state_key(row.estado or "PENDIENTE").replace(" ", "_")
@@ -189,7 +192,7 @@ def _serialize_direct_request(
         and not incidencia_abierta
         and (bool(getattr(row, "pendiente_recepcion", False)) or finalizacion_dt is not None)
     )
-    has_adj, adj_reason = has_pending_adjustment(row)
+    has_adj, adj_reason = has_pending_adjustment(row, Session.object_session(row))
 
     if incidencia_abierta or reception_tracking.get("tecnico_reporto_incidencia") or reception_tracking.get("cliente_reporto_incidencia"):
         payload["incidencia_abierta"] = True

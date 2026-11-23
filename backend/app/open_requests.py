@@ -258,6 +258,8 @@ def serialize_open_request_for_owner(
         "finalizacion_reportada_local": format_tegucigalpa_iso(finalizacion_dt),
         "vencimiento_confirmacion_local": format_tegucigalpa_iso(vencimiento_dt),
         "pendiente_recepcion": pendiente_recepcion,
+        "solicitud_origen_id": record.solicitud_origen_id,
+        "solicitud_origen_modalidad": record.solicitud_origen_modalidad,
     }
     if db is not None:
         proposals = db.scalars(

@@ -6,6 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.adjustment_repository import SqlAlchemyAdjustmentRepository
+from app.adjustment_service import to_money
 from app.direct_requests_repository import DirectRequestRepository
 from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse, RegisterAdjustmentRequest, UpdatePaymentMethodRequest
 from app.models import CoverageZone, DirectRequest, User
@@ -188,21 +190,34 @@ class DirectRequestService:
         request: RegisterAdjustmentRequest,
         current_user: dict,
     ) -> DirectRequest:
-        """HU-37 CA-04: Registra ajuste aprobado con medio independiente solo para la diferencia."""
+        """HU-37 CA-04 + HU-36 CA-05: solo registra el medio de pago de la diferencia de un ajuste YA aprobado."""
         user_uid = current_user.get("uid") if isinstance(current_user, dict) else None
         if not user_uid:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
-        record = db.scalar(select(DirectRequest).where(DirectRequest.id == solicitud_id))
+        record = db.scalar(
+            select(DirectRequest).where(DirectRequest.id == solicitud_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
-        if user_uid not in (record.cliente_id, record.tecnico_id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No participas en este acuerdo.")
-        monto_ajuste_dec = Decimal(str(request.monto_ajuste)).quantize(Decimal("0.01"))
+        if user_uid != record.cliente_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Solo el cliente propietario define el medio de pago de la diferencia.")
+        adjustment = SqlAlchemyAdjustmentRepository().get(db, "DIRECTA", str(record.id))
+        if adjustment is not None:
+            if adjustment.estado != "APROBADO":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail="El ajuste debe ser aprobado por el cliente antes de registrar su medio de pago.")
+            diferencia = to_money(adjustment.diferencia)
+            if diferencia <= 0 or to_money(request.monto_ajuste) != diferencia:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail=f"El monto debe ser la diferencia aprobada (L. {diferencia}).")
+        monto_ajuste_dec = to_money(request.monto_ajuste)
+        base_dec = to_money(record.monto_base or 0)
         record.monto_ajuste = monto_ajuste_dec
         record.metodo_pago_ajuste = request.metodo_pago_ajuste.lower()
         record.referencia_pasarela_ajuste = request.referencia_pasarela_ajuste
-        base_dec = Decimal(str(record.monto_base or 0)).quantize(Decimal("0.01"))
-        record.monto_total = (base_dec + monto_ajuste_dec).quantize(Decimal("0.01"))
+        record.monto_total = to_money(base_dec + monto_ajuste_dec)
         db.commit()
         db.refresh(record)
         return record

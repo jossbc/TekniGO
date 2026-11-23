@@ -105,7 +105,11 @@ def transition_request(
         (mode, current, target, role) == ("ABIERTA", "CON OFERTAS", "PUBLICADA", "CLIENTE")
     )
     if target == "CANCELADA" and allowed is not None:
-        valid = role == "CLIENTE" or (mode == "DIRECTA" and current == "PENDIENTE" and role == "TECNICO")
+        technician_may_cancel = (
+            (mode == "DIRECTA" and current == "PENDIENTE")
+            or current in {"ACEPTADA", "EN PROCESO"}  # HU-36 CA-01/CA-03
+        )
+        valid = role == "CLIENTE" or (role == "TECNICO" and technician_may_cancel)
     if (current, target, role) == ("EN PROCESO", "COMPLETADA", "SISTEMA"):
         valid = True
     if current == "EN PROCESO" and target in {"COMPLETADA", "CANCELADA"} and role == "ADMIN":
