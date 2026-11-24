@@ -806,15 +806,19 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   </div>
                 )}
                 {normalizedState === "EN_PROCESO" && !req.incidencia_abierta && (
-                  <AdjustmentPanel
-                    user={user} solicitudId={req.id} rol="TECNICO" estado={req.estado}
-                    montoBase={String((req as any).desglose_medios?.monto_total ?? (req as any).monto_total ?? req.total_estimado)}
-                    onChanged={() => setRefreshTick((v) => v + 1)}
-                  />
+                  <div style={{ flexBasis: "100%", marginTop: "12px" }}>
+                    <AdjustmentPanel
+                      user={user} solicitudId={req.id} rol="TECNICO" estado={req.estado}
+                      montoBase={String((req as any).desglose_medios?.monto_total ?? (req as any).monto_total ?? req.total_estimado)}
+                      onChanged={() => setRefreshTick((v) => v + 1)}
+                    />
+                  </div>
                 )}
                 {normalizedState === "CANCELADA" && (
-                  <CancellationNotice user={user} solicitudId={req.id} rol="TECNICO"
-                    onChanged={() => setRefreshTick((v) => v + 1)} />
+                  <div style={{ flexBasis: "100%", marginTop: "12px" }}>
+                    <CancellationNotice user={user} solicitudId={req.id} rol="TECNICO"
+                      onChanged={() => setRefreshTick((v) => v + 1)} />
+                  </div>
                 )}
               </div>
             );

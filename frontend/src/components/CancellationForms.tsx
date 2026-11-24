@@ -50,13 +50,18 @@ export function CancelRequestModal({ isOpen, onClose, onDone, user, solicitudId,
             <p style={{ margin: 0 }}>Con 24 horas o más de anticipación no se registra falta; con menos, o por inasistencia, se registra un incumplimiento que podrás justificar.</p>
           )}
           {accepted && rol === "TECNICO" && (
-            <p style={{ margin: 0 }}>Cancelar un servicio ya aceptado registra un incumplimiento, salvo ajuste rechazado o inasistencia del cliente. Podrás justificarlo ante administración.</p>
+            <p style={{ margin: 0 }}>Cancelar un servicio ya aceptado registra un incumplimiento, salvo ajuste rechazado o inasistencia del cliente. Si adjuntas evidencia aquí, se enviará automáticamente como justificación a administración.</p>
           )}
           <p style={{ margin: "8px 0 0" }}>Si hubo pagos digitales, se iniciará la devolución del 100 % sin comisión.</p>
         </>
       }
       onSubmit={async ({ causa, motivo, evidencias }) => {
         const result = await cancelRequestApi(user, solicitudId, { causa: causa as CancellationCause, motivo, evidencias });
+        if (result.genera_incumplimiento && evidencias.length > 0 && result.responsable_rol === rol) {
+          await submitJustificationApi(user, solicitudId, { motivo, evidencias });
+          onDone("Solicitud cancelada y justificación enviada a administración con tu evidencia.");
+          return;
+        }
         onDone(result.genera_incumplimiento
           ? "Solicitud cancelada. Se registró un incumplimiento pendiente de justificación."
           : "Solicitud cancelada sin penalización.");
