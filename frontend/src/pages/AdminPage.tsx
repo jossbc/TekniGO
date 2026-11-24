@@ -8,6 +8,7 @@ import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
+import AdminCancellationJustifications from '../components/AdminCancellationJustifications'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -58,7 +59,14 @@ export default function AdminPage({ user }: { user: User }) {
               </div>
             </div>
 
-            {tab === 'dossiers' ? <DossierManager user={user} /> : <AdminIncidentsManager user={user} />}
+            {tab === 'dossiers' ? (
+              <DossierManager user={user} />
+            ) : (
+              <>
+                <AdminIncidentsManager user={user} />
+                <AdminCancellationJustifications user={user} />
+              </>
+            )}
           </>
         )}
       </main>
