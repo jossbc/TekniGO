@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { FolderOpen, ShieldAlert } from 'lucide-react'
+import { FolderOpen, Landmark, ShieldAlert, Wallet } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
@@ -8,6 +8,8 @@ import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
+import AdminSettlementsManager from '../components/AdminSettlementsManager'
+import AdminPayoutsManager from '../components/AdminPayoutsManager'
 import AdminCancellationJustifications from '../components/AdminCancellationJustifications'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
@@ -20,7 +22,7 @@ const labels: Record<string, string> = {
 
 export default function AdminPage({ user }: { user: User }) {
   const { state, retry } = useAccount(user)
-  const [tab, setTab] = useState<'dossiers' | 'incidents'>('dossiers')
+  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts'>('dossiers')
 
   return (
     <div className="site">
@@ -56,17 +58,39 @@ export default function AdminPage({ user }: { user: User }) {
                 >
                   <ShieldAlert size={16} /> Incidencias y moderación
                 </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'settlements' ? '' : 'button-outline'}
+                  aria-selected={tab === 'settlements'}
+                  onClick={() => setTab('settlements')}
+                >
+                  <Landmark size={16} /> Liquidaciones
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'payouts' ? '' : 'button-outline'}
+                  aria-selected={tab === 'payouts'}
+                  onClick={() => setTab('payouts')}
+                >
+                  <Wallet size={16} /> Desembolsos
+                </Button>
               </div>
             </div>
 
-            {tab === 'dossiers' ? (
-              <DossierManager user={user} />
-            ) : (
-              <>
-                <AdminIncidentsManager user={user} />
-                <AdminCancellationJustifications user={user} />
-              </>
-            )}
+          {tab === 'dossiers'
+            ? <DossierManager user={user} />
+            : tab === 'incidents'
+              ? (
+                <>
+                  <AdminIncidentsManager user={user} />
+                  <AdminCancellationJustifications user={user} />
+                </>
+              )
+              : tab === 'settlements'
+                ? <AdminSettlementsManager user={user} />
+                : <AdminPayoutsManager user={user} />}
           </>
         )}
       </main>

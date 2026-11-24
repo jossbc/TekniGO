@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column, Index
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, TypeDecorator, Uuid, func, Numeric, UniqueConstraint, JSON, Column, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -114,6 +114,8 @@ class TechnicianProfile(Base):
     motivo_restriccion: Mapped[str | None] = mapped_column(Text, nullable=True)
     suspendido: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     restriccion_financiera: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # HU-42 ST-04 (CA-04): contador de servicios en efectivo sin liquidar; se reinicia a 0 al liquidar totalmente.
+    servicios_efectivo_sin_liquidar: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     estado_certificacion: Mapped[str] = mapped_column(String(30), default="NO_CERTIFICADO", server_default="NO_CERTIFICADO")
     calificacion_promedio: Mapped[float | None] = mapped_column(Numeric(3, 2), nullable=True)
 
@@ -631,6 +633,346 @@ class IncidentTicketRecord(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+class CommissionSettlement(Base):
+    """HU-42: liquidación de comisiones con comprobante bancario privado y revisión administrativa."""
+
+    __tablename__ = "liquidaciones_comisiones"
+    __table_args__ = (
+        CheckConstraint(
+            "estado IN ('PENDIENTE', 'APROBADA', 'RECHAZADA', 'EN_CONCILIACION')",
+            name="ck_liquidacion_estado",
+        ),
+        CheckConstraint("importe_declarado > 0", name="ck_liquidacion_importe_declarado"),
+        CheckConstraint(
+            "importe_verificado IS NULL OR importe_verificado > 0",
+            name="ck_liquidacion_importe_verificado",
+        ),
+        CheckConstraint(
+            "importe_aplicado >= 0 AND importe_excedente >= 0",
+            name="ck_liquidacion_importes_no_negativos",
+        ),
+        CheckConstraint(
+            "estado = 'PENDIENTE' OR (revisado_por IS NOT NULL AND revisado_en IS NOT NULL)",
+            name="ck_liquidacion_revision_responsable",
+        ),
+        CheckConstraint(
+            "estado NOT IN ('APROBADA', 'EN_CONCILIACION') OR importe_verificado IS NOT NULL",
+            name="ck_liquidacion_importe_verificado_requerido",
+        ),
+        CheckConstraint(
+            "estado <> 'RECHAZADA' OR (observacion IS NOT NULL AND length(trim(observacion)) > 0)",
+            name="ck_liquidacion_rechazo_observacion",
+        ),
+        CheckConstraint("tamano_bytes > 0", name="ck_liquidacion_comprobante_tamano"),
+        # CA-06: referencia y comprobante consumidos por una liquidación activa no se reutilizan.
+        Index(
+            "uq_liquidaciones_referencia_activa",
+            "referencia_normalizada",
+            unique=True,
+            postgresql_where=text("estado <> 'RECHAZADA'"),
+            sqlite_where=text("estado <> 'RECHAZADA'"),
+        ),
+        Index(
+            "uq_liquidaciones_comprobante_activo",
+            "comprobante_sha256",
+            unique=True,
+            postgresql_where=text("estado <> 'RECHAZADA'"),
+            sqlite_where=text("estado <> 'RECHAZADA'"),
+        ),
+        Index("ix_liquidaciones_tecnico_estado", "tecnico_id", "estado"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    importe_declarado: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    referencia: Mapped[str] = mapped_column(String(64), nullable=False)
+    referencia_normalizada: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Comprobante privado y cifrado (ver storage.py); nunca se expone por URL pública.
+    ruta_privada: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    tamano_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    comprobante_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    # Revisión administrativa (CA-03)
+    importe_verificado: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    importe_aplicado: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0")
+    importe_excedente: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0")
+    observacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revisado_por: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
+    revisado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+
+class CommissionSettlementAudit(Base):
+    """HU-42 ST-04: registro inmutable de decisiones administrativas y efectos financieros."""
+
+    __tablename__ = "auditoria_liquidaciones_comisiones"
+    __table_args__ = (
+        CheckConstraint(
+            "accion IN ('APROBACION_TOTAL', 'APROBACION_PARCIAL', 'SOBREPAGO_CONCILIACION', 'RECHAZO')",
+            name="ck_auditoria_liquidacion_accion",
+        ),
+        CheckConstraint(
+            "deuda_anterior >= 0 AND deuda_posterior >= 0 AND importe_aplicado >= 0 AND importe_excedente >= 0",
+            name="ck_auditoria_liquidacion_importes",
+        ),
+        CheckConstraint(
+            "contador_anterior >= 0 AND contador_posterior >= 0",
+            name="ck_auditoria_liquidacion_contadores",
+        ),
+        Index("ix_auditoria_liquidaciones_liquidacion", "liquidacion_id"),
+        Index("ix_auditoria_liquidaciones_tecnico", "tecnico_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    liquidacion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("liquidaciones_comisiones.id"), nullable=False)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    accion: Mapped[str] = mapped_column(String(30), nullable=False)
+    estado_anterior: Mapped[str] = mapped_column(String(20), nullable=False)
+    estado_nuevo: Mapped[str] = mapped_column(String(20), nullable=False)
+    referencia: Mapped[str] = mapped_column(String(64), nullable=False)
+    importe_verificado: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    importe_aplicado: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0")
+    importe_excedente: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"), server_default="0")
+    deuda_anterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    deuda_posterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    contador_anterior: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    contador_posterior: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    restriccion_anterior: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    restriccion_posterior: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    observacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responsable_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+
+class TechnicianBankAccount(Base):
+    """HU-43 ST-01: cuenta bancaria personal privada del técnico (número cifrado en reposo)."""
+
+    __tablename__ = "cuentas_bancarias_tecnico"
+    __table_args__ = (
+        CheckConstraint("tipo_cuenta IN ('AHORRO', 'CHEQUES')", name="ck_cuenta_bancaria_tipo"),
+        CheckConstraint("length(trim(banco)) > 0", name="ck_cuenta_bancaria_banco"),
+        CheckConstraint("length(trim(titular_nombre)) > 0", name="ck_cuenta_bancaria_titular"),
+        CheckConstraint("length(ultimos_cuatro) = 4", name="ck_cuenta_bancaria_ultimos_cuatro"),
+        Index(
+            "uq_cuenta_bancaria_activa_tecnico",
+            "tecnico_id",
+            unique=True,
+            postgresql_where=text("activa = true"),
+            sqlite_where=text("activa = 1"),
+        ),
+        Index("ix_cuentas_bancarias_tecnico_id", "tecnico_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    banco: Mapped[str] = mapped_column(String(80), nullable=False)
+    tipo_cuenta: Mapped[str] = mapped_column(String(20), nullable=False)
+    titular_nombre: Mapped[str] = mapped_column(String(150), nullable=False)
+    # CA-07: número cifrado (base64 de payload autenticado); nunca en texto plano.
+    numero_cuenta_cifrado: Mapped[str] = mapped_column(Text, nullable=False)
+    ultimos_cuatro: Mapped[str] = mapped_column(String(4), nullable=False)
+    cuenta_enmascarada: Mapped[str] = mapped_column(String(32), nullable=False)
+    numero_cuenta_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    activa: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class PayoutOrder(Base):
+    """HU-43 ST-01: orden de desembolso con reserva de saldo y estados inmutables."""
+
+    __tablename__ = "ordenes_desembolso"
+    __table_args__ = (
+        CheckConstraint("estado IN ('PENDIENTE', 'PAGADA', 'RECHAZADA')", name="ck_desembolso_estado"),
+        CheckConstraint("importe > 0", name="ck_desembolso_importe"),
+        CheckConstraint("importe_reservado >= 0", name="ck_desembolso_importe_reservado"),
+        CheckConstraint("minimo_aplicado > 0", name="ck_desembolso_minimo_aplicado"),
+        # CA-03 / CA-05: PENDIENTE mantiene la reserva exacta; PAGADA o RECHAZADA la liberan (0.00).
+        CheckConstraint(
+            "(estado = 'PENDIENTE' AND importe_reservado = importe) OR (estado IN ('PAGADA', 'RECHAZADA') AND importe_reservado = 0)",
+            name="ck_desembolso_reserva_estado",
+        ),
+        # CA-04: estados finales requieren responsable y fecha.
+        CheckConstraint(
+            "estado = 'PENDIENTE' OR (revisado_por IS NOT NULL AND revisado_en IS NOT NULL)",
+            name="ck_desembolso_revision_responsable",
+        ),
+        # CA-04: confirmación exige referencia de transferencia; rechazo exige motivo.
+        CheckConstraint(
+            "estado <> 'PAGADA' OR (referencia_transferencia IS NOT NULL AND length(trim(referencia_transferencia)) > 0)",
+            name="ck_desembolso_pago_referencia",
+        ),
+        CheckConstraint(
+            "estado <> 'RECHAZADA' OR (motivo_rechazo IS NOT NULL AND length(trim(motivo_rechazo)) > 0)",
+            name="ck_desembolso_rechazo_motivo",
+        ),
+        # CA-06: una referencia de transferencia pagada no puede aplicarse dos veces.
+        Index(
+            "uq_desembolso_referencia_pagada",
+            "referencia_normalizada",
+            unique=True,
+            postgresql_where=text("estado = 'PAGADA' AND referencia_normalizada IS NOT NULL"),
+            sqlite_where=text("estado = 'PAGADA' AND referencia_normalizada IS NOT NULL"),
+        ),
+        Index("ix_desembolsos_tecnico_estado", "tecnico_id", "estado"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    cuenta_bancaria_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cuentas_bancarias_tecnico.id"), nullable=False)
+    importe: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    importe_reservado: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    minimo_aplicado: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    # Snapshot enmascarado de la cuenta destino (CA-07)
+    banco_snapshot: Mapped[str] = mapped_column(String(80), nullable=False)
+    tipo_cuenta_snapshot: Mapped[str] = mapped_column(String(20), nullable=False)
+    cuenta_enmascarada_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Revisión y confirmación administrativa (CA-04)
+    referencia_transferencia: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    referencia_normalizada: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    motivo_rechazo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revisado_por: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
+    revisado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+
+class PayoutOrderAudit(Base):
+    """HU-43 ST-04: registro inmutable de confirmaciones y rechazos de desembolsos."""
+
+    __tablename__ = "auditoria_desembolsos"
+    __table_args__ = (
+        CheckConstraint("accion IN ('CONFIRMACION_PAGO', 'RECHAZO')", name="ck_auditoria_desembolso_accion"),
+        CheckConstraint(
+            "importe > 0 AND saldo_contable_anterior >= 0 AND saldo_contable_posterior >= 0 "
+            "AND saldo_reservado_anterior >= 0 AND saldo_reservado_posterior >= 0 "
+            "AND saldo_libre_anterior >= 0 AND saldo_libre_posterior >= 0",
+            name="ck_auditoria_desembolso_saldos",
+        ),
+        Index("ix_auditoria_desembolsos_orden", "orden_id"),
+        Index("ix_auditoria_desembolsos_tecnico", "tecnico_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    orden_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ordenes_desembolso.id"), nullable=False)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    accion: Mapped[str] = mapped_column(String(30), nullable=False)
+    estado_anterior: Mapped[str] = mapped_column(String(20), nullable=False)
+    estado_nuevo: Mapped[str] = mapped_column(String(20), nullable=False)
+    importe: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    referencia_transferencia: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    motivo_rechazo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    saldo_contable_anterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_contable_posterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_reservado_anterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_reservado_posterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_libre_anterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_libre_posterior: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    responsable_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+
+class PayoutLedgerEntry(Base):
+    """HU-43 ST-05: movimientos inmutables e idempotentes del libro financiero de desembolsos."""
+
+    __tablename__ = "movimientos_libro_desembolsos"
+    __table_args__ = (
+        CheckConstraint(
+            "tipo_movimiento IN ('RESERVA_DESEMBOLSO', 'DEBITO_DESEMBOLSO', 'LIBERACION_RESERVA')",
+            name="ck_libro_desembolso_tipo",
+        ),
+        CheckConstraint(
+            "importe > 0 AND saldo_contable_resultante >= 0 AND saldo_reservado_resultante >= 0 AND saldo_libre_resultante >= 0",
+            name="ck_libro_desembolso_importes",
+        ),
+        Index("ix_libro_desembolsos_orden", "orden_id"),
+        Index("ix_libro_desembolsos_tecnico_tipo", "tecnico_id", "tipo_movimiento"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    clave_idempotencia: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    orden_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ordenes_desembolso.id"), nullable=False)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    tipo_movimiento: Mapped[str] = mapped_column(String(30), nullable=False)
+    moneda: Mapped[str] = mapped_column(String(3), nullable=False, default="HNL", server_default="HNL")
+    importe: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    referencia_transferencia: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    saldo_contable_resultante: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_reservado_resultante: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    saldo_libre_resultante: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    responsable_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+
+class ContractChatMessage(Base):
+    """HU-48 ST-01: mensajes privados de chat operativo entre cliente propietario y técnico seleccionado."""
+
+    __tablename__ = "mensajes_chat_contratacion"
+    __table_args__ = (
+        CheckConstraint("modalidad IN ('DIRECTA', 'ABIERTA')", name="ck_chat_mensaje_modalidad"),
+        CheckConstraint("rol_autor IN ('CLIENTE', 'TECNICO')", name="ck_chat_mensaje_rol_autor"),
+        CheckConstraint("length(trim(solicitud_id)) > 0", name="ck_chat_mensaje_solicitud"),
+        CheckConstraint("length(trim(contenido)) > 0", name="ck_chat_mensaje_contenido"),
+        CheckConstraint(
+            "client_message_id IS NULL OR length(trim(client_message_id)) > 0",
+            name="ck_chat_mensaje_client_id",
+        ),
+        Index(
+            "ix_chat_mensajes_conversacion_orden",
+            "modalidad",
+            "solicitud_id",
+            "creado_en",
+            "id",
+        ),
+        Index("ix_chat_mensajes_autor", "autor_id"),
+        Index(
+            "uq_chat_mensaje_cliente_idempotencia",
+            "modalidad",
+            "solicitud_id",
+            "autor_id",
+            "client_message_id",
+            unique=True,
+            postgresql_where=text("client_message_id IS NOT NULL"),
+            sqlite_where=text("client_message_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    modalidad: Mapped[str] = mapped_column(String(10), nullable=False)
+    solicitud_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    autor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    autor_uid: Mapped[str] = mapped_column(String(128), nullable=False)
+    rol_autor: Mapped[str] = mapped_column(String(20), nullable=False)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    client_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+    autor = relationship("User", foreign_keys=[autor_id])
+
 
 class RequestCancellation(Base):
     """HU-36 ST-01: auditoría de cancelación (autor, fecha, estado previo, evidencia, falta)."""

@@ -635,6 +635,9 @@ def _apply_resolution_effect(
             )
             db.commit()
             db.refresh(record)
+            from app.chat_realtime import notify_conversation_closed_sync
+
+            notify_conversation_closed_sync(modalidad, str(record.id), estado="COMPLETADA")
             return {"servicio_modificado": True, "nuevo_estado": "COMPLETADA"}
         except HTTPException:
             return {"servicio_modificado": False, "motivo": "No se pudo bloquear la solicitud para cierre"}
@@ -661,6 +664,9 @@ def _apply_resolution_effect(
             _save_tracking(record, reception)
             db.commit()
             db.refresh(record)
+            from app.chat_realtime import notify_conversation_closed_sync
+
+            notify_conversation_closed_sync(modalidad, str(record.id), estado="CANCELADA")
             return {"servicio_modificado": True, "nuevo_estado": "CANCELADA"}
         except HTTPException:
             return {"servicio_modificado": False, "motivo": "No se pudo bloquear la solicitud para cancelación"}
