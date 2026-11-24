@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.actors import require_admin, require_user
 from app.cancellation_evidence import EvidenceStore, get_evidence_store
 from app.cancellation_justification_service import (
-    JustificationDecision, resolve_justification, serialize_justification, submit_justification,
+    JustificationDecision, list_admin_justifications, resolve_justification, serialize_justification, submit_justification,
 )
 from app.cancellation_repository import (
     CancellationRepository, JustificationRepository,
@@ -118,6 +118,19 @@ def submit_justification_endpoint(
         cancellations=cancellations, justifications=justifications, evidence=evidence,
     )
 
+@router.get("/admin/cancellation-justifications")
+def list_admin_justifications_endpoint(
+    response: Response,
+    estado: str = "TODOS",
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    cancellations: CancellationRepository = Depends(get_cancellation_repo),
+    justifications: JustificationRepository = Depends(get_justification_repo),
+):
+    response.headers["Cache-Control"] = NO_STORE
+    return list_admin_justifications(
+        db, estado=estado, claims=claims, cancellations=cancellations, justifications=justifications,
+    )
 
 @router.post("/admin/cancellation-justifications/{justification_id}/resolve")
 def resolve_justification_endpoint(

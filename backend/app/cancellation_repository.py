@@ -31,6 +31,7 @@ class JustificationRepository(Protocol):
     def get(self, db: Session, justification_id: str) -> CancellationJustification | None: ...
     def get_by_cancellation(self, db: Session, cancellation_id: int) -> CancellationJustification | None: ...
     def add(self, db: Session, item: CancellationJustification) -> None: ...
+    def list_all(self, db: Session, *, estado: str | None = None) -> list[CancellationJustification]: ...
 
 
 class SqlAlchemyJustificationRepository:
@@ -41,6 +42,12 @@ class SqlAlchemyJustificationRepository:
         return db.scalar(select(CancellationJustification).where(
             CancellationJustification.cancelacion_id == cancellation_id,
         ))
+    
+    def list_all(self, db, *, estado=None):
+        query = select(CancellationJustification).order_by(CancellationJustification.enviada_en.desc())
+        if estado and estado.upper() != "TODOS":
+            query = query.where(CancellationJustification.estado == estado.upper())
+        return list(db.scalars(query).all())
 
     def add(self, db, item):
         db.add(item)
