@@ -1,4 +1,6 @@
 """HU-36: pruebas unitarias de cancelación, reapertura, ajuste único y evidencia privada."""
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +10,7 @@ import tempfile
 import unittest
 import uuid
 from unittest.mock import patch
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -43,15 +45,23 @@ from app.cancellation_repository import (
 )
 from app.cancellation_service import cancel_request
 from app.database import Base
-from app.models import DirectRequest,OpenRequest,Service, Specialty, User, UserRole
+from app.models import DirectRequest,OpenRequest,Service, Specialty, User, UserRole, PaymentRefund, RecidivismAlertEvent
 from app.reopen_service import reopen_cancelled_request
-from app.service_completion import has_pending_adjustment
+from app.service_completion import has_pending_adjustment, report_service_completion
 from app.cancellation_evidence import PrivateEvidenceStore
 from app.cancellation_policy import (
     CancellationCause as Cause,
     CancellationContext,
     CancellationNotAllowed,
     default_cancellation_policy,
+)
+from app.fault_recidivism import FaultComputationService, RecidivismOnCancellationObserver
+from app.request_states import start_request_service
+from app.reviews import CreateReviewSchema, create_service_review
+from app.service_reception import (
+    confirm_service_reception_by_client,
+    is_review_window_open,
+    run_scheduled_auto_completion,
 )
 from app.reopen_sources import default_reopen_sources
 from app.storage import PrivateDocumentStorage
@@ -652,6 +662,451 @@ class HU36ServiceWorkflowTests(unittest.TestCase):
         self.assertTrue(alert["alerta_administrativa_activa"])
         self.assertFalse(alert["suspension_automatica_aplicada"])
 
+class HU36St07BoundariesAndConcurrencyTests(unittest.TestCase):
+    """HU-36 ST-06 y ST-07: fronteras de 24h, ajuste único, estados finales, concurrencia con cierre y reincidencia."""
+
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(self.engine)
+        self.db = Session(self.engine)
+        self.addCleanup(self.engine.dispose)
+        self.addCleanup(self.db.close)
+
+        self.client = self._add_user("cli-st07", "Ana Cliente", "CLIENTE", "1")
+        self.tech = self._add_user("tech-st07", "Carlos Técnico", "TECNICO", "2")
+        self.admin = self._add_user("adm-st07", "Admin Moderador", "ADMIN", "9")
+
+        self.spec = Specialty(nombre="Plomería")
+        self.db.add(self.spec)
+        self.db.flush()
+        self.service = Service(
+            usuario_id=self.tech.id,
+            especialidad_id=self.spec.id,
+            nombre="Reparación de fuga",
+            descripcion="Servicio residencial",
+            tarifa_base=Decimal("500.00"),
+            unidad_cobro="POR_SERVICIO",
+            activo=True,
+        )
+        self.db.add(self.service)
+        self.db.commit()
+
+        self.c_policy = default_cancellation_policy()
+        self.a_policy = default_adjustment_policy()
+        self.c_repo = SqlAlchemyCancellationRepository()
+        self.a_repo = SqlAlchemyAdjustmentRepository()
+        self.j_repo = SqlAlchemyJustificationRepository()
+
+    def _add_user(self, uid: str, name: str, role: str, suffix: str) -> User:
+        user = User(
+            firebase_uid=uid,
+            correo=f"{uid}@example.com",
+            nombre_completo=name,
+            dni=f"080119970000{suffix}",
+            telefono=f"+5049700000{suffix}",
+            telefono_verificado=True,
+            estado_identidad="VERIFICADO",
+        )
+        self.db.add(user)
+        self.db.flush()
+        self.db.add(UserRole(usuario_id=user.id, rol=role))
+        self.db.flush()
+        return user
+
+    def _add_req(
+        self,
+        *,
+        estado: str = "ACEPTADA",
+        scheduled_at: datetime | None = None,
+        metodo_pago: str = "efectivo",
+        ref: str | None = None,
+    ) -> DirectRequest:
+        record = DirectRequest(
+            id=str(uuid.uuid4()),
+            cliente_id=self.client.firebase_uid,
+            tecnico_id=self.tech.firebase_uid,
+            servicio_id=str(self.service.id),
+            municipio="Distrito Central",
+            sector="Col. Palmira",
+            direccion_exacta="Calle 1, casa 8",
+            fecha_hora=scheduled_at or (NOW + timedelta(hours=48)),
+            descripcion="Reparación urgente en cocina",
+            cantidad=Decimal("1.00"),
+            tarifa_aplicada=Decimal("500.00"),
+            unidad_cobro="POR_SERVICIO",
+            monto_base=Decimal("500.00"),
+            metodo_pago=metodo_pago,
+            referencia_pasarela=ref,
+            estado=estado,
+            creada_en=NOW - timedelta(hours=2),
+        )
+        self.db.add(record)
+        self.db.commit()
+        return record
+
+    def test_st07_24h_boundaries_end_to_end(self):
+        """CA-02: fronteras exactas de 24h (24h+1s y 24h00m00s sin falta; 23h59m59s con falta; pre-aceptación sin falta)."""
+        cases = (
+            ("PENDIENTE", NOW + timedelta(minutes=30), False),
+            ("ACEPTADA", NOW + timedelta(hours=24, seconds=1), False),
+            ("ACEPTADA", NOW + timedelta(hours=24), False),
+            ("ACEPTADA", NOW + timedelta(hours=24) - timedelta(seconds=1), True),
+        )
+        for estado, scheduled_at, expected_fault in cases:
+            with self.subTest(estado=estado, delta=scheduled_at - NOW):
+                record = self._add_req(estado=estado, scheduled_at=scheduled_at)
+                result = cancel_request(
+                    self.db, record.id,
+                    causa=Cause.VOLUNTARIA,
+                    motivo="Cambio de agenda del cliente.",
+                    evidencias=[],
+                    claims={"uid": self.client.firebase_uid},
+                    policy=self.c_policy,
+                    repository=self.c_repo,
+                    now=NOW,
+                )
+                self.assertEqual(result["genera_incumplimiento"], expected_fault)
+
+    def test_st07_single_adjustment_blocks_second_attempt_in_all_states_and_under_incident(self):
+        """CA-04: rechaza segundo ajuste estando PENDIENTE o tras APROBADO, y bloquea si existe incidencia abierta."""
+        r1 = self._add_req(estado="EN PROCESO")
+        request_adjustment(
+            self.db, r1.id,
+            motivo="Repuesto extra necesario en sitio.",
+            monto_base=Decimal("500.00"),
+            nuevo_total=Decimal("600.00"),
+            claims={"uid": self.tech.firebase_uid},
+            policy=self.a_policy,
+            repository=self.a_repo,
+            now=NOW,
+        )
+        with self.assertRaises(HTTPException) as err_pending:
+            request_adjustment(
+                self.db, r1.id,
+                motivo="Segundo intento mientras está pendiente.",
+                monto_base=Decimal("500.00"),
+                nuevo_total=Decimal("620.00"),
+                claims={"uid": self.tech.firebase_uid},
+                policy=self.a_policy,
+                repository=self.a_repo,
+                now=NOW,
+            )
+        self.assertEqual(err_pending.exception.status_code, 409)
+
+        respond_adjustment(
+            self.db, r1.id,
+            decision=AdjustmentDecision.APROBAR,
+            comentario="De acuerdo",
+            claims={"uid": self.client.firebase_uid},
+            repository=self.a_repo,
+            now=NOW,
+        )
+        with self.assertRaises(HTTPException) as err_approved:
+            request_adjustment(
+                self.db, r1.id,
+                motivo="Segundo intento tras aprobación.",
+                monto_base=Decimal("600.00"),
+                nuevo_total=Decimal("700.00"),
+                claims={"uid": self.tech.firebase_uid},
+                policy=self.a_policy,
+                repository=self.a_repo,
+                now=NOW,
+            )
+        self.assertEqual(err_approved.exception.status_code, 409)
+
+        r2 = self._add_req(estado="EN PROCESO")
+        r2.seguimiento_recepcion = {"incidencia_abierta": True}
+        self.db.commit()
+        with self.assertRaises(HTTPException) as err_incident:
+            request_adjustment(
+                self.db, r2.id,
+                motivo="Intento con incidencia abierta.",
+                monto_base=Decimal("500.00"),
+                nuevo_total=Decimal("550.00"),
+                claims={"uid": self.tech.firebase_uid},
+                policy=self.a_policy,
+                repository=self.a_repo,
+                now=NOW,
+            )
+        self.assertEqual(err_incident.exception.status_code, 409)
+
+    def test_st07_final_states_are_immutable_and_cancellation_never_enables_reviews(self):
+        """CA-01 y CA-10: COMPLETADA no se cancela; CANCELADA es final y nunca habilita reseñas."""
+        done = self._add_req(estado="COMPLETADA")
+        with self.assertRaises(HTTPException) as err_done:
+            cancel_request(
+                self.db, done.id,
+                causa=Cause.VOLUNTARIA,
+                motivo="Intento sobre completada.",
+                evidencias=[],
+                claims={"uid": self.client.firebase_uid},
+                policy=self.c_policy,
+                repository=self.c_repo,
+                now=NOW,
+            )
+        self.assertEqual(err_done.exception.status_code, 409)
+
+        cancelled = self._add_req(estado="EN PROCESO")
+        cancel_request(
+            self.db, cancelled.id,
+            causa=Cause.VOLUNTARIA,
+            motivo="Cancelación definitiva del servicio.",
+            evidencias=[],
+            claims={"uid": self.tech.firebase_uid},
+            policy=self.c_policy,
+            repository=self.c_repo,
+            observers=[RefundOnCancellationObserver()],
+            now=NOW,
+        )
+        self.db.refresh(cancelled)
+
+        with self.assertRaises(HTTPException) as err_start:
+            start_request_service(self.db, cancelled, self.tech.firebase_uid)
+        self.assertEqual(err_start.exception.status_code, 409)
+
+        with self.assertRaises(HTTPException) as err_adj:
+            request_adjustment(
+                self.db, cancelled.id,
+                motivo="Ajuste tras cancelar.",
+                monto_base=Decimal("500.00"),
+                nuevo_total=Decimal("550.00"),
+                claims={"uid": self.tech.firebase_uid},
+                policy=self.a_policy,
+                repository=self.a_repo,
+                now=NOW,
+            )
+        self.assertEqual(err_adj.exception.status_code, 409)
+
+        with self.assertRaises(HTTPException) as err_rep:
+            report_service_completion(cancelled.id, {"uid": self.tech.firebase_uid}, self.db, now=NOW)
+        self.assertEqual(err_rep.exception.status_code, 409)
+
+        with self.assertRaises(HTTPException) as err_conf:
+            confirm_service_reception_by_client(cancelled.id, {"uid": self.client.firebase_uid}, self.db, now=NOW)
+        self.assertEqual(err_conf.exception.status_code, 409)
+
+        self.assertFalse(is_review_window_open(cancelled.id, self.db, now=NOW))
+        with self.assertRaises(HTTPException) as err_rev:
+            create_service_review(
+                CreateReviewSchema(
+                    tipo_solicitud="DIRECTA",
+                    solicitud_id=cancelled.id,
+                    puntuacion=5,
+                    comentario="Intento de reseña sobre solicitud cancelada.",
+                ),
+                {"uid": self.client.firebase_uid},
+                self.db,
+            )
+        self.assertEqual(err_rev.exception.status_code, 400)
+
+    def test_st07_cancellation_racing_with_closure_and_auto_completion(self):
+        """ST-07: carrera entre cancelación y cierre (manual, automático 48h y concurrente en hilos)."""
+        # A. Cierre gana primero -> cancelación posterior devuelve 409 sin generar reembolso
+        r_close_wins = self._add_req(estado="EN PROCESO", metodo_pago="tarjeta", ref="TKGO-GW-RACE-1")
+        report_service_completion(r_close_wins.id, {"uid": self.tech.firebase_uid}, self.db, now=NOW)
+        confirm_service_reception_by_client(
+            r_close_wins.id, {"uid": self.client.firebase_uid}, self.db, now=NOW + timedelta(hours=1),
+        )
+        with self.assertRaises(HTTPException) as err_late_cancel:
+            cancel_request(
+                self.db, r_close_wins.id,
+                causa=Cause.VOLUNTARIA,
+                motivo="Intento tardío tras cierre.",
+                evidencias=[],
+                claims={"uid": self.client.firebase_uid},
+                policy=self.c_policy,
+                repository=self.c_repo,
+                observers=[RefundOnCancellationObserver()],
+                now=NOW + timedelta(hours=1),
+            )
+        self.assertEqual(err_late_cancel.exception.status_code, 409)
+        self.assertIsNone(self.c_repo.get(self.db, "DIRECTA", r_close_wins.id))
+        self.assertIsNone(self.db.scalar(select(PaymentRefund).where(PaymentRefund.solicitud_id == r_close_wins.id)))
+
+        # B. Cancelación gana primero -> confirmación manual da 409 y cierre automático 48h la ignora
+        r_cancel_wins = self._add_req(estado="EN PROCESO", metodo_pago="tarjeta", ref="TKGO-GW-RACE-2")
+        report_service_completion(r_cancel_wins.id, {"uid": self.tech.firebase_uid}, self.db, now=NOW)
+        cancel_request(
+            self.db, r_cancel_wins.id,
+            causa=Cause.VOLUNTARIA,
+            motivo="Cliente cancela antes de confirmar.",
+            evidencias=[],
+            claims={"uid": self.client.firebase_uid},
+            policy=self.c_policy,
+            repository=self.c_repo,
+            observers=[RefundOnCancellationObserver()],
+            now=NOW + timedelta(hours=2),
+        )
+        with self.assertRaises(HTTPException) as err_late_confirm:
+            confirm_service_reception_by_client(
+                r_cancel_wins.id, {"uid": self.client.firebase_uid}, self.db, now=NOW + timedelta(hours=2),
+            )
+        self.assertEqual(err_late_confirm.exception.status_code, 409)
+        auto = run_scheduled_auto_completion(self.db, now=NOW + timedelta(hours=50))
+        self.assertNotIn(r_cancel_wins.id, auto["solicitudes_completadas"])
+        self.db.refresh(r_cancel_wins)
+        self.assertEqual(r_cancel_wins.estado, "CANCELADA")
+        self.assertFalse(is_review_window_open(r_cancel_wins.id, self.db, now=NOW + timedelta(hours=50)))
+
+        # C. Carrera real en hilos paralelos con sesiones separadas (simula bloqueo FOR UPDATE de PostgreSQL)
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "race.db"
+            race_engine = create_engine(
+                f"sqlite:///{db_path}",
+                connect_args={"check_same_thread": False, "timeout": 15},
+            )
+            try:
+                Base.metadata.create_all(race_engine)
+                with Session(race_engine) as s:
+                    cli = User(
+                        firebase_uid="cli-race", correo="cli-race@example.com", nombre_completo="Cliente Carrera",
+                        dni="0801199800001", telefono="+50498000001",
+                        telefono_verificado=True, estado_identidad="VERIFICADO",
+                    )
+                    tech = User(
+                        firebase_uid="tech-race", correo="tech-race@example.com", nombre_completo="Técnico Carrera",
+                        dni="0801199800002", telefono="+50498000002",
+                        telefono_verificado=True, estado_identidad="VERIFICADO",
+                    )
+                    s.add_all([cli, tech])
+                    s.flush()
+                    s.add_all([UserRole(usuario_id=cli.id, rol="CLIENTE"), UserRole(usuario_id=tech.id, rol="TECNICO")])
+                    spec = Specialty(nombre="Plomería")
+                    s.add(spec)
+                    s.flush()
+                    svc = Service(
+                        usuario_id=tech.id, especialidad_id=spec.id, nombre="Fuga", descripcion="Desc",
+                        tarifa_base=Decimal("500.00"), unidad_cobro="POR_SERVICIO", activo=True,
+                    )
+                    s.add(svc)
+                    s.flush()
+                    rec = DirectRequest(
+                        id=str(uuid.uuid4()), cliente_id=cli.firebase_uid, tecnico_id=tech.firebase_uid,
+                        servicio_id=str(svc.id), municipio="Distrito Central", sector="Palmira",
+                        direccion_exacta="Calle 1", fecha_hora=NOW + timedelta(hours=48),
+                        descripcion="Trabajo concurrente", cantidad=Decimal("1.00"),
+                        tarifa_aplicada=Decimal("500.00"), unidad_cobro="POR_SERVICIO",
+                        monto_base=Decimal("500.00"), metodo_pago="tarjeta",
+                        referencia_pasarela="TKGO-GW-CONC", estado="EN PROCESO",
+                        creada_en=NOW - timedelta(hours=2),
+                    )
+                    s.add(rec)
+                    s.commit()
+                    rid = rec.id
+                    report_service_completion(rid, {"uid": tech.firebase_uid}, s, now=NOW)
+
+                row_lock = threading.Lock()
+                barrier = threading.Barrier(2)
+
+                def try_cancel():
+                    barrier.wait()
+                    with row_lock, Session(race_engine) as s:
+                        try:
+                            cancel_request(
+                                s, rid, causa=Cause.VOLUNTARIA, motivo="Cancelación concurrente.",
+                                evidencias=[], claims={"uid": "cli-race"},
+                                policy=self.c_policy, repository=self.c_repo,
+                                observers=[RefundOnCancellationObserver()], now=NOW + timedelta(minutes=5),
+                            )
+                            return "CANCELLED"
+                        except HTTPException as exc:
+                            return f"REJECTED:{exc.status_code}"
+
+                def try_confirm():
+                    barrier.wait()
+                    with row_lock, Session(race_engine) as s:
+                        try:
+                            confirm_service_reception_by_client(
+                                rid, {"uid": "cli-race"}, s, now=NOW + timedelta(minutes=5),
+                            )
+                            return "COMPLETED"
+                        except HTTPException as exc:
+                            return f"REJECTED:{exc.status_code}"
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    f1 = pool.submit(try_cancel)
+                    f2 = pool.submit(try_confirm)
+                    outcomes = {f1.result(), f2.result()}
+
+                self.assertEqual(len(outcomes), 2)
+                self.assertIn("REJECTED:409", outcomes)
+
+                with Session(race_engine) as verify_db:
+                    final_rec = verify_db.get(DirectRequest, rid)
+                    canc_row = self.c_repo.get(verify_db, "DIRECTA", rid)
+                    if final_rec.estado == "CANCELADA":
+                        self.assertIsNotNone(canc_row)
+                        self.assertFalse(is_review_window_open(rid, verify_db, now=NOW + timedelta(minutes=10)))
+                    else:
+                        self.assertEqual(final_rec.estado, "COMPLETADA")
+                        self.assertIsNone(canc_row)
+            finally:
+                race_engine.dispose()
+
+    def test_st06_fault_computation_and_idempotent_third_recidivism_event(self):
+        """ST-06 (CA-09, CA-10): cómputo de faltas, evento único en 3.ª falta e invalidación al aprobar justificaciones."""
+        service = FaultComputationService()
+        observers = [RefundOnCancellationObserver(), RecidivismOnCancellationObserver(service)]
+        ids = []
+        for idx in range(4):
+            record = self._add_req(estado="ACEPTADA", scheduled_at=NOW + timedelta(hours=5))
+            ids.append(record.id)
+            cancel_request(
+                self.db, record.id,
+                causa=Cause.VOLUNTARIA,
+                motivo=f"Falta técnica #{idx + 1}.",
+                evidencias=[],
+                claims={"uid": self.tech.firebase_uid},
+                policy=self.c_policy,
+                repository=self.c_repo,
+                observers=observers,
+                now=NOW + timedelta(minutes=idx),
+            )
+            if idx < 2:
+                self.assertEqual(len(self.db.scalars(select(RecidivismAlertEvent)).all()), 0)
+
+        events = list(
+            self.db.scalars(
+                select(RecidivismAlertEvent).where(RecidivismAlertEvent.usuario_uid == self.tech.firebase_uid)
+            ).all()
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].estado, "PENDIENTE_DECISION_HU52")
+        self.assertEqual(events[0].total_faltas_computadas, 4)
+        self.assertTrue(events[0].requiere_decision_hu52)
+        self.assertFalse(events[0].suspension_automatica_aplicada)
+
+        for req_id in ids[:2]:
+            just = submit_justification(
+                self.db, req_id,
+                motivo="Comprobante válido de fuerza mayor.",
+                evidencias=[],
+                claims={"uid": self.tech.firebase_uid},
+                cancellations=self.c_repo,
+                justifications=self.j_repo,
+                evidence=PrivateEvidenceStore(),
+                now=NOW + timedelta(hours=1),
+            )
+            resolve_justification(
+                self.db, just["id"],
+                decision=JustificationDecision.APROBAR,
+                observaciones="Justificación aprobada con respaldo.",
+                claims={"uid": self.admin.firebase_uid},
+                cancellations=self.c_repo,
+                justifications=self.j_repo,
+                now=NOW + timedelta(hours=2),
+            )
+
+        summary = service.compute_summary(self.db, self.tech.firebase_uid)
+        self.assertEqual(summary["total_faltas_no_justificadas"], 2)
+        self.assertEqual(summary["total_faltas_excluidas_justificadas"], 2)
+        self.assertFalse(summary["alerta_tercera_reincidencia_activa"])
+        self.db.refresh(events[0])
+        self.assertEqual(events[0].estado, "INVALIDADO_POR_JUSTIFICACION")
 
 if __name__ == "__main__":
     unittest.main()
