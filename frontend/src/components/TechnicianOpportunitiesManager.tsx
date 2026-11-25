@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
+import { subscribeProposalLiveUpdate } from "../lib/notifications";
 import { formatLempiras, formatRequestStateLabel } from "../lib/clientRequests";
 import {
   acceptPublishedBudgetApi,
@@ -255,6 +256,15 @@ export default function TechnicianOpportunitiesManager({
       active = false;
     };
   }, [user, selectedId, refreshTick]);
+
+  // HU-47 (CA-05): Refrescar oportunidades y propuestas cuando llegue aviso en vivo
+  useEffect(
+    () =>
+      subscribeProposalLiveUpdate(() => {
+        setRefreshTick((v) => v + 1);
+      }),
+    [],
+  );
 
   function openDetail(id: string) {
     setListNotice("");

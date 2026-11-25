@@ -16,6 +16,7 @@ from app.financial_settlement import (
     register_complementary_payment,
 )
 from app.models import ServiceAdjustment, User, ensure_utc_datetime, format_tegucigalpa_iso
+from app.notifications_events import notify_adjustment_requested, notify_adjustment_responded
 from app.request_states import state_key
 from app.service_reception import _find_locked_request
 from app.service_completion import has_active_incident
@@ -110,6 +111,8 @@ def request_adjustment(
         estado="PENDIENTE", solicitado_en=ensure_utc_datetime(now or datetime.now(timezone.utc)),
     )
     repository.add(db, adjustment)
+    db.flush()
+    notify_adjustment_requested(db, record, adjustment, now=adjustment.solicitado_en)
     db.commit()
     return serialize_adjustment(adjustment)
 
@@ -168,6 +171,13 @@ def respond_adjustment(
                 )
     for observer in observers:
         observer.on_resolved(db, record, adjustment)
+    notify_adjustment_responded(
+        db,
+        record,
+        adjustment,
+        approved=(target == "APROBADO"),
+        now=adjustment.respondido_en,
+    )
     db.commit()
     data = serialize_adjustment(adjustment)
     rate = configured_commission_rate(db)

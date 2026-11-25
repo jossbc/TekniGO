@@ -34,6 +34,11 @@ from app.models import (
     ensure_utc_datetime,
     format_tegucigalpa_iso,
 )
+from app.notifications_events import (
+    notify_open_request_award,
+    notify_open_request_proposal,
+    notify_open_request_proposal_rejected,
+)
 from app.permissions import require_enabled_client
 from app.request_states import CONTACT_STATES, record_creation, request_timeline, start_request_service, state_key, transition_request
 from app.security import get_current_user
@@ -1539,6 +1544,8 @@ def accept_published_budget_for_open_request(
         transition_request(db, record, "CON OFERTAS", role="TECNICO", uid=user.firebase_uid, now=reference_now)
 
     try:
+        db.flush()
+        notify_open_request_proposal(db, record, proposal, now=reference_now)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -1752,6 +1759,8 @@ def submit_counter_offer_for_open_request(
     record.tecnico_id = None
 
     try:
+        db.flush()
+        notify_open_request_proposal(db, record, proposal, now=reference_now)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -2087,6 +2096,7 @@ def reject_open_request_proposal_by_owner(
 
     if not active_count and state_key == "CON_OFERTAS":
         transition_request(db, record, "PUBLICADA", role="CLIENTE", uid=uid, now=reference_now)
+    notify_open_request_proposal_rejected(db, record, proposal, now=reference_now)
     db.commit()
     db.refresh(record)
     db.refresh(proposal)
@@ -2717,6 +2727,7 @@ def award_open_request_proposal_by_owner(
                 other_prop.justificacion = f"{other_prop.justificacion} | {motivo_cierre}"
             discarded_proposals.append(other_prop)
 
+    notify_open_request_award(db, record, proposal, discarded_proposals, now=reference_now)
     db.commit()
     db.refresh(record)
     db.refresh(proposal)

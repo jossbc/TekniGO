@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 from app import models
 from app.database import get_db
 from app.models import DirectRequest, OpenRequest, User
+from app.notifications_events import (
+    notify_incident_opened,
+    notify_incident_resolved,
+    notify_service_auto_completed,
+    notify_service_reception_confirmed,
+)
 from app.request_states import transition_request
 from app.security import get_current_user
 
@@ -334,6 +340,7 @@ def confirm_service_reception_by_client(
         autor_cierre="CLIENTE",
         closed_at=closed_at,
     )
+    notify_service_reception_confirmed(db, record, modalidad=modalidad, now=closed_at)
 
     db.commit()
     return {
@@ -508,6 +515,7 @@ def run_scheduled_auto_completion(
             autor_cierre="SISTEMA",
             closed_at=eval_now,
         )
+        notify_service_auto_completed(db, record, modalidad=modalidad, now=eval_now)
         db.commit()
         completed_ids.append(solicitud_id)
 
@@ -701,6 +709,15 @@ def open_service_incident_by_client(
         ],
         "resolucion_final": None,
     }
+    notify_incident_opened(
+        db,
+        solicitud_id=str(record.id),
+        modalidad=modalidad,
+        ticket_id=ticket_id,
+        counterpart_uid=getattr(record, "tecnico_id", None),
+        counterpart_role="TECNICO",
+        now=eval_now,
+    )
     _persist_ticket_to_db(db, ticket_data)
     _INCIDENT_TICKETS[ticket_id] = ticket_data
     if str(record.id) not in _TICKETS_BY_SERVICE:
@@ -824,6 +841,16 @@ def resolve_service_incident_by_admin(
             autor_cierre="ADMIN",
             closed_at=eval_now,
         )
+        notify_incident_resolved(
+            db,
+            solicitud_id=str(record.id),
+            modalidad=modalidad,
+            cliente_uid=getattr(record, "cliente_id", None),
+            tecnico_uid=getattr(record, "tecnico_id", None),
+            decision=decision_norm,
+            resolution_key=str(incident.get("incidencia_id") or decision_norm),
+            now=eval_now,
+        )
         db.commit()
         return {
             "mensaje": "Incidencia resuelta por administración: el servicio ha pasado a Completada.",
@@ -855,6 +882,16 @@ def resolve_service_incident_by_admin(
             "resenas_habilitadas": False,
         }
         _save_tracking(record, updated_tracking)
+        notify_incident_resolved(
+            db,
+            solicitud_id=str(record.id),
+            modalidad=modalidad,
+            cliente_uid=getattr(record, "cliente_id", None),
+            tecnico_uid=getattr(record, "tecnico_id", None),
+            decision=decision_norm,
+            resolution_key=str(incident.get("incidencia_id") or decision_norm),
+            now=eval_now,
+        )
         db.commit()
         return {
             "mensaje": "Incidencia resuelta por administración: el servicio fue cancelado sin liberación de fondos.",
@@ -877,6 +914,16 @@ def resolve_service_incident_by_admin(
         "incidencia": incident,
     }
     _save_tracking(record, updated_tracking)
+    notify_incident_resolved(
+        db,
+        solicitud_id=str(record.id),
+        modalidad=modalidad,
+        cliente_uid=getattr(record, "cliente_id", None),
+        tecnico_uid=getattr(record, "tecnico_id", None),
+        decision=decision_norm,
+        resolution_key=str(incident.get("incidencia_id") or decision_norm),
+        now=eval_now,
+    )
     db.commit()
     return {
         "mensaje": "Incidencia desbloqueada por administración. El servicio puede ser confirmado.",

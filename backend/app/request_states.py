@@ -6,6 +6,7 @@ from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.models import DirectRequest, OpenRequest, RequestStateEvent, User
+from app.notifications_events import notify_service_started
 
 Request = DirectRequest | OpenRequest
 INITIAL = {"DIRECTA": "PENDIENTE", "ABIERTA": "PUBLICADA"}
@@ -162,6 +163,8 @@ def start_request_service(db: Session, record: Request, uid: str) -> None:
     if state_key(record.metodo_pago or "") == "TARJETA" and not record.referencia_pasarela:
         raise HTTPException(409, "El cobro con tarjeta debe estar confirmado antes de iniciar el servicio.")
     transition_request(db, record, "EN PROCESO", role="TECNICO", uid=uid)
+    modalidad = "DIRECTA" if isinstance(record, DirectRequest) else "ABIERTA"
+    notify_service_started(db, record, modalidad=modalidad)
     db.commit()
 
 

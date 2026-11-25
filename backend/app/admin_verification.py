@@ -12,6 +12,7 @@ from app.database import get_db
 from app.identity_documents import _require_admin, _serialize_doc
 from app.identity_processing import IdentityProcessingRetry, process_current_identity
 from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile, TradeCertificate, User, UserRole
+from app.notifications_events import notify_operational_restriction, notify_verification_decision
 from app.security import get_current_user
 from app.technician_activation import ANTECEDENTES_TYPES, IDENTITY_BASIC_TYPES, compute_document_expiration, sync_technician_verification_state
 
@@ -214,6 +215,58 @@ def apply_technician_review(usuario_id: uuid.UUID, payload: AdminVerificationRev
                        "resultado_automatico_id": str(processing.id) if processing else None,
                        "revision_manual_de_rechazo": bool(processing and processing.estado == "RECHAZADO")},
         ))
+    decisions_sig = ",".join(
+        f"{str(item.documento_id)[:8]}:{item.estado}"
+        for item in sorted(payload.documentos, key=lambda entry: str(entry.documento_id))
+    )
+    recipient_role = "TECNICO" if technician is not None else "CLIENTE"
+    is_complete_verified = user.estado_identidad == "VERIFICADO" and (
+        technician is None or technician.estado_verificacion == "VERIFICADO"
+    )
+    any_rejected_or_invalid = (
+        any(item.estado in ("RECHAZADO", "VENCIDO", "INVALIDADO") for item in payload.documentos)
+        or user.estado_identidad == "RECHAZADO"
+        or (technician is not None and technician.estado_verificacion in ("RECHAZADO", "RESTRINGIDO"))
+    )
+    any_identity_approved = any(
+        current_docs[item.documento_id].tipo in IDENTITY_BASIC_TYPES and item.estado == "APROBADO"
+        for item in payload.documentos
+    )
+    if is_complete_verified:
+        notify_verification_decision(
+            db,
+            user,
+            role=recipient_role,
+            outcome="VERIFICADO",
+            cycle_key=f"admin:{request.id}:{decisions_sig}",
+        )
+    elif any_rejected_or_invalid:
+        notify_verification_decision(
+            db,
+            user,
+            role=recipient_role,
+            outcome="RECHAZADO",
+            cycle_key=f"admin:{request.id}:{decisions_sig}",
+        )
+        if technician is not None and (
+            technician.estado_verificacion == "RESTRINGIDO"
+            or any(item.estado in ("VENCIDO", "INVALIDADO") for item in payload.documentos)
+        ):
+            notify_operational_restriction(
+                db,
+                user.id,
+                motivo_codigo="DOCUMENTOS_VENCIDOS",
+                cycle_key=f"admin:{request.id}:{decisions_sig}",
+                role="TECNICO",
+            )
+    elif any_identity_approved and user.estado_identidad == "VERIFICADO":
+        notify_verification_decision(
+            db,
+            user,
+            role=recipient_role,
+            outcome="DOCUMENTACION_APROBADA",
+            cycle_key=f"admin:{request.id}:{decisions_sig}",
+        )
     db.commit()
     return {"status": "success", **evaluation, "estado_identidad": user.estado_identidad,
             "revision_completa": user.estado_identidad == "VERIFICADO" and

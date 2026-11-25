@@ -2,6 +2,7 @@ import { ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, Banknote, Check, Chevr
 import { Link } from 'react-router-dom'
 import { Brand } from './components/ui'
 import AccountMenu from './components/AccountMenu'
+import NotificationTray from './components/NotificationTray'
 import technicianPhoto from './assets/technician.jpg'
 import './landing.css'
 
@@ -32,6 +33,7 @@ export default function LandingPage({ authenticated = false }: { authenticated?:
       <Brand />
       <div className="landing-header-actions">
         {!authenticated && <Link className="landing-login" to="/ingresar">Iniciar sesión</Link>}
+        {authenticated && <NotificationTray />}
         {authenticated ? <AccountMenu accountHref="/mi-cuenta" accountLabel="Mi cuenta" /> : <Link className="landing-button landing-button--small" to={clientPath}>{authenticated ? 'Ir a mi espacio' : 'Crear cuenta'}<ArrowUpRight size={16} aria-hidden="true" /></Link>}
       </div>
     </header>

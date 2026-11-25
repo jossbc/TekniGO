@@ -15,6 +15,7 @@ const devProxy = {
   '/requests': { target: backendTarget, changeOrigin: true },
   '/incident-tickets': { target: backendTarget, changeOrigin: true },
   '/service-requests': { target: backendTarget, changeOrigin: true },
+  '/notifications': { target: backendTarget, changeOrigin: true, ws: true },
   '/chat': { target: backendTarget, changeOrigin: true, ws: true },
   '/health': { target: backendTarget, changeOrigin: true },
 }

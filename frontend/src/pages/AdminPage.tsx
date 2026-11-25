@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import type { User } from 'firebase/auth'
 import { FolderOpen, Landmark, ShieldAlert, Wallet } from 'lucide-react'
 import Header from '../components/Header'
@@ -21,8 +22,16 @@ const labels: Record<string, string> = {
 }
 
 export default function AdminPage({ user }: { user: User }) {
+  const { search } = useLocation()
   const { state, retry } = useAccount(user)
   const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts'>('dossiers')
+
+  useEffect(() => {
+    const requested = new URLSearchParams(search).get('tab')
+    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts') {
+      setTab(requested)
+    }
+  }, [search])
 
   return (
     <div className="site">

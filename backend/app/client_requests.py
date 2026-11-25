@@ -13,6 +13,7 @@ from app import models
 from app.database import get_db
 from app.models import (
     DirectRequest,
+    OpenRequestProposal,
     Service,
     Specialty,
     TechnicianProfile,
@@ -20,6 +21,8 @@ from app.models import (
     ensure_utc_datetime,
     format_tegucigalpa_iso,
 )
+from app.notifications_events import enqueue_notification_event, notify_service_cancelled
+from app.notifications_templates import EVENT_SERVICIO_CANCELADO
 from app.request_states import client_actions, request_timeline, state_key, transition_request
 from app.security import get_current_user
 
@@ -515,6 +518,25 @@ def apply_client_request_action(
     if (record.seguimiento_recepcion or {}).get("incidencia_abierta"):
         raise HTTPException(409, "Una incidencia abierta requiere resolución administrativa.")
     transition_request(db, record, "CANCELADA", role="CLIENTE", uid=user.firebase_uid)
+    notify_service_cancelled(db, record, modalidad=modalidad, actor_role="CLIENTE")
+    if modalidad == "ABIERTA" and not getattr(record, "tecnico_id", None):
+        bidder_ids = list(
+            db.scalars(
+                select(OpenRequestProposal.tecnico_id).where(
+                    OpenRequestProposal.solicitud_id == str(record.id),
+                    OpenRequestProposal.activa.is_(True),
+                )
+            ).all()
+        )
+        targets = [(tid, "TECNICO") for tid in bidder_ids if tid]
+        if targets:
+            enqueue_notification_event(
+                db,
+                clave_evento=f"servicio_cancelado_licitacion:{record.id}",
+                tipo_evento=EVENT_SERVICIO_CANCELADO,
+                destinatarios=targets,
+                payload_seguro={"solicitud_id": str(record.id), "modalidad": "ABIERTA"},
+            )
     db.commit()
     db.refresh(record)
     return get_client_request_detail(solicitud_id, claims, db)
