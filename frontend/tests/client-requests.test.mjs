@@ -17,7 +17,7 @@ let mockRoles = ['CLIENTE']
 const result = await build({
   stdin: {
     contents: `
-      export { default as ClientRequestsManager } from './src/components/ClientRequestsManager'
+      export { default as ClientRequestsManager, resolveReviewButtonState } from './src/components/ClientRequestsManager'
       export { default as ClientRequestsPage } from './src/pages/ClientRequestsPage'
       export * from './src/lib/clientRequests'
     `,
@@ -396,4 +396,75 @@ test('HU-34 ST-03 (CA-02 & CA-03): EN_PROCESO request with reported completion s
   assert.ok(html.includes('Trabajo reportado como finalizado · Pendiente de recepción'))
   assert.ok(html.includes('Vencimiento de confirmación (48 h):'))
   assert.ok(html.includes('America/Tegucigalpa'))
+})
+
+test('EP-08 review button lifecycle renders active, disabled sent, and hidden closed states cleanly', () => {
+  const baseCompleted = {
+    modalidad: 'DIRECTA',
+    estado: 'COMPLETADA',
+    fecha_hora: '2026-11-12T15:00:00Z',
+    creada_en: '2026-11-10T10:00:00Z',
+    presupuesto: 500,
+    monto_base: 500,
+    cantidad: 1,
+    tarifa_aplicada: 500,
+    unidad_cobro: 'POR_SERVICIO',
+    metodo_pago: 'efectivo',
+    municipio: 'Distrito Central',
+    sector: 'Palmira',
+    direccion_exacta: 'Casa 1',
+    descripcion: 'Servicio finalizado',
+    servicio: { id: 'srv-1', nombre: 'Electricidad', especialidad_id: 'esp-1' },
+    tecnico: { usuario_id: 'tech-uuid-1', firebase_uid: 'tech-1', nombre_completo: 'Carlos Técnico' },
+  }
+
+  mockSelectedId = ''
+  mockDetail = null
+  mockDetailError = ''
+
+  // 1. Pendiente de calificar: botón activo Calificar técnico
+  mockPage = {
+    total: 1,
+    offset: 0,
+    limit: 10,
+    modalidad: 'TODOS',
+    estado: 'COMPLETADA',
+    solicitudes: [{ ...baseCompleted, id: 'req-rev-1', mi_resena_enviada: false, evaluacion_cerrada: false }],
+  }
+  const activeHtml = renderManager()
+  assert.ok(activeHtml.includes('>Calificar técnico<'))
+
+  // 2. Reseña enviada aún dentro de ventana de 48h: botón gris deshabilitado "Evaluación enviada"
+  mockPage = {
+    ...mockPage,
+    solicitudes: [{ ...baseCompleted, id: 'req-rev-2', mi_resena_enviada: true, evaluacion_cerrada: false }],
+  }
+  const sentHtml = renderManager()
+  assert.ok(sentHtml.includes('disabled=""') || sentHtml.includes('disabled'))
+  assert.ok(sentHtml.includes('>Evaluación enviada<'))
+  assert.ok(!sentHtml.includes('>Calificar técnico<'))
+
+  // 3. Evaluación cerrada (bilateral o publicada): botón completamente oculto
+  mockPage = {
+    ...mockPage,
+    solicitudes: [{ ...baseCompleted, id: 'req-rev-3', mi_resena_enviada: true, evaluacion_cerrada: true }],
+  }
+  const closedHtml = renderManager()
+  assert.ok(closedHtml.includes('>Ver detalle<'))
+  assert.ok(!closedHtml.includes('>Calificar técnico<'))
+  assert.ok(!closedHtml.includes('>Evaluación enviada<'))
+
+  // 4. Transición inmediata según respuesta `publicada` (Case-insensitive UUID + true/false)
+  const { resolveReviewButtonState } = module.exports
+  const upperUuid = '7A9EEB5B-06FF-4C9F-A0DA-45865114ECC6'
+  const lowerUuid = upperUuid.toLowerCase()
+  assert.equal(resolveReviewButtonState({ id: upperUuid }, {}), 'ACTIVE')
+  assert.equal(
+    resolveReviewButtonState({ id: upperUuid }, { [lowerUuid]: { sent: true, closed: false } }),
+    'SENT_DISABLED',
+  )
+  assert.equal(
+    resolveReviewButtonState({ id: upperUuid }, { [lowerUuid]: { sent: true, closed: true } }),
+    'HIDDEN',
+  )
 })

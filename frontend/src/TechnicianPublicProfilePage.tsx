@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import type { User } from "firebase/auth";
-import { Award, ShieldCheck, Star, ArrowLeft, Briefcase, Wrench, MapPin } from "lucide-react";
+import { Award, ShieldCheck, Star, ArrowLeft, Briefcase, Wrench, MapPin, MessageSquare, ThumbsUp } from "lucide-react";
 import { api, errorMessage } from "./lib/api";
 import type { CatalogTechnician } from "./components/TechnicianCard";
 import type { CoverageZone } from "./CoverageZoneSelector";
+import { formatReviewDate, type ServiceReview } from "./lib/reviews";
 import LoadingState from "./components/LoadingState";
 import { DirectRequestForm } from "./components/DirectRequestForm";
 
@@ -17,6 +18,8 @@ type PublicService = {
 type TechnicianProfileData = CatalogTechnician & {
   servicios: PublicService[];
   zonas_cobertura?: CoverageZone[];
+  total_resenas?: number;
+  resenas?: ServiceReview[];
 };
 
 export default function TechnicianPublicProfilePage({ user }: { user: User }) {
@@ -85,9 +88,32 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
           </div>
 
           <div style={{ textAlign: "right", background: "#f9fafb", padding: "1.5rem", borderRadius: "1rem" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.25rem", color: "#eab308", fontWeight: 700, fontSize: "1.25rem", marginBottom: "0.5rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.35rem", color: "#eab308", fontWeight: 700, fontSize: "1.25rem", marginBottom: "0.5rem" }}>
               <Star size={24} fill="currentColor" />
-              <span>{technician.calificacion_promedio == null ? "Sin calificaciones" : technician.calificacion_promedio.toFixed(1)}</span>
+              {technician.calificacion_promedio != null ? (
+                <span>
+                  {technician.calificacion_promedio.toFixed(1)}
+                  <span style={{ fontSize: "0.9rem", color: "#6b7280", fontWeight: 500, marginLeft: "6px" }}>
+                    ({technician.total_resenas || 0} {(technician.total_resenas || 0) === 1 ? "reseña" : "reseñas"})
+                  </span>
+                </span>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+                  <span style={{ fontSize: "1.1rem", color: "#4b5563" }}>Sin calificaciones</span>
+                  <span
+                    style={{
+                      background: "#eff6ff",
+                      color: "var(--blue)",
+                      fontSize: "0.78rem",
+                      padding: "2px 8px",
+                      borderRadius: "999px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Nuevo en la aplicación
+                  </span>
+                </div>
+              )}
             </div>
             <p style={{ margin: "0", color: "#6b7280", fontSize: "0.9rem" }}>Tarifas según el servicio</p>
           </div>
@@ -142,6 +168,99 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
             </div>
           ) : (
             <p style={{ color: "#6b7280", fontStyle: "italic" }}>Este técnico aún no ha detallado servicios específicos.</p>
+          )}
+        </section>
+
+        {/* Sección de Reseñas y Calificaciones (EP-08: HU-46) */}
+        <section style={{ borderTop: "1px solid #f3f4f6", paddingTop: "2.5rem", marginBottom: "3rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "1rem", marginBottom: "1.5rem" }}>
+            <h2 style={{ fontSize: "1.5rem", margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <MessageSquare size={24} color="#4b5563" /> Reseñas y calificaciones
+            </h2>
+            {technician.total_resenas ? (
+              <span style={{ fontWeight: 600, color: "#4b5563" }}>
+                {technician.total_resenas} {technician.total_resenas === 1 ? "evaluación verificada" : "evaluaciones verificadas"}
+              </span>
+            ) : null}
+          </div>
+
+          {technician.resenas && technician.resenas.length > 0 ? (
+            <div style={{ display: "grid", gap: "1.25rem" }}>
+              {technician.resenas.map((resena) => (
+                <article
+                  key={resena.id}
+                  style={{
+                    padding: "1.5rem",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "0.85rem",
+                    background: "#ffffff",
+                    boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.05)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: "8px" }}>
+                    <div>
+                      <strong style={{ fontSize: "1rem", color: "var(--ink)" }}>{resena.evaluador_nombre}</strong>
+                      <span style={{ marginLeft: "8px", fontSize: "0.85rem", color: "#6b7280" }}>
+                        · {formatReviewDate(resena.publicada_en || resena.fecha)}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "3px", color: "#eab308" }}>
+                      {[...Array(5)].map((_, i) => (
+                        <Star
+                          key={i}
+                          size={16}
+                          fill={i < resena.puntuacion ? "currentColor" : "none"}
+                          strokeWidth={i < resena.puntuacion ? 0 : 1.5}
+                          stroke="#d1d5db"
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {resena.aspectos_destacados && resena.aspectos_destacados.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.75rem" }}>
+                      {resena.aspectos_destacados.map((aspecto, idx) => (
+                        <span
+                          key={idx}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            background: "#f0fdf4",
+                            color: "#166534",
+                            border: "1px solid #bbf7d0",
+                            padding: "0.2rem 0.65rem",
+                            borderRadius: "999px",
+                            fontSize: "0.8rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          <ThumbsUp size={11} /> {aspecto}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <p style={{ margin: 0, color: "#374151", lineHeight: 1.6, fontSize: "0.95rem" }}>
+                    "{resena.comentario}"
+                  </p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: "2rem",
+                background: "#f9fafb",
+                borderRadius: "0.75rem",
+                textAlign: "center",
+                border: "1px dashed #d1d5db",
+              }}
+            >
+              <p style={{ margin: 0, color: "#6b7280", fontSize: "0.95rem", lineHeight: 1.6 }}>
+                Este profesional es nuevo en la plataforma y aún no cuenta con reseñas publicadas. Una vez que complete servicios y los clientes compartan su experiencia, sus calificaciones aparecerán aquí.
+              </p>
+            </div>
           )}
         </section>
 

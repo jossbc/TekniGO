@@ -30,6 +30,8 @@ export interface TechnicianDirectRequest {
     abierta_en_tegucigalpa?: string | null;
   } | null;
   reportante_rol?: string | null;
+  mi_resena_enviada?: boolean;
+  evaluacion_cerrada?: boolean;
 }
 
 export interface ReportServiceCompletionResponse {

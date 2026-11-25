@@ -2,7 +2,7 @@ import RequestTimeline from "./RequestTimeline";
 import { getOpportunityDetailApi, type TechnicianOpportunityItem } from "../lib/openRequests";
 import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
-import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, RefreshCw } from "lucide-react";
+import { CheckCircle2, CircleAlert, Clock3, XCircle, Calendar, Inbox, Check, X, RefreshCw, Star } from "lucide-react";
 import { errorMessage } from "../lib/api";
 import {
   acceptTechnicianDirectRequest,
@@ -17,6 +17,7 @@ import {
   type TechnicianDirectRequestDetail,
 } from "../lib/directRequests";
 import LoadingState from "./LoadingState";
+import ReviewModal from "./ReviewModal";
 import CancellationNotice from "./CancellationNotice";
 import AdjustmentPanel from "./AdjustmentPanel";
 import { CancelRequestModal } from "./CancellationForms";
@@ -83,6 +84,12 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
   const [startedRequestId, setStartedRequestId] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const [filter, setFilter] = useState<EstadoFilter>("TODOS");
+  const [ratingTarget, setRatingTarget] = useState<{
+    tipo_solicitud: "DIRECTA" | "ABIERTA";
+    solicitud_id: string;
+    cliente_nombre: string;
+  } | null>(null);
+  const [reviewedState, setReviewedState] = useState<Record<string, { sent: boolean; closed: boolean }>>({});
   const [reportIncidentSolicitudId, setReportIncidentSolicitudId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: string; estado: string } | null>(null);
   const [startConfirmationId, setStartConfirmationId] = useState<string | null>(null);
@@ -759,6 +766,66 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   </div>
                 )}
 
+                {(() => {
+                  if (normalizedState !== "COMPLETADA") {
+                    return null;
+                  }
+                  const normReqId = (req.id || "").trim().toLowerCase();
+                  const localReview = reviewedState[req.id] ?? reviewedState[normReqId];
+                  const evaluacionCerrada = Boolean(req.evaluacion_cerrada || localReview?.closed);
+                  if (evaluacionCerrada) {
+                    return null;
+                  }
+                  const miResenaEnviada = Boolean(req.mi_resena_enviada || localReview?.sent);
+                  return (
+                    <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                      {miResenaEnviada ? (
+                        <Button
+                          type="button"
+                          disabled
+                          style={{
+                            background: "#f3f4f6",
+                            color: "#6b7280",
+                            border: "1px solid #d1d5db",
+                            cursor: "not-allowed",
+                            opacity: 0.85,
+                            gap: "6px",
+                            minWidth: "140px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Star size={16} fill="none" />
+                          Evaluación enviada
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          onClick={() =>
+                            setRatingTarget({
+                              tipo_solicitud: modality,
+                              solicitud_id: req.id,
+                              cliente_nombre: req.cliente_nombre || "Cliente",
+                            })
+                          }
+                          style={{
+                            background: "#fefce8",
+                            color: "#854d0e",
+                            border: "1px solid #fef08a",
+                            gap: "6px",
+                            minWidth: "140px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Star size={16} fill="currentColor" />
+                          Calificar cliente
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado o incidencia desde En proceso */}
                 {normalizedState === "EN_PROCESO" && !isPendingReception && !req.incidencia_abierta && (
                   <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
@@ -825,6 +892,38 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
           })}
           
         </div>
+      )}
+
+      {ratingTarget && (
+        <ReviewModal
+          user={user}
+          tipo_solicitud={ratingTarget.tipo_solicitud}
+          solicitud_id={ratingTarget.solicitud_id}
+          evaluadoNombre={ratingTarget.cliente_nombre}
+          rolEvaluador="TECNICO"
+          onClose={() => setRatingTarget(null)}
+          onSuccess={(res) => {
+            const targetId = ratingTarget.solicitud_id;
+            const normTargetId = targetId.trim().toLowerCase();
+            const closedNow = Boolean(
+              res.publicada ?? res.publicada_inmediata ?? res.estado_publicacion === "PUBLICADA",
+            );
+            setReviewedState((prev) => ({
+              ...prev,
+              [targetId]: { sent: true, closed: closedNow },
+              [normTargetId]: { sent: true, closed: closedNow },
+            }));
+            setRequests((prev) =>
+              prev.map((item) =>
+                item.id.trim().toLowerCase() === normTargetId
+                  ? { ...item, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                  : item,
+              ),
+            );
+            setActionNotice(res.mensaje);
+            setRefreshTick((v) => v + 1);
+          }}
+        />
       )}
 
       {/* Paso 3.4: Modal de reporte e incidencias para el técnico montado a nivel de página (CA-01, CA-05) */}

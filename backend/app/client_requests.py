@@ -1,5 +1,5 @@
 """HU-25: Consulta paginada y seguimiento de solicitudes/contrataciones del cliente."""
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 import uuid
@@ -126,6 +126,7 @@ def _serialize_request_summary(
     modalidad: str,
     services_by_id: dict[str, Service],
     technicians_by_uid: dict[str, User],
+    review_flags: tuple[bool, bool] = (False, False),
 ) -> dict:
     raw_service_id = getattr(record, "servicio_id", None)
     service_key = str(raw_service_id) if raw_service_id is not None else ""
@@ -199,6 +200,8 @@ def _serialize_request_summary(
         }
         if tech_uid
         else None,
+        "mi_resena_enviada": bool(review_flags[0]) if estado_normalizado == "COMPLETADA" else False,
+        "evaluacion_cerrada": bool(review_flags[1]) if estado_normalizado == "COMPLETADA" else False,
     }
 
 
@@ -237,12 +240,21 @@ def list_client_requests(
 
         services_map = _resolve_service_map(db, {r.servicio_id for r in rows if r.servicio_id})
         tech_map = _resolve_technician_map(db, {r.tecnico_id for r in rows if r.tecnico_id})
+        from app.reviews import get_review_flags_map
+
+        completed_meta = [
+            ("DIRECTA", str(r.id))
+            for r in rows
+            if state_key(getattr(r, "estado", None) or "") == "COMPLETADA"
+        ]
+        review_flags_map = get_review_flags_map(db, completed_meta, viewer_role="CLIENTE")
         items = [
             _serialize_request_summary(
                 row,
                 modalidad="DIRECTA",
                 services_by_id=services_map,
                 technicians_by_uid=tech_map,
+                review_flags=review_flags_map.get(("DIRECTA", str(row.id)), (False, False)),
             )
             for row in rows
         ]
@@ -298,12 +310,21 @@ def list_client_requests(
         db,
         {getattr(r, "tecnico_id", None) for _, r in page_slice if getattr(r, "tecnico_id", None)},
     )
+    from app.reviews import get_review_flags_map
+
+    completed_meta = [
+        (mod, str(r.id))
+        for mod, r in page_slice
+        if state_key(getattr(r, "estado", None) or "") == "COMPLETADA"
+    ]
+    review_flags_map = get_review_flags_map(db, completed_meta, viewer_role="CLIENTE")
     items = [
         _serialize_request_summary(
             row,
             modalidad=mod,
             services_by_id=services_map,
             technicians_by_uid=tech_map,
+            review_flags=review_flags_map.get((mod, str(row.id)), (False, False)),
         )
         for mod, row in page_slice
     ]
@@ -389,23 +410,30 @@ def get_client_request_detail(
     services_map = _resolve_service_map(db, {raw_service_id} if raw_service_id else set())
     tech_uid = getattr(record, "tecnico_id", None)
     tech_map = _resolve_technician_map(db, {tech_uid} if tech_uid else set())
+    from app.reviews import get_request_review_flags, get_technician_reputation_stats
+
+    detail_review_flags = (
+        get_request_review_flags(db, modalidad, str(record.id), viewer_role="CLIENTE")
+        if state_key(getattr(record, "estado", None) or "") == "COMPLETADA"
+        else (False, False)
+    )
 
     summary = _serialize_request_summary(
         record,
         modalidad=modalidad,
         services_by_id=services_map,
         technicians_by_uid=tech_map,
+        review_flags=detail_review_flags,
     )
 
     if summary["tecnico"] is not None and tech_uid in tech_map:
         tech_user = tech_map[tech_uid]
         tech_profile = db.get(TechnicianProfile, tech_user.id)
+        avg_tech_rating, _ = get_technician_reputation_stats(tech_user.id, db)
         summary["tecnico"]["estado_verificacion"] = (
             tech_profile.estado_verificacion if tech_profile is not None else None
         )
-        summary["tecnico"]["calificacion_promedio"] = (
-            _to_float(tech_profile.calificacion_promedio) if tech_profile is not None else None
-        )
+        summary["tecnico"]["calificacion_promedio"] = avg_tech_rating
 
     summary["propuesta"] = {
         "servicio_id": summary["servicio"]["id"] if summary["servicio"] else None,
