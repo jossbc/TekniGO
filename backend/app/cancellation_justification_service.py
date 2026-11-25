@@ -12,6 +12,7 @@ from app.cancellation_evidence import EvidenceStore
 from app.cancellation_policy import FaultStatus
 from app.cancellation_repository import CancellationRepository, JustificationRepository
 from app.client_requests import _find_request_by_id
+from app.fault_recidivism import FaultComputationService
 from app.financial_settlement import check_third_unjustified_fault_alert
 from app.models import CancellationJustification, User, ensure_utc_datetime, format_tegucigalpa_iso
 
@@ -114,6 +115,9 @@ def resolve_justification(
     cancellation.estado_incumplimiento = (
         FaultStatus.JUSTIFICADA if approved else FaultStatus.NO_JUSTIFICADA
     ).value
+    FaultComputationService().sync_after_justification_resolution(
+    db, cancellation.responsable_uid, now=item.resuelta_en
+    )
     db.commit()
     return serialize_justification(item)
 

@@ -1256,3 +1256,37 @@ class UserNotification(Base):
 
     evento = relationship("NotificationEvent", foreign_keys=[evento_id])
     destinatario = relationship("User", foreign_keys=[destinatario_id])
+
+class RecidivismAlertEvent(Base):
+    """HU-36 ST-06 (CA-10): evento persistente e idempotente de tercera falta no justificada para HU-52."""
+    __tablename__ = "eventos_reincidencia_faltas"
+    __table_args__ = (
+        UniqueConstraint("clave_idempotencia", name="uq_reincidencia_clave_idempotencia"),
+        CheckConstraint("umbral_faltas >= 1", name="ck_reincidencia_umbral_positivo"),
+        CheckConstraint("total_faltas_computadas >= 0", name="ck_reincidencia_total_no_negativo"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE_DECISION_HU52', 'EVALUADO_HU52', 'INVALIDADO_POR_JUSTIFICACION')",
+            name="ck_reincidencia_estado",
+        ),
+        Index("ix_reincidencia_usuario_estado", "usuario_uid", "estado"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    clave_idempotencia = Column(String(160), nullable=False)
+    usuario_uid = Column(String(128), nullable=False)
+    rol_infractor = Column(String(20), nullable=True)
+    umbral_faltas = Column(Integer, nullable=False, default=3, server_default="3")
+    total_faltas_computadas = Column(Integer, nullable=False)
+    faltas_ids = Column(JSON, nullable=False, default=list)
+    cancelacion_disparadora_id = Column(Integer, ForeignKey("cancelaciones_solicitud.id"), nullable=True)
+    solicitud_disparadora_id = Column(String(36), nullable=True)
+    estado = Column(
+        String(32),
+        nullable=False,
+        default="PENDIENTE_DECISION_HU52",
+        server_default="PENDIENTE_DECISION_HU52",
+    )
+    requiere_decision_hu52 = Column(Boolean, nullable=False, default=True, server_default="true")
+    suspension_automatica_aplicada = Column(Boolean, nullable=False, default=False, server_default="false")
+    generado_en = Column(DateTime(timezone=True), nullable=False)
+    actualizado_en = Column(DateTime(timezone=True), nullable=False)

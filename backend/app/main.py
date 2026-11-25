@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.adjustment_router import router as adjustment_router
 from app.database import get_engine
+from app.fault_recidivism_router import router as fault_recidivism_router
 from app.firebase import initialize_firebase
 from app.database_errors import database_error_response
 from app.cancellation_justification_router import router as cancellation_justification_router
@@ -109,6 +110,7 @@ app.include_router(notifications_router)
 app.include_router(cancellation_router)
 app.include_router(adjustment_router)
 app.include_router(cancellation_justification_router)
+app.include_router(fault_recidivism_router)
 
 @app.get("/health")
 def health():
