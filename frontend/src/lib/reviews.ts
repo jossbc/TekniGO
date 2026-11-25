@@ -43,6 +43,8 @@ export interface SubmitReviewResponse {
   resena: ServiceReview;
   estado_publicacion: "PENDIENTE" | "PUBLICADA";
   publicada_inmediata: boolean;
+  publicada?: boolean;
+  motivo_publicacion?: "BILATERAL_SIMULTANEA" | "EXPIRACION_SILENCIOSA_48H" | null;
   mensaje: string;
 }
 
@@ -88,9 +90,11 @@ export async function getServiceReviewsStatus(
 export async function getUserReputation(
   user: User,
   usuario_id: string,
+  rolEvaluado?: "TECNICO" | "CLIENTE",
 ): Promise<ReputationSummary> {
+  const qs = rolEvaluado ? `?rol_evaluado=${encodeURIComponent(rolEvaluado)}` : "";
   return api<ReputationSummary>(
-    `/reviews/users/${encodeURIComponent(usuario_id)}/reputation`,
+    `/reviews/users/${encodeURIComponent(usuario_id)}/reputation${qs}`,
     user,
   );
 }
@@ -98,9 +102,11 @@ export async function getUserReputation(
 export async function getUserPublicReviews(
   user: User,
   usuario_id: string,
+  rolEvaluado?: "TECNICO" | "CLIENTE",
 ): Promise<UserPublicReviewsResponse> {
+  const qs = rolEvaluado ? `?rol_evaluado=${encodeURIComponent(rolEvaluado)}` : "";
   return api<UserPublicReviewsResponse>(
-    `/reviews/users/${encodeURIComponent(usuario_id)}`,
+    `/reviews/users/${encodeURIComponent(usuario_id)}${qs}`,
     user,
   );
 }

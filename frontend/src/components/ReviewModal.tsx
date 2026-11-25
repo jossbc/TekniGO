@@ -20,6 +20,31 @@ interface ReviewModalProps {
   onSuccess: (result: SubmitReviewResponse) => void;
 }
 
+export function resolveReviewPublicationBanner(submittedResponse: SubmitReviewResponse): {
+  isPublished: boolean;
+  displayMessage: string;
+  badgeText: string;
+} {
+  const isPublished =
+    submittedResponse.estado_publicacion === "PUBLICADA" ||
+    Boolean(submittedResponse.publicada ?? submittedResponse.publicada_inmediata);
+  const isTimeout48h =
+    isPublished &&
+    (submittedResponse.motivo_publicacion === "EXPIRACION_SILENCIOSA_48H" ||
+      (submittedResponse.mensaje.includes("48 horas") &&
+        !submittedResponse.mensaje.includes("evaluación mutua")));
+  const displayMessage =
+    isTimeout48h && submittedResponse.mensaje.includes("evaluación mutua")
+      ? "Calificación publicada inmediatamente al haberse cumplido el plazo de 48 horas."
+      : submittedResponse.mensaje;
+  const badgeText = isPublished
+    ? isTimeout48h
+      ? "Calificación publicada al cumplirse el plazo de 48 horas"
+      : "Evaluación publicada inmediatamente"
+    : "Evaluación guardada · Pendiente de publicación";
+  return { isPublished, displayMessage, badgeText };
+}
+
 export default function ReviewModal({
   user,
   tipo_solicitud,
@@ -68,8 +93,15 @@ export default function ReviewModal({
         comentario: comentario.trim(),
         aspectos_destacados: selectedChips,
       });
-      setSubmittedResponse(res);
-      onSuccess(res);
+      const published = Boolean(
+        res.publicada ?? res.publicada_inmediata ?? res.estado_publicacion === "PUBLICADA",
+      );
+      const normalizedRes: SubmitReviewResponse = {
+        ...res,
+        publicada: published,
+      };
+      setSubmittedResponse(normalizedRes);
+      onSuccess(normalizedRes);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -132,52 +164,53 @@ export default function ReviewModal({
         </button>
 
         {submittedResponse ? (
-          <div style={{ textAlign: "center", padding: "1rem 0" }}>
-            <div
-              style={{
-                width: "60px",
-                height: "60px",
-                borderRadius: "50%",
-                background: "#ecfdf5",
-                color: "#10b981",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                margin: "0 auto 1.25rem",
-              }}
-            >
-              <CheckCircle2 size={36} />
-            </div>
-            <h2 id="review-modal-title" style={{ fontSize: "1.5rem", marginBottom: "0.5rem" }}>
-              ¡Gracias por tu evaluación!
-            </h2>
-            <p style={{ color: "var(--muted)", lineHeight: 1.6, marginBottom: "1.5rem" }}>
-              {submittedResponse.mensaje}
-            </p>
-            <div
-              style={{
-                display: "inline-block",
-                padding: "0.5rem 1rem",
-                borderRadius: "999px",
-                fontWeight: 600,
-                fontSize: "0.9rem",
-                background:
-                  submittedResponse.estado_publicacion === "PUBLICADA" ? "#ecfdf5" : "#eff6ff",
-                color:
-                  submittedResponse.estado_publicacion === "PUBLICADA" ? "#065f46" : "#1e40af",
-                marginBottom: "1.5rem",
-              }}
-            >
-              {submittedResponse.estado_publicacion === "PUBLICADA"
-                ? "Evaluación publicada inmediatamente"
-                : "Evaluación guardada · Pendiente de publicación"}
-            </div>
-            <div>
-              <Button type="button" onClick={onClose} style={{ width: "auto", minWidth: "140px" }}>
-                Aceptar
-              </Button>
-            </div>
-          </div>
+          (() => {
+            const { isPublished, displayMessage, badgeText } = resolveReviewPublicationBanner(submittedResponse);
+            return (
+              <div style={{ textAlign: "center", padding: "1rem 0" }}>
+                <div
+                  style={{
+                    width: "60px",
+                    height: "60px",
+                    borderRadius: "50%",
+                    background: "#ecfdf5",
+                    color: "#10b981",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    margin: "0 auto 1.25rem",
+                  }}
+                >
+                  <CheckCircle2 size={36} />
+                </div>
+                <h2 id="review-modal-title" style={{ fontSize: "1.5rem", marginBottom: "0.5rem" }}>
+                  ¡Gracias por tu evaluación!
+                </h2>
+                <p style={{ color: "var(--muted)", lineHeight: 1.6, marginBottom: "1.5rem" }}>
+                  {displayMessage}
+                </p>
+                <div
+                  style={{
+                    display: "inline-block",
+                    padding: "0.5rem 1rem",
+                    borderRadius: "999px",
+                    fontWeight: 600,
+                    fontSize: "0.9rem",
+                    background: isPublished ? "#ecfdf5" : "#eff6ff",
+                    color: isPublished ? "#065f46" : "#1e40af",
+                    marginBottom: "1.5rem",
+                  }}
+                >
+                  {badgeText}
+                </div>
+                <div>
+                  <Button type="button" onClick={onClose} style={{ width: "auto", minWidth: "140px" }}>
+                    Aceptar
+                  </Button>
+                </div>
+              </div>
+            );
+          })()
         ) : (
           <form onSubmit={handleSubmit}>
             <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>

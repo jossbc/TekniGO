@@ -63,6 +63,8 @@ class TechnicianDirectRequestOut(BaseModel):
     motivo_ajuste_pendiente: str | None = None
     incidencia_abierta: bool | None = None
     incidencia: dict | None = None
+    mi_resena_enviada: bool = False
+    evaluacion_cerrada: bool = False
 
 
 class TechnicianDirectRequestDetail(TechnicianDirectRequestOut):
@@ -136,6 +138,7 @@ def _serialize_direct_request(
     clients_by_uid: dict[str, User],
     services_by_id: dict[str, Service],
     specialties_by_id: dict[str, Specialty] | None = None,
+    review_flags: tuple[bool, bool] = (False, False),
 ) -> dict:
     client = clients_by_uid.get(row.cliente_id)
     service_key = str(row.servicio_id) if getattr(row, "servicio_id", None) is not None else ""
@@ -181,6 +184,9 @@ def _serialize_direct_request(
         "direccion_exacta": getattr(row, "direccion_exacta", None) if revelar_contacto else None,
         "cliente_telefono": (client.telefono if client is not None else None) if revelar_contacto else None,
     }
+    if estado == "COMPLETADA":
+        payload["mi_resena_enviada"] = bool(review_flags[0])
+        payload["evaluacion_cerrada"] = bool(review_flags[1])
 
     reception_tracking = get_service_reception_tracking(str(row.id), record=row)
     incidencia_abierta = bool(reception_tracking.get("incidencia_abierta"))
@@ -236,12 +242,24 @@ def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
     )
     rows: list[Any] = [*direct_rows, *open_rows]
     clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, rows)
+    from app.reviews import get_review_flags_map
+
+    completed_meta = [
+        ("ABIERTA" if isinstance(row, OpenRequest) else "DIRECTA", str(row.id))
+        for row in rows
+        if state_key(row.estado or "PENDIENTE").replace(" ", "_") == "COMPLETADA"
+    ]
+    review_flags_map = get_review_flags_map(db, completed_meta, viewer_role="TECNICO")
     return [
         _serialize_direct_request(
             row,
             clients_by_uid=clients_by_uid,
             services_by_id=services_by_id,
             specialties_by_id=specialties_by_id,
+            review_flags=review_flags_map.get(
+                ("ABIERTA" if isinstance(row, OpenRequest) else "DIRECTA", str(row.id)),
+                (False, False),
+            ),
         )
         for row in rows
     ]
@@ -279,11 +297,19 @@ def get_technician_direct_request_detail(solicitud_id: str, claims: dict, db: Se
     """HU-22: Obtiene el detalle de una solicitud directa dirigida al técnico autenticado."""
     record = _get_owned_direct_request(solicitud_id, claims, db)
     clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    from app.reviews import get_request_review_flags
+
+    detail_review_flags = (
+        get_request_review_flags(db, "DIRECTA", str(record.id), viewer_role="TECNICO")
+        if state_key(record.estado or "PENDIENTE").replace(" ", "_") == "COMPLETADA"
+        else (False, False)
+    )
     detail = _serialize_direct_request(
         record,
         clients_by_uid=clients_by_uid,
         services_by_id=services_by_id,
         specialties_by_id=specialties_by_id,
+        review_flags=detail_review_flags,
     )
     detail["linea_tiempo"] = request_timeline(db, record)
     return detail

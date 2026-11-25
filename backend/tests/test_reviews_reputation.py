@@ -8,10 +8,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.client_requests import get_client_request_detail, list_client_requests
 from app.database import Base
 from app.main import app as fastapi_app
 from app.models import (
     DirectRequest,
+    IdentityDocument,
+    IdentityVerificationRequest,
     OpenRequest,
     RequestStateEvent,
     Service,
@@ -21,6 +24,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.open_requests import get_open_request_for_viewer
 from app.reviews import (
     BilateralMutualPublicationStrategy,
     CreateReviewSchema,
@@ -37,6 +41,16 @@ from app.service_completion import report_service_completion
 from app.service_reception import (
     ConfirmReceptionSchema,
     confirm_service_reception_by_client,
+)
+from app.technician_activation import REQUIRED_TECHNICIAN_DOCS, compute_document_expiration
+from app.technician_direct_requests import (
+    get_technician_direct_request_detail,
+    list_technician_direct_requests,
+)
+from app.technicians import (
+    get_my_activation_status,
+    get_technician_public_profile,
+    get_technicians_catalog,
 )
 
 
@@ -514,6 +528,294 @@ class ReviewsAndReputationTests(unittest.TestCase):
         )
         self.assertTrue(pub_timeout)
         self.assertEqual(strat_b, "EXPIRACION_SILENCIOSA_48H")
+
+    def test_immediate_publication_after_48h_returns_coherent_timeout_message(self):
+        t_after_48h = self.completion_time + timedelta(hours=50)
+        res = create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                puntuacion=5,
+                comentario="Excelente trabajo, lo califico dos días después",
+            ),
+            {"uid": self.client_user.firebase_uid},
+            self.db,
+            clock_fn=lambda: t_after_48h,
+        )
+        self.assertTrue(res["publicada_inmediata"])
+        self.assertEqual(res["estado_publicacion"], "PUBLICADA")
+        self.assertEqual(res["motivo_publicacion"], "EXPIRACION_SILENCIOSA_48H")
+        self.assertIn("48 horas", res["mensaje"])
+        self.assertNotIn("evaluación mutua", res["mensaje"])
+
+    def test_review_lifecycle_three_states_persistent_across_listings(self):
+        client_claims = {"uid": self.client_user.firebase_uid}
+        tech_claims = {"uid": self.tech_user.firebase_uid}
+
+        open_req = OpenRequest(
+            id=f"open-{uuid.uuid4()}",
+            cliente_id=self.client_user.firebase_uid,
+            tecnico_id=self.tech_user.firebase_uid,
+            especialidad_id=self.spec.id,
+            servicio_id=self.service.id,
+            modalidad="ABIERTA",
+            municipio="Tegucigalpa",
+            sector="Miraflores",
+            direccion_exacta="Bloque 12",
+            fecha_hora=self.completion_time,
+            descripcion="Licitación terminada",
+            presupuesto=700.0,
+            monto_base=700.0,
+            metodo_pago="efectivo",
+            estado="COMPLETADA",
+            creada_en=self.completion_time - timedelta(hours=1),
+            seguimiento_recepcion={"completada": True, "fecha_cierre": self.completion_time.isoformat()},
+        )
+        self.db.add(open_req)
+        self.db.commit()
+
+        # Estado 1: Nadie ha calificado -> mi_resena_enviada=False, evaluacion_cerrada=False
+        client_list_1 = list_client_requests(client_claims, self.db, estado="COMPLETADA")
+        by_id_1 = {item["id"]: item for item in client_list_1["solicitudes"]}
+        self.assertFalse(by_id_1[str(self.direct_req.id)]["mi_resena_enviada"])
+        self.assertFalse(by_id_1[str(self.direct_req.id)]["evaluacion_cerrada"])
+        self.assertFalse(by_id_1[str(open_req.id)]["mi_resena_enviada"])
+        self.assertFalse(by_id_1[str(open_req.id)]["evaluacion_cerrada"])
+
+        tech_list_1 = {item["id"]: item for item in list_technician_direct_requests(tech_claims, self.db)}
+        self.assertFalse(tech_list_1[str(self.direct_req.id)]["mi_resena_enviada"])
+        self.assertFalse(tech_list_1[str(self.direct_req.id)]["evaluacion_cerrada"])
+        self.assertFalse(tech_list_1[str(open_req.id)]["mi_resena_enviada"])
+        self.assertFalse(tech_list_1[str(open_req.id)]["evaluacion_cerrada"])
+
+        # Cliente envía reseña en directa dentro de 48h -> Estado 2 para cliente, Estado 1 para técnico
+        t_recent = datetime.now(timezone.utc) - timedelta(hours=2)
+        self.direct_req.seguimiento_recepcion = {"completada": True, "fecha_cierre": t_recent.isoformat()}
+        self.db.commit()
+
+        create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                puntuacion=5,
+                comentario="Excelente",
+            ),
+            client_claims,
+            self.db,
+            clock_fn=lambda: t_recent + timedelta(minutes=10),
+        )
+        client_list_2 = {item["id"]: item for item in list_client_requests(client_claims, self.db, estado="COMPLETADA")["solicitudes"]}
+        self.assertTrue(client_list_2[str(self.direct_req.id)]["mi_resena_enviada"])
+        self.assertFalse(client_list_2[str(self.direct_req.id)]["evaluacion_cerrada"])
+        client_detail_2 = get_client_request_detail(str(self.direct_req.id), client_claims, self.db)
+        self.assertTrue(client_detail_2["mi_resena_enviada"])
+        self.assertFalse(client_detail_2["evaluacion_cerrada"])
+
+        tech_list_2 = {item["id"]: item for item in list_technician_direct_requests(tech_claims, self.db)}
+        self.assertFalse(tech_list_2[str(self.direct_req.id)]["mi_resena_enviada"])
+        self.assertFalse(tech_list_2[str(self.direct_req.id)]["evaluacion_cerrada"])
+
+        # Técnico envía su reseña -> bilateral -> Estado 3 (evaluacion_cerrada=True) para ambos
+        create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                puntuacion=5,
+                comentario="Muy buen cliente",
+            ),
+            tech_claims,
+            self.db,
+            clock_fn=lambda: t_recent + timedelta(minutes=20),
+        )
+        client_list_3 = {item["id"]: item for item in list_client_requests(client_claims, self.db, estado="COMPLETADA")["solicitudes"]}
+        self.assertTrue(client_list_3[str(self.direct_req.id)]["mi_resena_enviada"])
+        self.assertTrue(client_list_3[str(self.direct_req.id)]["evaluacion_cerrada"])
+
+        tech_detail_3 = get_technician_direct_request_detail(str(self.direct_req.id), tech_claims, self.db)
+        self.assertTrue(tech_detail_3["mi_resena_enviada"])
+        self.assertTrue(tech_detail_3["evaluacion_cerrada"])
+
+        # En solicitud abierta vencida (>48h), solo el cliente califica -> se publica inmediatamente -> evaluacion_cerrada=True para cliente, False para técnico
+        create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="ABIERTA",
+                solicitud_id=str(open_req.id),
+                puntuacion=5,
+                comentario="Excelente licitación cerrada",
+            ),
+            client_claims,
+            self.db,
+            clock_fn=lambda: self.completion_time + timedelta(hours=50),
+        )
+        owner_open = get_open_request_for_viewer(str(open_req.id), client_claims, self.db)
+        self.assertTrue(owner_open["mi_resena_enviada"])
+        self.assertTrue(owner_open["evaluacion_cerrada"])
+
+        tech_open = get_open_request_for_viewer(str(open_req.id), tech_claims, self.db)
+        self.assertFalse(tech_open["mi_resena_enviada"])
+        self.assertFalse(tech_open["evaluacion_cerrada"])
+
+    def test_dual_role_reputation_separation_and_legacy_5_point_0_with_zero_tech_reviews(self):
+        # Convertir al técnico en usuario de doble rol con documentos verificados y legado calificacion_promedio = 5.0
+        self.db.add(UserRole(usuario_id=self.tech_user.id, rol="CLIENTE"))
+        ver_req = IdentityVerificationRequest(usuario_id=self.tech_user.id, version=1)
+        self.db.add(ver_req)
+        self.db.flush()
+        from datetime import date
+
+        for idx, (doc_type, _) in enumerate(REQUIRED_TECHNICIAN_DOCS):
+            emision = date.today() if "ANTECEDENTES" in doc_type else None
+            self.db.add(
+                IdentityDocument(
+                    usuario_id=self.tech_user.id,
+                    solicitud_id=ver_req.id,
+                    tipo=doc_type,
+                    ruta_privada=f"id/{idx}-{doc_type}.enc",
+                    content_type="application/pdf" if emision else "image/jpeg",
+                    tamano_bytes=1024,
+                    sha256=f"{idx + 2}" * 64,
+                    estado="APROBADO",
+                    fecha_emision_declarada=emision,
+                    fecha_vencimiento=compute_document_expiration(doc_type, emision),
+                )
+            )
+
+        tech_profile = self.db.get(TechnicianProfile, self.tech_user.id)
+        tech_profile.calificacion_promedio = 5.0  # Valor legado antiguo sin reseñas reales como técnico
+
+        # Reseña recibida actuando como CLIENTE (evaluador fue TECNICO) -> NO debe mezclarse en rol técnico
+        now_utc = datetime.now(timezone.utc)
+        self.db.add(
+            ServiceReview(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(uuid.uuid4()),
+                evaluador_id=self.other_user.id,
+                evaluado_id=self.tech_user.id,
+                rol_evaluador="TECNICO",
+                puntuacion=2,
+                comentario="Reseña recibida como cliente",
+                estado_publicacion="PUBLICADA",
+                fecha_completado_servicio=now_utc,
+                creada_en=now_utc,
+                publicada_en=now_utc,
+            )
+        )
+        self.db.commit()
+
+        # 0 reseñas publicadas como técnico -> None / 0 y excluido por filtro calificacion_minima
+        catalog_all = get_technicians_catalog(nombre=None, especialidad=None, municipio=None, db=self.db)
+        self.assertEqual(len(catalog_all), 1)
+        self.assertIsNone(catalog_all[0]["calificacion_promedio"])
+        self.assertEqual(catalog_all[0]["total_resenas"], 0)
+
+        self.assertEqual(
+            get_technicians_catalog(nombre=None, especialidad=None, municipio=None, db=self.db, calificacion_minima=3.0),
+            [],
+        )
+
+        public_prof = get_technician_public_profile(self.tech_user.id, self.db)
+        self.assertIsNone(public_prof["calificacion_promedio"])
+        self.assertEqual(public_prof["total_resenas"], 0)
+        self.assertEqual(public_prof["resenas"], [])
+
+        act_status = get_my_activation_status({"uid": self.tech_user.firebase_uid}, self.db)
+        self.assertIsNone(act_status["calificacion_promedio"])
+
+        # Ahora recibe 1 reseña publicada actuando como TECNICO (puntuacion=4, rol_evaluador='CLIENTE')
+        self.db.add(
+            ServiceReview(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                evaluador_id=self.client_user.id,
+                evaluado_id=self.tech_user.id,
+                rol_evaluador="CLIENTE",
+                puntuacion=4,
+                comentario="Buen electricista",
+                estado_publicacion="PUBLICADA",
+                fecha_completado_servicio=now_utc,
+                creada_en=now_utc,
+                publicada_en=now_utc,
+            )
+        )
+        self.db.commit()
+
+        catalog_rated = get_technicians_catalog(
+            nombre=None, especialidad=None, municipio=None, db=self.db, calificacion_minima=3.5
+        )
+        self.assertEqual(len(catalog_rated), 1)
+        self.assertEqual(catalog_rated[0]["calificacion_promedio"], 4.0)
+        self.assertEqual(catalog_rated[0]["total_resenas"], 1)
+        self.assertEqual(
+            get_technicians_catalog(
+                nombre=None, especialidad=None, municipio=None, db=self.db, calificacion_minima=4.5
+            ),
+            [],
+        )
+
+        public_rated = get_technician_public_profile(self.tech_user.id, self.db)
+        self.assertEqual(public_rated["calificacion_promedio"], 4.0)
+        self.assertEqual(public_rated["total_resenas"], 1)
+        self.assertEqual(len(public_rated["resenas"]), 1)
+
+        act_rated = get_my_activation_status({"uid": self.tech_user.firebase_uid}, self.db)
+        self.assertEqual(act_rated["calificacion_promedio"], 4.0)
+
+    def test_uuid_casing_and_modality_mismatch_still_compute_flags_and_publicada(self):
+        from app.reviews import get_request_review_flags, get_review_flags_map
+
+        # Crear reseña enviando ID en mayúsculas (debe canonicalizarse en DB y coincidir con UUID lowercase/uppercase)
+        t_recent = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.direct_req.seguimiento_recepcion = {"completada": True, "fecha_cierre": t_recent.isoformat()}
+        self.db.commit()
+
+        upper_id = str(self.direct_req.id).upper()
+        res_pending = create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=upper_id,
+                puntuacion=5,
+                comentario="Excelente trabajo",
+            ),
+            {"uid": self.client_user.firebase_uid},
+            self.db,
+            clock_fn=lambda: t_recent + timedelta(minutes=5),
+        )
+        self.assertFalse(res_pending["publicada"])
+        self.assertEqual(
+            get_review_flags_map(
+                self.db,
+                [("directa", upper_id)],
+                viewer_role="CLIENTE",
+                sync_expirations=False,
+            )[("DIRECTA", upper_id)],
+            (True, False),
+        )
+        self.assertEqual(
+            get_request_review_flags(
+                self.db, "directa", str(self.direct_req.id), viewer_role="CLIENTE", sync_expirations=False
+            ),
+            (True, False),
+        )
+
+        # Ahora el técnico envía su reseña -> publicada=True y ambos quedan en (True, True)
+        res_pub = create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                puntuacion=4,
+                comentario="Buen cliente",
+            ),
+            {"uid": self.tech_user.firebase_uid},
+            self.db,
+            clock_fn=lambda: t_recent + timedelta(minutes=10),
+        )
+        self.assertTrue(res_pub["publicada"])
+        self.assertEqual(
+            get_request_review_flags(
+                self.db, "DIRECTA", upper_id, viewer_role="TECNICO", sync_expirations=False
+            ),
+            (True, True),
+        )
 
 
 if __name__ == "__main__":

@@ -181,6 +181,18 @@ const ACTION_LABELS: Record<string, { label: string; hint: string }> = {
   },
 };
 
+export function resolveReviewButtonState(
+  item: { id: string; mi_resena_enviada?: boolean; evaluacion_cerrada?: boolean },
+  localMap: Record<string, { sent: boolean; closed: boolean }>,
+): "ACTIVE" | "SENT_DISABLED" | "HIDDEN" {
+  const normId = (item.id || "").trim().toLowerCase();
+  const localReview = localMap[item.id] ?? localMap[normId];
+  const evaluacionCerrada = Boolean(item.evaluacion_cerrada || localReview?.closed);
+  if (evaluacionCerrada) return "HIDDEN";
+  const miResenaEnviada = Boolean(item.mi_resena_enviada || localReview?.sent);
+  return miResenaEnviada ? "SENT_DISABLED" : "ACTIVE";
+}
+
 export default function ClientRequestsManager({
   user,
   initialRequestId = "",
@@ -212,7 +224,7 @@ export default function ClientRequestsManager({
     solicitud_id: string;
     evaluadoNombre: string;
   } | null>(null);
-  const [reviewedIds, setReviewedIds] = useState<Record<string, boolean>>({});
+  const [reviewedState, setReviewedState] = useState<Record<string, { sent: boolean; closed: boolean }>>({});
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   //Manejar Estado de Conexión
@@ -666,30 +678,63 @@ export default function ClientRequestsManager({
                       <FileText size={15} />
                       Ver detalle
                     </Button>
-                    {item.estado.toUpperCase() === "COMPLETADA" && item.tecnico?.nombre_completo && (
-                      <Button
-                        type="button"
-                        className="button"
-                        style={{
-                          marginTop: "6px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontSize: "0.85rem",
-                          padding: "0.45rem 0.8rem",
-                        }}
-                        onClick={() =>
-                          setRatingTarget({
-                            tipo_solicitud: item.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA",
-                            solicitud_id: item.id,
-                            evaluadoNombre: item.tecnico?.nombre_completo || "Técnico",
-                          })
-                        }
-                      >
-                        <Star size={14} fill="currentColor" />
-                        {reviewedIds[item.id] ? "Calificación enviada" : "Calificar técnico"}
-                      </Button>
-                    )}
+                    {(() => {
+                      if (item.estado.trim().toUpperCase() !== "COMPLETADA" || !item.tecnico?.nombre_completo) {
+                        return null;
+                      }
+                      const reviewBtnState = resolveReviewButtonState(item, reviewedState);
+                      if (reviewBtnState === "HIDDEN") {
+                        return null;
+                      }
+                      if (reviewBtnState === "SENT_DISABLED") {
+                        return (
+                          <Button
+                            type="button"
+                            disabled
+                            style={{
+                              marginTop: "6px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: "0.85rem",
+                              padding: "0.45rem 0.8rem",
+                              background: "#f3f4f6",
+                              color: "#6b7280",
+                              border: "1px solid #d1d5db",
+                              cursor: "not-allowed",
+                              opacity: 0.85,
+                            }}
+                          >
+                            <Star size={14} fill="none" />
+                            Evaluación enviada
+                          </Button>
+                        );
+                      }
+                      return (
+                        <Button
+                          type="button"
+                          className="button"
+                          style={{
+                            marginTop: "6px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: "0.85rem",
+                            padding: "0.45rem 0.8rem",
+                          }}
+                          onClick={() =>
+                            setRatingTarget({
+                              tipo_solicitud: (item.modalidad || "").trim().toUpperCase() === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                              solicitud_id: item.id,
+                              evaluadoNombre: item.tecnico?.nombre_completo || "Técnico",
+                            })
+                          }
+                        >
+                          <Star size={14} fill="currentColor" />
+                          Calificar técnico
+                        </Button>
+                      );
+                    })()}
                   </div>
                 </article>
               );
@@ -1581,27 +1626,58 @@ export default function ClientRequestsManager({
                 )}
               </section>
 
-              {detail.estado.toUpperCase() === "COMPLETADA" && detail.tecnico?.nombre_completo && (
-                <section className="client-request-box" aria-label="Calificación del técnico">
-                  <h3>Calificación del servicio</h3>
-                  <p>El servicio ha sido marcado como completado. Puedes evaluar el trabajo realizado por el profesional.</p>
-                  <Button
-                    type="button"
-                    className="button"
-                    style={{ width: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}
-                    onClick={() =>
-                      setRatingTarget({
-                        tipo_solicitud: detail.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA",
-                        solicitud_id: detail.id,
-                        evaluadoNombre: detail.tecnico?.nombre_completo || "Técnico",
-                      })
-                    }
-                  >
-                    <Star size={16} fill="currentColor" />
-                    {reviewedIds[detail.id] ? "Evaluación enviada" : "Calificar técnico"}
-                  </Button>
-                </section>
-              )}
+              {(() => {
+                if (detail.estado.trim().toUpperCase() !== "COMPLETADA" || !detail.tecnico?.nombre_completo) {
+                  return null;
+                }
+                const reviewBtnState = resolveReviewButtonState(detail, reviewedState);
+                if (reviewBtnState === "HIDDEN") {
+                  return null;
+                }
+                const miResenaEnviada = reviewBtnState === "SENT_DISABLED";
+                return (
+                  <section className="client-request-box" aria-label="Calificación del técnico">
+                    <h3>Calificación del servicio</h3>
+                    <p>El servicio ha sido marcado como completado. Puedes evaluar el trabajo realizado por el profesional.</p>
+                    {miResenaEnviada ? (
+                      <Button
+                        type="button"
+                        disabled
+                        style={{
+                          width: "auto",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          background: "#f3f4f6",
+                          color: "#6b7280",
+                          border: "1px solid #d1d5db",
+                          cursor: "not-allowed",
+                          opacity: 0.85,
+                        }}
+                      >
+                        <Star size={16} fill="none" />
+                        Evaluación enviada
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="button"
+                        style={{ width: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}
+                        onClick={() =>
+                          setRatingTarget({
+                            tipo_solicitud: (detail.modalidad || "").trim().toUpperCase() === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                            solicitud_id: detail.id,
+                            evaluadoNombre: detail.tecnico?.nombre_completo || "Técnico",
+                          })
+                        }
+                      >
+                        <Star size={16} fill="currentColor" />
+                        Calificar técnico
+                      </Button>
+                    )}
+                  </section>
+                );
+              })()}
             </section>
           )}
           {showAwardGateway && confirmAwardProp && (
@@ -1623,8 +1699,35 @@ export default function ClientRequestsManager({
           rolEvaluador="CLIENTE"
           onClose={() => setRatingTarget(null)}
           onSuccess={(res) => {
-            setReviewedIds((prev) => ({ ...prev, [ratingTarget.solicitud_id]: true }));
+            const targetId = ratingTarget.solicitud_id;
+            const normTargetId = targetId.trim().toLowerCase();
+            const closedNow = Boolean(
+              res.publicada ?? res.publicada_inmediata ?? res.estado_publicacion === "PUBLICADA",
+            );
+            setReviewedState((prev) => ({
+              ...prev,
+              [targetId]: { sent: true, closed: closedNow },
+              [normTargetId]: { sent: true, closed: closedNow },
+            }));
+            setPage((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    solicitudes: prev.solicitudes.map((item) =>
+                      item.id.trim().toLowerCase() === normTargetId
+                        ? { ...item, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                        : item,
+                    ),
+                  }
+                : prev,
+            );
+            setDetail((prev) =>
+              prev && prev.id.trim().toLowerCase() === normTargetId
+                ? { ...prev, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                : prev,
+            );
             setActionNotice(res.mensaje);
+            setRefreshTick((v) => v + 1);
           }}
         />
       )}

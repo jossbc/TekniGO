@@ -89,7 +89,7 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     solicitud_id: string;
     cliente_nombre: string;
   } | null>(null);
-  const [reviewedIds, setReviewedIds] = useState<Record<string, boolean>>({});
+  const [reviewedState, setReviewedState] = useState<Record<string, { sent: boolean; closed: boolean }>>({});
   const [reportIncidentSolicitudId, setReportIncidentSolicitudId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: string; estado: string } | null>(null);
   const [startConfirmationId, setStartConfirmationId] = useState<string | null>(null);
@@ -766,32 +766,65 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
                   </div>
                 )}
 
-                {normalizedState === "COMPLETADA" && (
-                  <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
-                    <Button
-                      type="button"
-                      onClick={() =>
-                        setRatingTarget({
-                          tipo_solicitud: modality,
-                          solicitud_id: req.id,
-                          cliente_nombre: req.cliente_nombre || "Cliente",
-                        })
-                      }
-                      style={{
-                        background: reviewedIds[req.id] ? "#f9fafb" : "#fefce8",
-                        color: reviewedIds[req.id] ? "#4b5563" : "#854d0e",
-                        border: reviewedIds[req.id] ? "1px solid #e5e7eb" : "1px solid #fef08a",
-                        gap: "6px",
-                        minWidth: "140px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                      }}
-                    >
-                      <Star size={16} fill={reviewedIds[req.id] ? "none" : "currentColor"} />
-                      {reviewedIds[req.id] ? "Evaluación enviada" : "Calificar cliente"}
-                    </Button>
-                  </div>
-                )}
+                {(() => {
+                  if (normalizedState !== "COMPLETADA") {
+                    return null;
+                  }
+                  const normReqId = (req.id || "").trim().toLowerCase();
+                  const localReview = reviewedState[req.id] ?? reviewedState[normReqId];
+                  const evaluacionCerrada = Boolean(req.evaluacion_cerrada || localReview?.closed);
+                  if (evaluacionCerrada) {
+                    return null;
+                  }
+                  const miResenaEnviada = Boolean(req.mi_resena_enviada || localReview?.sent);
+                  return (
+                    <div className="client-request-item-side" style={{ flexDirection: "column", gap: "8px" }}>
+                      {miResenaEnviada ? (
+                        <Button
+                          type="button"
+                          disabled
+                          style={{
+                            background: "#f3f4f6",
+                            color: "#6b7280",
+                            border: "1px solid #d1d5db",
+                            cursor: "not-allowed",
+                            opacity: 0.85,
+                            gap: "6px",
+                            minWidth: "140px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Star size={16} fill="none" />
+                          Evaluación enviada
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          onClick={() =>
+                            setRatingTarget({
+                              tipo_solicitud: modality,
+                              solicitud_id: req.id,
+                              cliente_nombre: req.cliente_nombre || "Cliente",
+                            })
+                          }
+                          style={{
+                            background: "#fefce8",
+                            color: "#854d0e",
+                            border: "1px solid #fef08a",
+                            gap: "6px",
+                            minWidth: "140px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Star size={16} fill="currentColor" />
+                          Calificar cliente
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* HU-34 CA-01 a CA-05: Botón para reportar trabajo finalizado o incidencia desde En proceso */}
                 {normalizedState === "EN_PROCESO" && !isPendingReception && !req.incidencia_abierta && (
@@ -870,8 +903,25 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
           rolEvaluador="TECNICO"
           onClose={() => setRatingTarget(null)}
           onSuccess={(res) => {
-            setReviewedIds((prev) => ({ ...prev, [ratingTarget.solicitud_id]: true }));
+            const targetId = ratingTarget.solicitud_id;
+            const normTargetId = targetId.trim().toLowerCase();
+            const closedNow = Boolean(
+              res.publicada ?? res.publicada_inmediata ?? res.estado_publicacion === "PUBLICADA",
+            );
+            setReviewedState((prev) => ({
+              ...prev,
+              [targetId]: { sent: true, closed: closedNow },
+              [normTargetId]: { sent: true, closed: closedNow },
+            }));
+            setRequests((prev) =>
+              prev.map((item) =>
+                item.id.trim().toLowerCase() === normTargetId
+                  ? { ...item, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                  : item,
+              ),
+            );
             setActionNotice(res.mensaje);
+            setRefreshTick((v) => v + 1);
           }}
         />
       )}

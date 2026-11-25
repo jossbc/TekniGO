@@ -307,6 +307,10 @@ def evaluate_technician_requirements(
         and not profile.restriccion_financiera
     )
 
+    from app.reviews import get_technician_reputation_stats
+
+    tech_avg_rating, _ = get_technician_reputation_stats(user.id, db)
+
     return {
         "usuario_id": str(user.id),
         "estado_verificacion": target_state,
@@ -316,9 +320,7 @@ def evaluate_technician_requirements(
         "suspendido": bool(profile.suspendido),
         "restriccion_financiera": bool(profile.restriccion_financiera),
         "estado_certificacion": profile.estado_certificacion or "NO_CERTIFICADO",
-        "calificacion_promedio": (
-            float(profile.calificacion_promedio) if profile.calificacion_promedio is not None else None
-        ),
+        "calificacion_promedio": tech_avg_rating,
         "puede_recibir_contrataciones": enabled,
         "habilitado_operativamente": enabled,
         "motivo_restriccion": restriction_reason,

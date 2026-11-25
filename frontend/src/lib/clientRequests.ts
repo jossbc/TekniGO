@@ -51,6 +51,8 @@ export type ClientRequestSummary = {
   descripcion: string | null;
   servicio: ClientRequestServiceInfo | null;
   tecnico: ClientRequestTechnicianInfo | null;
+  mi_resena_enviada?: boolean;
+  evaluacion_cerrada?: boolean;
 };
 
 export type ClientRequestProposal = {

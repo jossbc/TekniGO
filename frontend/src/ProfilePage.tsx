@@ -6,7 +6,14 @@ import { signOut, type User } from "firebase/auth";
 import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, Clock3, Image as ImageIcon, Lock, MessageSquare, Star, ThumbsUp } from "lucide-react";
 import { auth } from "./lib/firebase";
 import { api, errorMessage, type Profile } from "./lib/api";
-import { getUserPublicReviews, formatReviewDate, type UserPublicReviewsResponse } from "./lib/reviews";
+import {
+  getUserPublicReviews,
+  getUserReputation,
+  formatReviewDate,
+  type ReputationSummary,
+  type UserPublicReviewsResponse,
+} from "./lib/reviews";
+import RoleReputationSummary from "./components/RoleReputationSummary";
 import { Button, Field } from "./components/ui";
 import SpecialtySelector from "./components/SpecialtySelector";
 import ServiceManager from "./components/ServiceManager";
@@ -132,6 +139,8 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
   const [notice, setNotice] = useState("");
   const [errors, setErrors] = useState<Errors>({});
   const [reviewsData, setReviewsData] = useState<UserPublicReviewsResponse | null>(null);
+  const [clientReputation, setClientReputation] = useState<ReputationSummary | null>(null);
+  const [techReputation, setTechReputation] = useState<ReputationSummary | null>(null);
   const [loadingReviews, setLoadingReviews] = useState(false);
 
   useEffect(() => {
@@ -143,12 +152,22 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
         setIdentityStatus(docsInfo ? docsInfo.estado_identidad : value.estado_identidad);
         onName?.(value.nombre_completo);
 
-        // Fetch user public reviews and reputation
+        const hasClientRole = Boolean(value.roles?.some((r) => String(r).toUpperCase().includes("CLIENTE")));
+        const hasTechRole = Boolean(value.roles?.some((r) => String(r).toUpperCase().includes("TECNICO")));
+
+        // Fetch user public reviews and role-separated reputation
         if (value.id) {
           setLoadingReviews(true);
-          getUserPublicReviews(user, value.id)
-            .then((res) => {
-              if (active) setReviewsData(res);
+          Promise.all([
+            getUserPublicReviews(user, value.id),
+            hasClientRole ? getUserReputation(user, value.id, "CLIENTE").catch(() => null) : Promise.resolve(null),
+            hasTechRole ? getUserReputation(user, value.id, "TECNICO").catch(() => null) : Promise.resolve(null),
+          ])
+            .then(([fullRes, clientRep, techRep]) => {
+              if (!active) return;
+              setReviewsData(fullRes);
+              setClientReputation(clientRep);
+              setTechReputation(techRep);
             })
             .catch(() => {})
             .finally(() => {
@@ -156,7 +175,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
             });
         }
 
-        if (value.roles.includes("TECNICO")) {
+        if (hasTechRole) {
           api<TechnicianActivationStatus>("/technicians/me/activation-status", user)
             .then((activation) => {
               if (active) setTechActivation(activation);
@@ -255,6 +274,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
       </main>
     );
 
+  const isClient = Boolean(profile?.roles?.some((r) => String(r).toUpperCase().includes("CLIENTE")));
   const isTechnician = Boolean(profile?.roles?.some((r) => String(r).toUpperCase().includes("TECNICO")));
 
   return (
@@ -326,25 +346,17 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
 
             {loadingReviews ? (
               <p style={{ color: "#6b7280", margin: 0 }}>Cargando calificaciones y reputación...</p>
-            ) : reviewsData && !reviewsData.sin_calificacion && reviewsData.promedio != null ? (
+            ) : (
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", padding: "1rem 1.25rem", background: "#f8fafc", borderRadius: 12, marginBottom: "1.25rem", border: "1px solid var(--line)" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, color: "#eab308" }}>
-                      <Star size={24} fill="currentColor" />
-                    </div>
-                    <span style={{ fontSize: "1.6rem", fontWeight: 800, color: "var(--ink)" }}>
-                      {reviewsData.promedio.toFixed(1)}
-                    </span>
-                    <span style={{ color: "#6b7280", fontSize: "0.95rem" }}>/ 5.0</span>
-                  </div>
-                  <div style={{ height: "24px", width: "1px", background: "#cbd5e1" }} />
-                  <span style={{ fontSize: "0.95rem", color: "#374151", fontWeight: 500 }}>
-                    Basado en {reviewsData.total_resenas} {reviewsData.total_resenas === 1 ? "reseña de servicio" : "reseñas de servicios"} completados
-                  </span>
-                </div>
+                <RoleReputationSummary
+                  isClient={isClient}
+                  isTechnician={isTechnician}
+                  clientReputation={clientReputation}
+                  techReputation={techReputation}
+                  fallbackSummary={reviewsData}
+                />
 
-                {reviewsData.resenas && reviewsData.resenas.length > 0 ? (
+                {reviewsData && reviewsData.resenas && reviewsData.resenas.length > 0 ? (
                   <div style={{ display: "grid", gap: "1rem" }}>
                     {reviewsData.resenas.map((r) => (
                       <article
@@ -406,24 +418,24 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
                       </article>
                     ))}
                   </div>
-                ) : null}
-              </div>
-            ) : (
-              <div
-                style={{
-                  padding: "1.75rem 1.25rem",
-                  background: "#f9fafb",
-                  borderRadius: 12,
-                  textAlign: "center",
-                  border: "1px dashed #d1d5db",
-                }}
-              >
-                <p style={{ margin: "0 0 0.4rem", fontWeight: 700, fontSize: "1.05rem", color: "var(--ink)" }}>
-                  Sin calificaciones aún · Nuevo en TekniGO
-                </p>
-                <p style={{ margin: 0, color: "#6b7280", fontSize: "0.9rem", lineHeight: 1.5, maxWidth: "480px", marginInline: "auto" }}>
-                  Tus calificaciones y reseñas aparecerán aquí una vez que completes servicios y ambas partes se califiquen mutuamente o expire el plazo de 48 horas.
-                </p>
+                ) : (
+                  <div
+                    style={{
+                      padding: "1.75rem 1.25rem",
+                      background: "#f9fafb",
+                      borderRadius: 12,
+                      textAlign: "center",
+                      border: "1px dashed #d1d5db",
+                    }}
+                  >
+                    <p style={{ margin: "0 0 0.4rem", fontWeight: 700, fontSize: "1.05rem", color: "var(--ink)" }}>
+                      Sin calificaciones aún · Nuevo en TekniGO
+                    </p>
+                    <p style={{ margin: 0, color: "#6b7280", fontSize: "0.9rem", lineHeight: 1.5, maxWidth: "480px", marginInline: "auto" }}>
+                      Tus calificaciones y reseñas aparecerán aquí una vez que completes servicios y ambas partes se califiquen mutuamente o expire el plazo de 48 horas.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </section>

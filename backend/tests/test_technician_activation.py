@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,6 +19,7 @@ from app.models import (
     CoverageZone,
     IdentityDocument,
     IdentityVerificationRequest,
+    ServiceReview,
     Specialty,
     TechnicianProfile,
     TechnicianSpecialty,
@@ -272,14 +273,42 @@ class TechnicianActivationServiceTests(unittest.TestCase):
         self._seed_documents(state="APROBADO")
         self.db.add(TradeCertificate(usuario_id=self.tech_user.id, titulo="Diploma INFOP",
                                     ruta_privada="infop.enc", content_type="application/pdf", estado="APROBADO"))
-        self.profile.calificacion_promedio = 4.85
+        now_utc = datetime.now(timezone.utc)
+        self.db.add_all([
+            ServiceReview(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(uuid.uuid4()),
+                evaluador_id=self.admin.id,
+                evaluado_id=self.tech_user.id,
+                rol_evaluador="CLIENTE",
+                puntuacion=5,
+                comentario="Excelente trabajo",
+                estado_publicacion="PUBLICADA",
+                fecha_completado_servicio=now_utc,
+                creada_en=now_utc,
+                publicada_en=now_utc,
+            ),
+            ServiceReview(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(uuid.uuid4()),
+                evaluador_id=self.admin.id,
+                evaluado_id=self.tech_user.id,
+                rol_evaluador="CLIENTE",
+                puntuacion=4,
+                comentario="Muy buen servicio",
+                estado_publicacion="PUBLICADA",
+                fecha_completado_servicio=now_utc,
+                creada_en=now_utc,
+                publicada_en=now_utc,
+            ),
+        ])
         self.db.commit()
 
         status = get_my_activation_status({"uid": "tech-uid"}, self.db)
         self.assertTrue(status["tecnico_verificado"])
         self.assertEqual(status["estado_verificacion"], "VERIFICADO")
         self.assertEqual(status["estado_certificacion"], "CERTIFICADO")
-        self.assertAlmostEqual(status["calificacion_promedio"], 4.85, places=2)
+        self.assertAlmostEqual(status["calificacion_promedio"], 4.5, places=2)
         for req in status["requisitos"]:
             self.assertNotIn("ruta_privada", req)
             self.assertNotIn("sha256", req)
@@ -393,7 +422,22 @@ class TechnicianActivationServiceTests(unittest.TestCase):
         self.db.add(TechnicianSpecialty(usuario_id=self.tech_user.id, especialidad_id=specialty.id))
         self.db.add(TradeCertificate(usuario_id=self.tech_user.id, titulo="Diploma",
                                     ruta_privada="privado.enc", content_type="application/pdf", estado="APROBADO"))
-        self.profile.calificacion_promedio = 4.9
+        now_utc = datetime.now(timezone.utc)
+        self.db.add(
+            ServiceReview(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(uuid.uuid4()),
+                evaluador_id=self.admin.id,
+                evaluado_id=self.tech_user.id,
+                rol_evaluador="CLIENTE",
+                puntuacion=5,
+                comentario="Trabajo impecable",
+                estado_publicacion="PUBLICADA",
+                fecha_completado_servicio=now_utc,
+                creada_en=now_utc,
+                publicada_en=now_utc,
+            )
+        )
         sync_technician_verification_state(
             self.tech_user,
             self.profile,
@@ -410,7 +454,7 @@ class TechnicianActivationServiceTests(unittest.TestCase):
         self.assertTrue(item["tecnico_verificado"])
         self.assertEqual(item["estado_verificacion"], "VERIFICADO")
         self.assertEqual(item["estado_certificacion"], "CERTIFICADO")
-        self.assertAlmostEqual(item["calificacion_promedio"], 4.9, places=2)
+        self.assertAlmostEqual(item["calificacion_promedio"], 5.0, places=2)
         self.assertNotIn("dni", item)
         self.assertNotIn("telefono", item)
         self.assertNotIn("documentos", item)

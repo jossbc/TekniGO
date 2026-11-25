@@ -106,6 +106,8 @@ class SubmitReviewResponseOut(BaseModel):
     resena: ServiceReviewOut
     estado_publicacion: Literal["PENDIENTE", "PUBLICADA"]
     publicada_inmediata: bool
+    publicada: bool = False
+    motivo_publicacion: Optional[Literal["BILATERAL_SIMULTANEA", "EXPIRACION_SILENCIOSA_48H"]] = None
     mensaje: str
 
 
@@ -275,14 +277,14 @@ class DirectReviewableRequestAdapter(_BaseReviewableRequestAdapter):
     def find_request(self, db: Session, clean_id: str) -> DirectRequest | None:
         if not clean_id:
             return None
-        lookup_id = clean_id
         bind = db.get_bind()
         if bind is not None and bind.dialect.name == "postgresql":
             try:
                 lookup_id = str(uuid.UUID(clean_id))
             except ValueError:
                 return None
-        return db.scalar(select(DirectRequest).where(DirectRequest.id == lookup_id))
+            return db.scalar(select(DirectRequest).where(DirectRequest.id == lookup_id))
+        return db.scalar(select(DirectRequest).where(DirectRequest.id.in_(_solicitud_id_candidates(clean_id))))
 
 
 class OpenReviewableRequestAdapter(_BaseReviewableRequestAdapter):
@@ -293,7 +295,7 @@ class OpenReviewableRequestAdapter(_BaseReviewableRequestAdapter):
     def find_request(self, db: Session, clean_id: str) -> OpenRequest | None:
         if not clean_id:
             return None
-        return db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id))
+        return db.scalar(select(OpenRequest).where(OpenRequest.id.in_(_solicitud_id_candidates(clean_id))))
 
 
 _REVIEWABLE_ADAPTERS: dict[str, ReviewableRequestAdapter] = {
@@ -415,19 +417,150 @@ def evaluate_review_publication_policy(
 # --- CÁLCULO DE REPUTACIÓN Y SINCRONIZACIÓN SILENCIOSA ---
 
 
-def _recompute_user_reputation(user_id: uuid.UUID, db: Session) -> Optional[float]:
-    """Calcula el promedio de calificaciones publicadas y sincroniza `TechnicianProfile`."""
-    published_scores = list(
+def get_technician_reputation_stats_map(
+    user_ids: list[uuid.UUID],
+    db: Session,
+) -> dict[uuid.UUID, tuple[Optional[float], int]]:
+    """Calcula promedio y conteo usando únicamente reseñas PUBLICADAS recibidas en rol de TECNICO."""
+    unique_ids = list({uid for uid in user_ids if uid is not None})
+    if not unique_ids:
+        return {}
+
+    rows = db.execute(
+        select(ServiceReview.evaluado_id, ServiceReview.puntuacion).where(
+            ServiceReview.evaluado_id.in_(unique_ids),
+            ServiceReview.rol_evaluador == "CLIENTE",
+            ServiceReview.estado_publicacion == "PUBLICADA",
+        )
+    ).all()
+
+    scores_by_uid: dict[uuid.UUID, list[int]] = {uid: [] for uid in unique_ids}
+    for eval_uid, score in rows:
+        if eval_uid in scores_by_uid:
+            scores_by_uid[eval_uid].append(int(score))
+
+    result: dict[uuid.UUID, tuple[Optional[float], int]] = {}
+    for uid in unique_ids:
+        scores = scores_by_uid[uid]
+        total = len(scores)
+        if total == 0:
+            result[uid] = (None, 0)
+        else:
+            result[uid] = (round(float(sum(scores)) / total, 2), total)
+    return result
+
+
+def get_technician_reputation_stats(
+    user_id: uuid.UUID,
+    db: Session,
+) -> tuple[Optional[float], int]:
+    """Calcula promedio y total de reseñas publicadas recibidas por un técnico (solo rol_evaluador='CLIENTE')."""
+    return get_technician_reputation_stats_map([user_id], db).get(user_id, (None, 0))
+
+
+def _canonical_solicitud_id(raw_id: Any) -> str:
+    cleaned = str(raw_id or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        return str(uuid.UUID(cleaned))
+    except ValueError:
+        return cleaned
+
+
+def _solicitud_id_candidates(raw_id: Any) -> list[str]:
+    raw_str = str(raw_id or "").strip()
+    canonical = _canonical_solicitud_id(raw_str)
+    candidates: list[str] = []
+    for candidate in (canonical, raw_str, raw_str.upper(), canonical.upper()):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def get_review_flags_map(
+    db: Session,
+    requests_meta: list[tuple[str, str]],
+    viewer_role: Literal["CLIENTE", "TECNICO"],
+    *,
+    sync_expirations: bool = True,
+) -> dict[tuple[str, str], tuple[bool, bool]]:
+    """Calcula (mi_resena_enviada, evaluacion_cerrada) para solicitudes COMPLETADA según el rol actual."""
+    raw_pairs = [
+        ((mod or "").strip().upper(), str(sid).strip())
+        for mod, sid in requests_meta
+        if mod and sid and str(sid).strip()
+    ]
+    if not raw_pairs:
+        return {}
+
+    if sync_expirations:
+        sync_expired_reviews(db)
+
+    candidate_ids: list[str] = []
+    seen_candidates: set[str] = set()
+    for _, sid in raw_pairs:
+        for cand in _solicitud_id_candidates(sid):
+            if cand not in seen_candidates:
+                seen_candidates.add(cand)
+                candidate_ids.append(cand)
+
+    reviews = list(
         db.scalars(
-            select(ServiceReview.puntuacion).where(
-                ServiceReview.evaluado_id == user_id,
-                ServiceReview.estado_publicacion == "PUBLICADA",
+            select(ServiceReview).where(
+                ServiceReview.solicitud_id.in_(candidate_ids),
             )
         ).all()
     )
-    avg: Optional[float] = None
-    if published_scores:
-        avg = round(float(sum(published_scores)) / len(published_scores), 2)
+
+    by_request: dict[tuple[str, str], dict[str, ServiceReview]] = {}
+    for rev in reviews:
+        norm_mod = (rev.tipo_solicitud or "").strip().upper()
+        canon_sid = _canonical_solicitud_id(rev.solicitud_id)
+        if not norm_mod or not canon_sid:
+            continue
+        by_request.setdefault((norm_mod, canon_sid), {})[(rev.rol_evaluador or "").strip().upper()] = rev
+
+    counterpart_role = "TECNICO" if viewer_role == "CLIENTE" else "CLIENTE"
+    flags: dict[tuple[str, str], tuple[bool, bool]] = {}
+    for norm_mod, raw_sid in raw_pairs:
+        canon_key = (norm_mod, _canonical_solicitud_id(raw_sid))
+        role_reviews = by_request.get(canon_key, {})
+        my_rev = role_reviews.get(viewer_role)
+        other_rev = role_reviews.get(counterpart_role)
+        mi_resena_enviada = my_rev is not None
+        evaluacion_cerrada = bool(
+            my_rev is not None
+            and (other_rev is not None or (my_rev.estado_publicacion or "").strip().upper() == "PUBLICADA")
+        )
+        flags[canon_key] = (mi_resena_enviada, evaluacion_cerrada)
+        flags[(norm_mod, raw_sid)] = (mi_resena_enviada, evaluacion_cerrada)
+    return flags
+
+
+def get_request_review_flags(
+    db: Session,
+    modalidad: str,
+    solicitud_id: str,
+    viewer_role: Literal["CLIENTE", "TECNICO"],
+    *,
+    sync_expirations: bool = True,
+) -> tuple[bool, bool]:
+    """Devuelve (mi_resena_enviada, evaluacion_cerrada) para una solicitud individual."""
+    norm_mod = (modalidad or "").strip().upper()
+    canon_sid = _canonical_solicitud_id(solicitud_id)
+    flags = get_review_flags_map(
+        db,
+        [(norm_mod, canon_sid)],
+        viewer_role=viewer_role,
+        sync_expirations=sync_expirations,
+    )
+    return flags.get((norm_mod, canon_sid), (False, False))
+
+
+def _recompute_user_reputation(user_id: uuid.UUID, db: Session) -> Optional[float]:
+    """Calcula el promedio de calificaciones publicadas como TÉCNICO y sincroniza `TechnicianProfile`."""
+    avg, _ = get_technician_reputation_stats(user_id, db)
 
     tech_profile = db.get(TechnicianProfile, user_id)
     if tech_profile is not None:
@@ -542,11 +675,12 @@ def create_service_review(
         counterpart_role = "CLIENTE"
 
     # CA-03: Unicidad (máximo 1 evaluación por rol por solicitud -> 409 Conflict)
-    clean_solicitud_id = str(payload.solicitud_id).strip()
+    clean_solicitud_id = _canonical_solicitud_id(payload.solicitud_id)
+    id_candidates = _solicitud_id_candidates(payload.solicitud_id)
     existing_my_review = db.scalar(
         select(ServiceReview).where(
             ServiceReview.tipo_solicitud == payload.tipo_solicitud,
-            ServiceReview.solicitud_id == clean_solicitud_id,
+            ServiceReview.solicitud_id.in_(id_candidates),
             ServiceReview.rol_evaluador == rol_evaluador,
         )
     )
@@ -565,12 +699,12 @@ def create_service_review(
     counterpart_review = db.scalar(
         select(ServiceReview).where(
             ServiceReview.tipo_solicitud == payload.tipo_solicitud,
-            ServiceReview.solicitud_id == clean_solicitud_id,
+            ServiceReview.solicitud_id.in_(id_candidates),
             ServiceReview.rol_evaluador == counterpart_role,
         )
     )
 
-    should_publish_now, _policy_matched = evaluate_review_publication_policy(
+    should_publish_now, policy_matched = evaluate_review_publication_policy(
         counterpart_review=counterpart_review,
         completed_at=completed_at,
         now=now,
@@ -614,7 +748,10 @@ def create_service_review(
     serialized = _serialize_review(new_review, db)
 
     if should_publish_now:
-        msg = "Calificación enviada y publicada exitosamente al completarse la evaluación mutua."
+        if policy_matched == "EXPIRACION_SILENCIOSA_48H":
+            msg = "Calificación publicada inmediatamente al haberse cumplido el plazo de 48 horas."
+        else:
+            msg = "Calificación enviada y publicada exitosamente al completarse la evaluación mutua."
     else:
         msg = "Tu calificación fue enviada con éxito. Será visible cuando la otra parte también califique o al transcurrir 48 horas."
 
@@ -622,6 +759,8 @@ def create_service_review(
         "resena": serialized,
         "estado_publicacion": initial_status,
         "publicada_inmediata": should_publish_now,
+        "publicada": should_publish_now,
+        "motivo_publicacion": policy_matched if should_publish_now else None,
         "mensaje": msg,
     }
 
@@ -651,12 +790,12 @@ def get_service_reviews_status_data(
     my_role = "CLIENTE" if is_client else "TECNICO"
     counterpart_role = "TECNICO" if is_client else "CLIENTE"
 
-    clean_id = str(solicitud_id).strip()
+    clean_id = _canonical_solicitud_id(solicitud_id)
     reviews = list(
         db.scalars(
             select(ServiceReview).where(
                 ServiceReview.tipo_solicitud == adapter.tipo_solicitud,
-                ServiceReview.solicitud_id == clean_id,
+                ServiceReview.solicitud_id.in_(_solicitud_id_candidates(solicitud_id)),
             )
         ).all()
     )
@@ -689,26 +828,34 @@ def get_service_reviews_status_data(
     )
 
 
+def _apply_evaluated_role_filter(stmt, rol_evaluado: Optional[Literal["TECNICO", "CLIENTE"]]):
+    if rol_evaluado == "TECNICO":
+        return stmt.where(ServiceReview.rol_evaluador == "CLIENTE")
+    if rol_evaluado == "CLIENTE":
+        return stmt.where(ServiceReview.rol_evaluador == "TECNICO")
+    return stmt
+
+
 def get_user_reputation_summary(
     user_id: str,
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
+    *,
+    rol_evaluado: Optional[Literal["TECNICO", "CLIENTE"]] = None,
 ) -> ReputationSummaryOut:
-    """Calcula y devuelve el resumen de reputación pública de un usuario."""
+    """Calcula y devuelve el resumen de reputación pública de un usuario (opcionalmente filtrado por rol evaluado)."""
     sync_expired_reviews(db, clock_fn=clock_fn)
 
     target_user = _find_user_by_id_or_firebase_uid(user_id, db)
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
 
-    published_reviews = list(
-        db.scalars(
-            select(ServiceReview).where(
-                ServiceReview.evaluado_id == target_user.id,
-                ServiceReview.estado_publicacion == "PUBLICADA",
-            )
-        ).all()
+    query = select(ServiceReview).where(
+        ServiceReview.evaluado_id == target_user.id,
+        ServiceReview.estado_publicacion == "PUBLICADA",
     )
+    query = _apply_evaluated_role_filter(query, rol_evaluado)
+    published_reviews = list(db.scalars(query).all())
 
     total = len(published_reviews)
     distribution = {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0}
@@ -741,21 +888,23 @@ def list_user_published_reviews(
     user_id: str,
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
+    *,
+    rol_evaluado: Optional[Literal["TECNICO", "CLIENTE"]] = None,
 ) -> dict[str, Any]:
     """Devuelve la lista de reseñas públicas de un usuario junto con su resumen de reputación."""
-    summary = get_user_reputation_summary(user_id, db, clock_fn=clock_fn)
+    summary = get_user_reputation_summary(user_id, db, clock_fn=clock_fn, rol_evaluado=rol_evaluado)
     target_user = _find_user_by_id_or_firebase_uid(user_id, db)
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
 
+    query = select(ServiceReview).where(
+        ServiceReview.evaluado_id == target_user.id,
+        ServiceReview.estado_publicacion == "PUBLICADA",
+    )
+    query = _apply_evaluated_role_filter(query, rol_evaluado)
     published = list(
         db.scalars(
-            select(ServiceReview)
-            .where(
-                ServiceReview.evaluado_id == target_user.id,
-                ServiceReview.estado_publicacion == "PUBLICADA",
-            )
-            .order_by(ServiceReview.publicada_en.desc(), ServiceReview.creada_en.desc())
+            query.order_by(ServiceReview.publicada_en.desc(), ServiceReview.creada_en.desc())
         ).all()
     )
     serialized_list = [_serialize_review(r, db) for r in published]
@@ -800,20 +949,22 @@ def get_service_reviews_status_endpoint(
 def get_user_reputation_endpoint(
     user_id: str,
     response: Response,
+    rol_evaluado: Optional[Literal["TECNICO", "CLIENTE"]] = None,
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return get_user_reputation_summary(user_id, db)
+    return get_user_reputation_summary(user_id, db, rol_evaluado=rol_evaluado)
 
 
 @router.get("/users/{user_id}", response_model=UserPublicReviewsOut)
 def get_user_public_reviews_endpoint(
     user_id: str,
     response: Response,
+    rol_evaluado: Optional[Literal["TECNICO", "CLIENTE"]] = None,
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return list_user_published_reviews(user_id, db)
+    return list_user_published_reviews(user_id, db, rol_evaluado=rol_evaluado)
 
 
 @router.post("/sync-expirations", response_model=SyncExpirationsOut)

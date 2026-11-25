@@ -136,6 +136,8 @@ export type TechnicianOpportunityItem = {
   linea_tiempo?: ClientRequestTimelineItem[];
   pago_tarjeta_confirmado?: boolean;
   mi_propuesta?: TechnicianProposalSummary | null;
+  mi_resena_enviada?: boolean;
+  evaluacion_cerrada?: boolean;
 };
 
 export type AvailableOpportunitiesQuery = {

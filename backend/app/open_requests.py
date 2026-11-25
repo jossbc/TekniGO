@@ -260,8 +260,18 @@ def serialize_open_request_for_owner(
         "pendiente_recepcion": pendiente_recepcion,
         "solicitud_origen_id": record.solicitud_origen_id,
         "solicitud_origen_modalidad": record.solicitud_origen_modalidad,
+        "mi_resena_enviada": False,
+        "evaluacion_cerrada": False,
     }
     if db is not None:
+        if estado_norm == "COMPLETADA":
+            from app.reviews import get_request_review_flags
+
+            mi_resena_enviada, evaluacion_cerrada = get_request_review_flags(
+                db, "ABIERTA", str(record.id), viewer_role="CLIENTE"
+            )
+            payload["mi_resena_enviada"] = mi_resena_enviada
+            payload["evaluacion_cerrada"] = evaluacion_cerrada
         proposals = db.scalars(
             select(OpenRequestProposal)
             .where(OpenRequestProposal.solicitud_id == str(record.id))
@@ -805,6 +815,17 @@ def serialize_open_request_for_technician(
 
     # HU-31_CA-05 y Condición transversal: Solo el técnico adjudicado en estado ACEPTADA (o COMPLETADA) recibe dirección exacta y teléfono
     payload["es_tecnico_adjudicado"] = is_awarded_technician
+    if estado_norm == "COMPLETADA" and bool(record.tecnico_id) and record.tecnico_id == technician_user.firebase_uid:
+        from app.reviews import get_request_review_flags
+
+        mi_resena_enviada, evaluacion_cerrada = get_request_review_flags(
+            db, "ABIERTA", str(record.id), viewer_role="TECNICO"
+        )
+        payload["mi_resena_enviada"] = mi_resena_enviada
+        payload["evaluacion_cerrada"] = evaluacion_cerrada
+    else:
+        payload["mi_resena_enviada"] = False
+        payload["evaluacion_cerrada"] = False
     if is_awarded_technician:
         payload["pago_tarjeta_confirmado"] = bool(record.referencia_pasarela)
         payload["direccion_exacta"] = record.direccion_exacta
@@ -1340,6 +1361,14 @@ def serialize_open_request_proposal(
         and habilitado_operativamente
     )
 
+    from app.reviews import get_technician_reputation_stats
+
+    tech_avg_rating = (
+        get_technician_reputation_stats(resolved_profile.usuario_id, db)[0]
+        if resolved_profile is not None
+        else None
+    )
+
     return {
         "id": str(proposal.id),
         "propuesta_id": str(proposal.id),
@@ -1366,11 +1395,7 @@ def serialize_open_request_proposal(
             "certificaciones_aprobadas_count": certificaciones_count,
             "disponible": resolved_profile.disponible if resolved_profile is not None else False,
             "habilitado_operativamente": habilitado_operativamente,
-            "calificacion_promedio": (
-                float(Decimal(str(resolved_profile.calificacion_promedio)).quantize(Decimal("0.01")))
-                if resolved_profile is not None and resolved_profile.calificacion_promedio is not None
-                else None
-            ),
+            "calificacion_promedio": tech_avg_rating,
         },
     }
 
