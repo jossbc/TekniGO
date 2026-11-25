@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -13,6 +13,7 @@ from app.main import app as fastapi_app
 from app.models import (
     DirectRequest,
     OpenRequest,
+    RequestStateEvent,
     Service,
     ServiceReview,
     Specialty,
@@ -21,12 +22,21 @@ from app.models import (
     UserRole,
 )
 from app.reviews import (
+    BilateralMutualPublicationStrategy,
     CreateReviewSchema,
+    DirectReviewableRequestAdapter,
+    OpenReviewableRequestAdapter,
+    SilentTimeoutPublicationStrategy,
     create_service_review,
+    evaluate_review_publication_policy,
     get_service_reviews_status_data,
     get_user_reputation_summary,
-    list_user_published_reviews,
     sync_expired_reviews,
+)
+from app.service_completion import report_service_completion
+from app.service_reception import (
+    ConfirmReceptionSchema,
+    confirm_service_reception_by_client,
 )
 
 
@@ -99,7 +109,7 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.db.add_all([self.spec, self.service])
         self.db.commit()
 
-        # Solicitud directa completada
+        # Solicitud directa completada vía seguimiento_recepcion (HU-35) + RequestStateEvent (HU-32)
         self.completion_time = datetime(2026, 11, 10, 10, 0, 0, tzinfo=timezone.utc)
         self.direct_req = DirectRequest(
             id=str(uuid.uuid4()),
@@ -118,9 +128,23 @@ class ReviewsAndReputationTests(unittest.TestCase):
             metodo_pago="efectivo",
             estado="COMPLETADA",
             creada_en=self.completion_time - timedelta(hours=2),
-            completada_en=self.completion_time,
+            seguimiento_recepcion={
+                "completada": True,
+                "fecha_cierre": self.completion_time.isoformat(),
+                "resenas_habilitadas": True,
+            },
         )
         self.db.add(self.direct_req)
+        self.db.add(
+            RequestStateEvent(
+                modalidad="DIRECTA",
+                solicitud_id=str(self.direct_req.id),
+                estado="COMPLETADA",
+                fecha=self.completion_time,
+                responsable="CLIENTE",
+                responsable_id=self.client_user.firebase_uid,
+            )
+        )
         self.db.commit()
 
     def tearDown(self):
@@ -137,8 +161,8 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertIn("/reviews/sync-expirations", paths)
 
     def test_hu44_ca01_ca05_only_participant_of_completed_service_can_review(self):
-        # 1. Servicio pendiente no se puede calificar (400)
-        self.direct_req.estado = "PENDIENTE"
+        # 1. Servicio pendiente o en proceso no se puede calificar (400)
+        self.direct_req.estado = "EN_PROCESO"
         self.db.commit()
         payload = CreateReviewSchema(
             tipo_solicitud="DIRECTA",
@@ -158,7 +182,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertEqual(ctx_other.exception.status_code, 403)
 
     def test_hu44_hu45_ca02_validation_score_and_comment(self):
-        # Puntuación menor a 1 o mayor a 5 rechazada
         with self.assertRaises(ValidationError):
             CreateReviewSchema(
                 tipo_solicitud="DIRECTA",
@@ -173,7 +196,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
                 puntuacion=6,
                 comentario="Válido",
             )
-        # Comentario vacío rechazado
         with self.assertRaises(ValidationError):
             CreateReviewSchema(
                 tipo_solicitud="DIRECTA",
@@ -193,13 +215,11 @@ class ReviewsAndReputationTests(unittest.TestCase):
         res = create_service_review(payload, {"uid": self.client_user.firebase_uid}, self.db)
         self.assertEqual(res["resena"].puntuacion, 5)
 
-        # Reintento por el mismo cliente arroja 409 Conflict
         with self.assertRaises(HTTPException) as ctx:
             create_service_review(payload, {"uid": self.client_user.firebase_uid}, self.db)
         self.assertEqual(ctx.exception.status_code, 409)
 
     def test_hu46_double_blind_and_bilateral_simultaneous_publication(self):
-        # Paso 1: Cliente califica primero dentro de las 48h (T_completed + 2h)
         t_client = self.completion_time + timedelta(hours=2)
         payload_client = CreateReviewSchema(
             tipo_solicitud="DIRECTA",
@@ -214,11 +234,9 @@ class ReviewsAndReputationTests(unittest.TestCase):
             self.db,
             clock_fn=lambda: t_client,
         )
-        # CA-04 HU-44: Queda PENDIENTE
         self.assertEqual(res1["estado_publicacion"], "PENDIENTE")
         self.assertFalse(res1["publicada_inmediata"])
 
-        # Para el perfil público del técnico, el promedio y total siguen siendo None y 0 (Doble ciego)
         rep_tech_initial = get_user_reputation_summary(
             str(self.tech_user.id), self.db, clock_fn=lambda: t_client
         )
@@ -226,7 +244,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertEqual(rep_tech_initial.total_resenas, 0)
         self.assertTrue(rep_tech_initial.sin_calificacion)
 
-        # Al consultar el estado del servicio desde el lado del técnico, la reseña del cliente está oculta
         status_tech_view = get_service_reviews_status_data(
             "DIRECTA",
             str(self.direct_req.id),
@@ -237,7 +254,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertIsNone(status_tech_view.contraparte_resena)
         self.assertTrue(status_tech_view.contraparte_ha_calificado)
 
-        # Paso 2: Técnico califica (HU-45 y HU-46 CA-01: Publicación bilateral simultánea)
         t_tech = self.completion_time + timedelta(hours=5)
         payload_tech = CreateReviewSchema(
             tipo_solicitud="DIRECTA",
@@ -255,28 +271,25 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertEqual(res2["estado_publicacion"], "PUBLICADA")
         self.assertTrue(res2["publicada_inmediata"])
 
-        # Verificar que la reseña del cliente ahora también pasó a PUBLICADA
         client_rev_db = self.db.scalar(
-            self.db.query(ServiceReview).filter_by(
-                solicitud_id=str(self.direct_req.id), rol_evaluador="CLIENTE"
-            ).statement
+            select(ServiceReview).where(
+                ServiceReview.solicitud_id == str(self.direct_req.id),
+                ServiceReview.rol_evaluador == "CLIENTE",
+            )
         )
+        self.assertIsNotNone(client_rev_db)
         self.assertEqual(client_rev_db.estado_publicacion, "PUBLICADA")
         self.assertIsNotNone(client_rev_db.publicada_en)
 
-        # Ambas reputaciones ahora reflejan las calificaciones publicadas
-        # Técnico recibió un 5 -> promedio 5.0
         rep_tech = get_user_reputation_summary(str(self.tech_user.id), self.db)
         self.assertEqual(rep_tech.promedio, 5.0)
         self.assertEqual(rep_tech.total_resenas, 1)
 
-        # Cliente recibió un 4 -> promedio 4.0
         rep_client = get_user_reputation_summary(str(self.client_user.id), self.db)
         self.assertEqual(rep_client.promedio, 4.0)
         self.assertEqual(rep_client.total_resenas, 1)
 
     def test_hu46_silent_expiration_after_48_hours_single_review(self):
-        # 1. Cliente califica al técnico a las 2 horas de completado
         t_client = self.completion_time + timedelta(hours=2)
         payload_client = CreateReviewSchema(
             tipo_solicitud="DIRECTA",
@@ -292,30 +305,25 @@ class ReviewsAndReputationTests(unittest.TestCase):
         )
         self.assertEqual(res1["estado_publicacion"], "PENDIENTE")
 
-        # A las 40 horas sigue PENDIENTE
         t_40h = self.completion_time + timedelta(hours=40)
         sync_40h = sync_expired_reviews(self.db, clock_fn=lambda: t_40h)
         self.assertEqual(sync_40h, 0)
         rep_40h = get_user_reputation_summary(str(self.tech_user.id), self.db, clock_fn=lambda: t_40h)
         self.assertIsNone(rep_40h.promedio)
 
-        # A las 48.1 horas se publica silenciosamente (CA-01, CA-02, CA-03)
         t_49h = self.completion_time + timedelta(hours=49)
         sync_49h = sync_expired_reviews(self.db, clock_fn=lambda: t_49h)
         self.assertEqual(sync_49h, 1)
 
-        # Idempotencia: segunda llamada no publica nada extra
         sync_repeat = sync_expired_reviews(self.db, clock_fn=lambda: t_49h)
         self.assertEqual(sync_repeat, 0)
 
-        # La reputación del técnico ahora se muestra pública con promedio 5.0
         rep_49h = get_user_reputation_summary(str(self.tech_user.id), self.db, clock_fn=lambda: t_49h)
         self.assertEqual(rep_49h.promedio, 5.0)
         self.assertEqual(rep_49h.total_resenas, 1)
         self.assertFalse(rep_49h.sin_calificacion)
 
     def test_hu46_average_calculation_4_and_5_equals_4_point_5(self):
-        # Creamos una segunda solicitud directa completada para tener 2 evaluaciones hacia el técnico
         second_direct_req = DirectRequest(
             id=str(uuid.uuid4()),
             cliente_id=self.client_user.firebase_uid,
@@ -333,12 +341,11 @@ class ReviewsAndReputationTests(unittest.TestCase):
             metodo_pago="efectivo",
             estado="COMPLETADA",
             creada_en=self.completion_time,
-            completada_en=self.completion_time,
+            seguimiento_recepcion={"completada": True, "fecha_cierre": self.completion_time.isoformat()},
         )
         self.db.add(second_direct_req)
         self.db.commit()
 
-        # Reseña 1: puntuación 4 (publicada)
         r1 = ServiceReview(
             tipo_solicitud="DIRECTA",
             solicitud_id=str(self.direct_req.id),
@@ -352,7 +359,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
             creada_en=self.completion_time,
             publicada_en=self.completion_time,
         )
-        # Reseña 2: puntuación 5 (publicada)
         r2 = ServiceReview(
             tipo_solicitud="DIRECTA",
             solicitud_id=str(second_direct_req.id),
@@ -370,7 +376,6 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.db.commit()
 
         rep = get_user_reputation_summary(str(self.tech_user.id), self.db)
-        # Promedio con 4 y 5 debe ser exactamente 4.5
         self.assertEqual(rep.promedio, 4.5)
         self.assertEqual(rep.total_resenas, 2)
         self.assertFalse(rep.sin_calificacion)
@@ -378,9 +383,8 @@ class ReviewsAndReputationTests(unittest.TestCase):
         self.assertEqual(rep.distribucion_estrellas["5"], 1)
 
     def test_open_request_completion_and_rating_flow(self):
-        # HU-44 / HU-45 también funciona para solicitudes abiertas (ABIERTA)
         open_req = OpenRequest(
-            id=str(uuid.uuid4()),
+            id=f"open-{uuid.uuid4()}",
             cliente_id=self.client_user.firebase_uid,
             tecnico_id=self.tech_user.firebase_uid,
             especialidad_id=self.spec.id,
@@ -395,7 +399,7 @@ class ReviewsAndReputationTests(unittest.TestCase):
             monto_base=800.0,
             metodo_pago="efectivo",
             estado="COMPLETADA",
-            completada_en=self.completion_time,
+            seguimiento_recepcion={"completada": True, "fecha_cierre": self.completion_time.isoformat()},
         )
         self.db.add(open_req)
         self.db.commit()
@@ -409,6 +413,107 @@ class ReviewsAndReputationTests(unittest.TestCase):
         res = create_service_review(payload, {"uid": self.client_user.firebase_uid}, self.db)
         self.assertEqual(res["resena"].tipo_solicitud, "ABIERTA")
         self.assertEqual(res["resena"].solicitud_id, str(open_req.id))
+
+    def test_e2e_hu34_hu35_completion_feeds_real_closing_timestamp_to_reviews(self):
+        t0 = datetime(2026, 11, 20, 14, 0, 0, tzinfo=timezone.utc)
+        req = DirectRequest(
+            id=str(uuid.uuid4()),
+            cliente_id=self.client_user.firebase_uid,
+            tecnico_id=self.tech_user.firebase_uid,
+            servicio_id=self.service.id,
+            municipio="Distrito Central",
+            sector="Kennedy",
+            direccion_exacta="Bloque K #5",
+            fecha_hora=t0,
+            descripcion="Reparación de tablero",
+            cantidad=1.0,
+            tarifa_aplicada=350.0,
+            unidad_cobro="POR_HORA",
+            monto_base=350.0,
+            metodo_pago="efectivo",
+            estado="EN_PROCESO",
+            creada_en=t0 - timedelta(hours=3),
+        )
+        self.db.add(req)
+        self.db.commit()
+
+        # 1. Técnico reporta trabajo finalizado (HU-34)
+        report_service_completion(str(req.id), {"uid": self.tech_user.firebase_uid}, self.db, now=t0)
+
+        # 2. Cliente confirma recepción 1 hora después (HU-35) -> pasa a COMPLETADA con fecha_cierre t_close
+        t_close = t0 + timedelta(hours=1)
+        confirm_res = confirm_service_reception_by_client(
+            str(req.id),
+            {"uid": self.client_user.firebase_uid},
+            self.db,
+            payload=ConfirmReceptionSchema(comentario="Todo en orden"),
+            now=t_close,
+        )
+        self.assertEqual(confirm_res["estado"], "COMPLETADA")
+
+        # 3. Verificar Adapter y fecha de cierre real
+        adapter = DirectReviewableRequestAdapter()
+        self.db.refresh(req)
+        self.assertTrue(adapter.is_completed(req))
+        self.assertEqual(adapter.resolve_completed_at(req, self.db), t_close)
+
+        # 4. Técnico califica 1h después del cierre -> PENDIENTE respecto a t_close
+        res_tech = create_service_review(
+            CreateReviewSchema(
+                tipo_solicitud="DIRECTA",
+                solicitud_id=str(req.id),
+                puntuacion=5,
+                comentario="Cliente muy cordial",
+            ),
+            {"uid": self.tech_user.firebase_uid},
+            self.db,
+            clock_fn=lambda: t_close + timedelta(hours=1),
+        )
+        self.assertEqual(res_tech["estado_publicacion"], "PENDIENTE")
+
+        # 5. A las 47h desde el reporte pero 46h desde el cierre real NO debe expirar (plazos independientes!)
+        self.assertEqual(sync_expired_reviews(self.db, clock_fn=lambda: t0 + timedelta(hours=47)), 0)
+
+        # 6. A las 48h desde el cierre real (`t_close + 48h`) expira silenciosamente y publica
+        self.assertEqual(sync_expired_reviews(self.db, clock_fn=lambda: t_close + timedelta(hours=48)), 1)
+
+    def test_adapter_and_strategy_contracts_solid(self):
+        # Adapter LSP check for both Direct and Open
+        direct_adapter = DirectReviewableRequestAdapter()
+        open_adapter = OpenReviewableRequestAdapter()
+        self.assertEqual(direct_adapter.tipo_solicitud, "DIRECTA")
+        self.assertEqual(open_adapter.tipo_solicitud, "ABIERTA")
+        self.assertIsNone(direct_adapter.find_request(self.db, "non-existent"))
+        self.assertIsNone(open_adapter.find_request(self.db, "non-existent"))
+
+        # Strategy OCP / DIP check
+        dummy_review = ServiceReview(
+            tipo_solicitud="DIRECTA",
+            solicitud_id="x",
+            evaluador_id=self.client_user.id,
+            evaluado_id=self.tech_user.id,
+            rol_evaluador="CLIENTE",
+            puntuacion=5,
+            comentario="Ok",
+            fecha_completado_servicio=self.completion_time,
+        )
+        pub_bilateral, strat_a = evaluate_review_publication_policy(
+            counterpart_review=dummy_review,
+            completed_at=self.completion_time,
+            now=self.completion_time + timedelta(minutes=5),
+            strategies=(BilateralMutualPublicationStrategy(), SilentTimeoutPublicationStrategy()),
+        )
+        self.assertTrue(pub_bilateral)
+        self.assertEqual(strat_a, "BILATERAL_SIMULTANEA")
+
+        pub_timeout, strat_b = evaluate_review_publication_policy(
+            counterpart_review=None,
+            completed_at=self.completion_time,
+            now=self.completion_time + timedelta(hours=48),
+            strategies=(BilateralMutualPublicationStrategy(), SilentTimeoutPublicationStrategy()),
+        )
+        self.assertTrue(pub_timeout)
+        self.assertEqual(strat_b, "EXPIRACION_SILENCIOSA_48H")
 
 
 if __name__ == "__main__":

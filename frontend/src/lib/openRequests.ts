@@ -1,3 +1,4 @@
+import type { ClientRequestTimelineItem } from "./clientRequests";
 import type { User } from "firebase/auth";
 import { api } from "./api";
 
@@ -9,14 +10,16 @@ export type SpecialtyOption = {
 export type SuggestedRangeUnitItem = {
   unidad_cobro: string;
   tarifa_promedio: number;
-  tarifa_minima: number;
-  tarifa_maxima: number;
+  tarifa_minima: number | null;
+  tarifa_maxima: number | null;
   rango_sugerido_min: number;
   rango_sugerido_max: number;
   cantidad_servicios: number;
 };
 
 export type SuggestedRangeResponse = {
+  origen_tarifa?: "CONFIGURADA" | "SERVICIOS_ACTIVOS";
+  regla_calculo?: string;
   especialidad_id: string;
   tiene_referencia: boolean;
   unidad_cobro: string | null;
@@ -59,6 +62,11 @@ export type PublishedOpenRequestResponse = {
   presupuesto: number;
   monto_base: number;
   creada_en: string | null;
+  finalizacion_reportada_en?: string | null;
+  vencimiento_confirmacion_en?: string | null;
+  finalizacion_reportada_local?: string | null;
+  vencimiento_confirmacion_local?: string | null;
+  pendiente_recepcion?: boolean;
   mensaje?: string;
 };
 
@@ -99,6 +107,7 @@ export type TechnicianProposalSummary = {
   id: string;
   tipo: string;
   monto: number;
+  justificacion?: string | null;
   estado: "PENDIENTE" | "ACEPTADA" | "RECHAZADA" | "CANCELADA" | "RETIRADA" | string;
   creada_en: string | null;
 };
@@ -124,6 +133,8 @@ export type TechnicianOpportunityItem = {
     telefono?: string | null;
   };
   ubicacion_exacta_protegida: boolean;
+  linea_tiempo?: ClientRequestTimelineItem[];
+  pago_tarjeta_confirmado?: boolean;
   mi_propuesta?: TechnicianProposalSummary | null;
 };
 
@@ -146,9 +157,33 @@ export type AvailableOpportunitiesResponse = {
     sector: string | null;
     estado: string;
   };
+  diagnostico_cobertura?: {
+    tiene_especialidades: boolean;
+    cantidad_especialidades: number;
+    tiene_zonas_cobertura: boolean;
+    cantidad_zonas_cobertura: number;
+  };
   mensaje?: string | null;
   solicitudes: TechnicianOpportunityItem[];
 };
+
+export async function fetchCoverageZonesCatalog(
+  user: User,
+  params?: { especialidad_id?: string; municipio?: string },
+): Promise<TechnicianCoverageZoneItem[]> {
+  try {
+    const query = new URLSearchParams();
+    if (params?.especialidad_id) query.set("especialidad_id", params.especialidad_id);
+    if (params?.municipio) query.set("municipio", params.municipio);
+    const qs = query.toString();
+    return await api<TechnicianCoverageZoneItem[]>(
+      `/open-requests/coverage-zones${qs ? `?${qs}` : ""}`,
+      user,
+    );
+  } catch {
+    return [];
+  }
+}
 
 export type DiscardOpportunityResponse = {
   solicitud_id: string;
@@ -226,6 +261,44 @@ export async function acceptPublishedBudgetApi(
     `/open-requests/${encodeURIComponent(solicitudId)}/accept-budget`,
     user,
     {},
+    "POST",
+  );
+}
+
+export type CounterOfferPayload = {
+  monto: number | string;
+  justificacion?: string | null;
+};
+
+export type SubmitCounterOfferResponse = {
+  propuesta: {
+    id: string;
+    propuesta_id: string;
+    solicitud_id: string;
+    usuario_id: string;
+    tecnico_id: string;
+    tipo: string;
+    monto: number;
+    justificacion?: string | null;
+    estado: string;
+    activa: boolean;
+    creada_en: string | null;
+  };
+  solicitud: TechnicianOpportunityItem;
+  estado_solicitud: string;
+  reintento_idempotente: boolean;
+  mensaje: string;
+};
+
+export async function submitCounterOfferApi(
+  user: User,
+  solicitudId: string,
+  payload: CounterOfferPayload,
+): Promise<SubmitCounterOfferResponse> {
+  return api<SubmitCounterOfferResponse>(
+    `/open-requests/${encodeURIComponent(solicitudId)}/counter-offer`,
+    user,
+    payload,
     "POST",
   );
 }

@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { api, errorMessage } from "./lib/api";
 import { TechnicianCard, type CatalogTechnician } from "./components/TechnicianCard";
 import hondurasLocation from "./data/hondurasLocation.json";
+import { getMunicipiosByDepartamento, getSectorsForMunicipio } from "./data/hondurasSectors";
 
 const departments = Object.keys(hondurasLocation).sort((a, b) => a.localeCompare(b, "es"));
 
@@ -19,10 +20,11 @@ export default function CatalogPage({ user }: { user: User }) {
   const [municipio, setMunicipio] = useState("");
   const [departamento, setDepartamento] = useState("");
   const [calificacionMinima, setCalificacionMinima] = useState("");
+  const [sector, setSector] = useState("");
 
   // Función para llamar al backend con los filtros aplicados
   const fetchCatalog = useCallback(
-    (queryEspec = "", queryMuni = "", queryDepto = "", queryMinCal = "") => {
+    (queryEspec = "", queryMuni = "", queryDepto = "", querySector = "", queryMinCal = "") => {
       setLoading(true);
       setError("");
 
@@ -31,6 +33,7 @@ export default function CatalogPage({ user }: { user: User }) {
       if (queryEspec.trim()) params.append("especialidad", queryEspec.trim());
       if (queryMuni.trim()) params.append("municipio", queryMuni.trim());
       if (queryDepto) params.append("departamento", queryDepto);
+      if (querySector.trim()) params.append("sector", querySector.trim());
       if (queryMinCal) params.append("calificacion_minima", queryMinCal);
 
       const query = params.toString();
@@ -55,7 +58,7 @@ export default function CatalogPage({ user }: { user: User }) {
   // Manejar el clic en "Aplicar filtros"
   const handleFilterSubmit = (e: FormEvent) => {
     e.preventDefault();
-    fetchCatalog(especialidad, municipio, departamento, calificacionMinima);
+    fetchCatalog(especialidad, municipio, departamento, sector, calificacionMinima);
   };
 
   // Manejar el clic en "Limpiar filtros"
@@ -63,11 +66,14 @@ export default function CatalogPage({ user }: { user: User }) {
     setEspecialidad("");
     setMunicipio("");
     setDepartamento("");
+    setSector("");
     setCalificacionMinima("");
     fetchCatalog();
   };
 
-  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento || calificacionMinima);
+  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento || sector.trim() || calificacionMinima);
+  const municipiosDepto = getMunicipiosByDepartamento(departamento);
+  const sectoresMuni = getSectorsForMunicipio(municipio);
 
   return (
     <main className="account catalog-page">
@@ -97,16 +103,24 @@ export default function CatalogPage({ user }: { user: User }) {
             <label htmlFor="catalog-specialty">Especialidad</label>
             <div className="catalog-input-wrap">
               <Wrench size={18} aria-hidden="true" />
-              <input id="catalog-specialty" type="search" placeholder="Ej. Aire" value={especialidad} onChange={(e) => setEspecialidad(e.target.value)} />
+              <input id="catalog-specialty" type="search" placeholder="Ej. Aire, Plomería..." value={especialidad} onChange={(e) => setEspecialidad(e.target.value)} />
             </div>
           </div>
           <div className="catalog-filter-field">
             <label htmlFor="catalog-department">Departamento</label>
             <div className="catalog-input-wrap">
               <MapPin size={18} aria-hidden="true" />
-              <select id="catalog-department" value={departamento} onChange={(e) => setDepartamento(e.target.value)}>
+              <select
+                id="catalog-department"
+                value={departamento}
+                onChange={(e) => {
+                  setDepartamento(e.target.value);
+                  setMunicipio("");
+                  setSector("");
+                }}
+              >
                 <option value="">Todos</option>
-                {departments.map((department) => <option key={department}>{department}</option>)}
+                {departments.map((department) => <option key={department} value={department}>{department}</option>)}
               </select>
             </div>
           </div>
@@ -114,7 +128,37 @@ export default function CatalogPage({ user }: { user: User }) {
             <label htmlFor="catalog-municipality">Municipio</label>
             <div className="catalog-input-wrap">
               <MapPin size={18} aria-hidden="true" />
-              <input id="catalog-municipality" type="search" placeholder="Ej. Tegucigalpa" value={municipio} onChange={(e) => setMunicipio(e.target.value)} />
+              <select
+                id="catalog-municipality"
+                value={municipio}
+                disabled={!departamento}
+                onChange={(e) => {
+                  setMunicipio(e.target.value);
+                  setSector("");
+                }}
+              >
+                <option value="">{departamento ? "Todos los municipios" : "Elige un departamento"}</option>
+                {municipiosDepto.map((mun) => (
+                  <option key={mun} value={mun}>{mun}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="catalog-filter-field">
+            <label htmlFor="catalog-sector">Sector / Colonia</label>
+            <div className="catalog-input-wrap">
+              <MapPin size={18} aria-hidden="true" />
+              <select
+                id="catalog-sector"
+                value={sector}
+                disabled={!municipio}
+                onChange={(e) => setSector(e.target.value)}
+              >
+                <option value="">{municipio ? "Todos los sectores" : "Elige un municipio"}</option>
+                {sectoresMuni.map((item) => (
+                  <option key={item.sector} value={item.sector}>{item.sector}</option>
+                ))}
+              </select>
             </div>
           </div>
           <div className="catalog-filter-field">
@@ -149,7 +193,7 @@ export default function CatalogPage({ user }: { user: User }) {
             <SearchX size={32} aria-hidden="true" />
             <h3>No pudimos cargar los resultados</h3>
             <p>Intenta realizar la búsqueda nuevamente.</p>
-            <button type="button" className="button button-outline" onClick={() => fetchCatalog(especialidad, municipio, departamento)}>Reintentar búsqueda</button>
+            <button type="button" className="button button-outline" onClick={() => fetchCatalog(especialidad, municipio, departamento, sector, calificacionMinima)}>Reintentar búsqueda</button>
           </div>
         ) : technicians.length === 0 ? (
           <div className="catalog-empty">

@@ -8,11 +8,31 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from typing import Any
+
 from app.database import get_db
-from app.models import DirectRequest, Service, User
+from app.models import (
+    DirectRequest,
+    OpenRequest,
+    Service,
+    Specialty,
+    User,
+    ensure_utc_datetime,
+    format_tegucigalpa_iso,
+)
+from app.request_states import request_timeline, start_request_service, state_key, transition_request
 from app.security import get_current_user
+from app.service_reception import get_service_reception_tracking
+from app.service_completion import has_pending_adjustment
 
 router = APIRouter(prefix="/technicians", tags=["Solicitudes Directas del Técnico"])
+
+
+class RequestTimelineItem(BaseModel):
+    estado: str
+    descripcion: str
+    fecha: str | None
+    responsable: str | None
 
 
 class TechnicianDirectRequestOut(BaseModel):
@@ -22,7 +42,33 @@ class TechnicianDirectRequestOut(BaseModel):
     fecha_hora: str | None
     descripcion: str
     estado: str
+    modalidad: str | None = None
     total_estimado: float
+    metodo_pago: str | None = None
+    referencia_pasarela: str | None = None
+    monto_ajuste: float | None = None
+    metodo_pago_ajuste: str | None = None
+    monto_total: float | None = None
+    desglose_medios: dict | None = None
+    municipio: str | None = None
+    sector: str | None = None
+    direccion_exacta: str | None = None
+    cliente_telefono: str | None = None
+    pendiente_recepcion: bool | None = None
+    finalizacion_reportada_en: str | None = None
+    vencimiento_confirmacion_en: str | None = None
+    finalizacion_reportada_local: str | None = None
+    vencimiento_confirmacion_local: str | None = None
+    tiene_ajuste_pendiente: bool | None = None
+    motivo_ajuste_pendiente: str | None = None
+    incidencia_abierta: bool | None = None
+    incidencia: dict | None = None
+
+
+class TechnicianDirectRequestDetail(TechnicianDirectRequestOut):
+    modalidad: str
+    metodo_pago: str
+    linea_tiempo: list[RequestTimelineItem]
 
 
 def _require_technician_user(claims: dict, db: Session) -> User:
@@ -43,15 +89,16 @@ def _require_technician_user(claims: dict, db: Session) -> User:
 
 def _resolve_related_maps(
     db: Session,
-    rows: list[DirectRequest],
-) -> tuple[dict[str, User], dict[str, Service]]:
-    client_uids = {row.cliente_id for row in rows if row.cliente_id}
+    rows: list[Any],
+) -> tuple[dict[str, User], dict[str, Service], dict[str, Specialty]]:
+    client_uids = {row.cliente_id for row in rows if getattr(row, "cliente_id", None)}
     clients_by_uid: dict[str, User] = {}
     if client_uids:
         clients = db.scalars(select(User).where(User.firebase_uid.in_(client_uids))).all()
         clients_by_uid = {client.firebase_uid: client for client in clients}
 
     service_uuids: list[uuid.UUID] = []
+    specialty_uuids: list[uuid.UUID] = []
     for row in rows:
         raw_service_id = getattr(row, "servicio_id", None)
         if isinstance(raw_service_id, uuid.UUID):
@@ -60,61 +107,147 @@ def _resolve_related_maps(
             try:
                 service_uuids.append(uuid.UUID(raw_service_id))
             except ValueError:
-                continue
+                pass
+        raw_spec_id = getattr(row, "especialidad_id", None)
+        if isinstance(raw_spec_id, uuid.UUID):
+            specialty_uuids.append(raw_spec_id)
+        elif isinstance(raw_spec_id, str):
+            try:
+                specialty_uuids.append(uuid.UUID(raw_spec_id))
+            except ValueError:
+                pass
 
     services_by_id: dict[str, Service] = {}
     if service_uuids:
         services = db.scalars(select(Service).where(Service.id.in_(service_uuids))).all()
         services_by_id = {str(service.id): service for service in services}
 
-    return clients_by_uid, services_by_id
+    specialties_by_id: dict[str, Specialty] = {}
+    if specialty_uuids:
+        specs = db.scalars(select(Specialty).where(Specialty.id.in_(specialty_uuids))).all()
+        specialties_by_id = {str(spec.id): spec for spec in specs}
+
+    return clients_by_uid, services_by_id, specialties_by_id
 
 
 def _serialize_direct_request(
-    row: DirectRequest,
+    row: Any,
     *,
     clients_by_uid: dict[str, User],
     services_by_id: dict[str, Service],
+    specialties_by_id: dict[str, Specialty] | None = None,
 ) -> dict:
     client = clients_by_uid.get(row.cliente_id)
-    service_key = str(row.servicio_id) if row.servicio_id is not None else ""
+    service_key = str(row.servicio_id) if getattr(row, "servicio_id", None) is not None else ""
     service = services_by_id.get(service_key)
+    spec_key = str(getattr(row, "especialidad_id", "")) if getattr(row, "especialidad_id", None) is not None else ""
+    spec = (specialties_by_id or {}).get(spec_key)
+    base_val = getattr(row, "monto_base", None) or getattr(row, "presupuesto", None)
+    effective_total = getattr(row, "monto_total", None)
+    if effective_total is None:
+        effective_total = base_val
     total = (
-        float(Decimal(str(row.monto_base)).quantize(Decimal("0.01")))
-        if row.monto_base is not None
+        float(Decimal(str(effective_total)).quantize(Decimal("0.01")))
+        if effective_total is not None
         else 0.0
     )
-    estado = (row.estado or "PENDIENTE").strip().upper()
+    estado = state_key(row.estado or "PENDIENTE").replace(" ", "_")
+    service_label = (
+        service.nombre
+        if service is not None
+        else (f"{spec.nombre} (Licitación abierta)" if spec is not None else "Servicio")
+    )
 
-    return {
+    # Política de privacidad: Dirección exacta y teléfono solo revelados tras aceptar el trabajo
+    revelar_contacto = estado in {"ACEPTADA", "EN_PROCESO", "COMPLETADA"}
+
+    payload = {
         "id": str(row.id),
         "cliente_nombre": client.nombre_completo if client is not None else "Cliente",
-        "servicio_nombre": service.nombre if service is not None else "Servicio",
+        "servicio_nombre": service_label,
         "fecha_hora": row.fecha_hora.isoformat() if row.fecha_hora is not None else None,
         "descripcion": row.descripcion or "",
         "estado": estado,
+        "modalidad": "ABIERTA" if isinstance(row, OpenRequest) else "DIRECTA",
         "total_estimado": total,
+        "metodo_pago": row.metodo_pago,
+        "referencia_pasarela": row.referencia_pasarela,
+        "monto_ajuste": float(row.monto_ajuste or 0.0),
+        "metodo_pago_ajuste": row.metodo_pago_ajuste,
+        "monto_total": float(row.monto_total or base_val or 0.0),
+        "desglose_medios": row.desglose_medios,
+        "municipio": getattr(row, "municipio", None),
+        "sector": getattr(row, "sector", None),
+        "direccion_exacta": getattr(row, "direccion_exacta", None) if revelar_contacto else None,
+        "cliente_telefono": (client.telefono if client is not None else None) if revelar_contacto else None,
     }
+
+    reception_tracking = get_service_reception_tracking(str(row.id), record=row)
+    incidencia_abierta = bool(reception_tracking.get("incidencia_abierta"))
+    incidencia_data = reception_tracking.get("incidencia")
+
+    finalizacion_dt = ensure_utc_datetime(getattr(row, "finalizacion_reportada_en", None))
+    vencimiento_dt = ensure_utc_datetime(getattr(row, "vencimiento_confirmacion_en", None))
+    pendiente_rec = (
+        estado == "EN_PROCESO"
+        and not incidencia_abierta
+        and (bool(getattr(row, "pendiente_recepcion", False)) or finalizacion_dt is not None)
+    )
+    has_adj, adj_reason = has_pending_adjustment(row, Session.object_session(row))
+
+    if incidencia_abierta or reception_tracking.get("tecnico_reporto_incidencia") or reception_tracking.get("cliente_reporto_incidencia"):
+        payload["incidencia_abierta"] = True
+        if incidencia_data is not None:
+            payload["incidencia"] = reception_tracking.get("incidencia") or {
+                key: incidencia_data.get(key)
+                for key in ("incidencia_id", "motivo", "estado", "abierta_en_tegucigalpa")
+            }
+        payload["tecnico_reporto_incidencia"] = bool(reception_tracking.get("tecnico_reporto_incidencia"))
+        payload["cliente_reporto_incidencia"] = bool(reception_tracking.get("cliente_reporto_incidencia"))
+        payload["es_disputa_cruzada"] = bool(reception_tracking.get("es_disputa_cruzada"))
+    if finalizacion_dt is not None or vencimiento_dt is not None or pendiente_rec or has_adj:
+        payload["pendiente_recepcion"] = pendiente_rec
+        payload["finalizacion_reportada_en"] = finalizacion_dt.isoformat() if finalizacion_dt else None
+        payload["vencimiento_confirmacion_en"] = vencimiento_dt.isoformat() if vencimiento_dt else None
+        payload["finalizacion_reportada_local"] = format_tegucigalpa_iso(finalizacion_dt)
+        payload["vencimiento_confirmacion_local"] = format_tegucigalpa_iso(vencimiento_dt)
+        payload["tiene_ajuste_pendiente"] = has_adj
+        payload["motivo_ajuste_pendiente"] = adj_reason
+
+    return payload
 
 
 def list_technician_direct_requests(claims: dict, db: Session) -> list[dict]:
-    """HU-22: Lista las solicitudes directas dirigidas al técnico autenticado."""
+    """HU-22 / HU-31 / HU-34: Lista las solicitudes directas y abiertas adjudicadas al técnico autenticado."""
     user = _require_technician_user(claims, db)
-    rows = list(
+    direct_rows = list(
         db.scalars(
             select(DirectRequest)
             .where(DirectRequest.tecnico_id.in_((user.firebase_uid, str(user.id))))
             .order_by(DirectRequest.creada_en.desc(), DirectRequest.id.desc())
         ).all()
     )
-    clients_by_uid, services_by_id = _resolve_related_maps(db, rows)
+    open_rows = list(
+        db.scalars(
+            select(OpenRequest)
+            .where(OpenRequest.tecnico_id.in_((user.firebase_uid, str(user.id))))
+            .order_by(OpenRequest.creada_en.desc(), OpenRequest.id.desc())
+        ).all()
+    )
+    rows: list[Any] = [*direct_rows, *open_rows]
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, rows)
     return [
-        _serialize_direct_request(row, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+        _serialize_direct_request(
+            row,
+            clients_by_uid=clients_by_uid,
+            services_by_id=services_by_id,
+            specialties_by_id=specialties_by_id,
+        )
         for row in rows
     ]
 
 
-def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session) -> DirectRequest:
+def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session, *, lock: bool = False) -> DirectRequest:
     user = _require_technician_user(claims, db)
     clean_id = (solicitud_id or "").strip()
     if not clean_id:
@@ -127,7 +260,10 @@ def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session) -> D
         except ValueError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud directa.") from None
 
-    record = db.scalar(select(DirectRequest).where(DirectRequest.id == clean_id))
+    query = select(DirectRequest).where(DirectRequest.id == clean_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    record = db.scalar(query)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud directa.")
 
@@ -142,8 +278,28 @@ def _get_owned_direct_request(solicitud_id: str, claims: dict, db: Session) -> D
 def get_technician_direct_request_detail(solicitud_id: str, claims: dict, db: Session) -> dict:
     """HU-22: Obtiene el detalle de una solicitud directa dirigida al técnico autenticado."""
     record = _get_owned_direct_request(solicitud_id, claims, db)
-    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
-    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    detail = _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
+    detail["linea_tiempo"] = request_timeline(db, record)
+    return detail
+
+
+@router.post("/me/direct-requests/{solicitud_id}/start", response_model=TechnicianDirectRequestDetail)
+def start_my_direct_request_endpoint(
+    solicitud_id: str,
+    response: Response,
+    claims: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    record = _get_owned_direct_request(solicitud_id, claims, db, lock=True)
+    start_request_service(db, record, claims["uid"])
+    return get_technician_direct_request_detail(solicitud_id, claims, db)
 
 
 def respond_to_direct_request(
@@ -152,22 +308,95 @@ def respond_to_direct_request(
     claims: dict,
     db: Session,
 ) -> dict:
-    """HU-23 / HU-24: Valida propiedad del técnico y actualiza una solicitud pendiente a ACEPTADA o RECHAZADA."""
-    record = _get_owned_direct_request(solicitud_id, claims, db)
+    """HU-23 / HU-24: Valida propiedad del técnico y actualiza una solicitud pendiente a ACEPTADA o CANCELADA."""
+    record = _get_owned_direct_request(solicitud_id, claims, db, lock=True)
 
-    current_state = (record.estado or "PENDIENTE").strip().upper()
+    current_state = state_key(record.estado)
     if current_state != "PENDIENTE":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Solo puedes responder solicitudes en estado PENDIENTE (estado actual: {current_state}).",
         )
-
-    record.estado = target_estado
+    # HU-37 CA-03: Con efectivo no se invoca cobro digital; con tarjeta se solicita pago antes de Aceptada
+    if target_estado == "ACEPTADA":
+        metodo = (record.metodo_pago or "").strip().lower()
+        if metodo == "tarjeta" and not record.referencia_pasarela:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Con tarjeta se requiere confirmación y referencia de pago de pasarela antes de aceptar la solicitud (CA-03).",
+            )
+    transition_request(db, record, target_estado, role="TECNICO", uid=claims["uid"])
     db.commit()
     db.refresh(record)
 
-    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
-    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
+
+
+def start_technician_request_execution(solicitud_id: str, claims: dict, db: Session) -> dict:
+    """Pasa una solicitud directa o abierta adjudicada de ACEPTADA a EN_PROCESO para poder ejecutarla y reportar finalización."""
+    user = _require_technician_user(claims, db)
+    clean_id = (solicitud_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud.")
+
+    bind = db.get_bind()
+    is_postgres = bind is not None and bind.dialect.name == "postgresql"
+    record: Any = None
+
+    lookup_id = clean_id
+    can_query_direct = True
+    if is_postgres:
+        try:
+            lookup_id = str(uuid.UUID(clean_id))
+        except ValueError:
+            can_query_direct = False
+    if can_query_direct:
+        record = db.scalar(select(DirectRequest).where(DirectRequest.id == lookup_id).with_for_update().execution_options(populate_existing=True))
+
+    if record is None:
+        record = db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id).with_for_update().execution_options(populate_existing=True))
+
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró la solicitud.")
+
+    if getattr(record, "tecnico_id", None) not in (user.firebase_uid, str(user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para modificar esta solicitud.",
+        )
+
+    current_state = (getattr(record, "estado", None) or "").strip().upper()
+    if current_state in {"EN PROCESO", "EN_PROCESO"}:
+        clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+        return _serialize_direct_request(
+            record,
+            clients_by_uid=clients_by_uid,
+            services_by_id=services_by_id,
+            specialties_by_id=specialties_by_id,
+        )
+
+    if current_state not in {"ACEPTADA", "ASIGNADA"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Solo puedes iniciar la ejecución de una solicitud en estado ACEPTADA (estado actual: {current_state}).",
+        )
+
+    start_request_service(db, record, user.firebase_uid)
+    db.refresh(record)
+
+    clients_by_uid, services_by_id, specialties_by_id = _resolve_related_maps(db, [record])
+    return _serialize_direct_request(
+        record,
+        clients_by_uid=clients_by_uid,
+        services_by_id=services_by_id,
+        specialties_by_id=specialties_by_id,
+    )
 
 
 @router.get("/me/direct-requests", response_model=list[TechnicianDirectRequestOut], status_code=status.HTTP_200_OK)
@@ -180,7 +409,7 @@ def get_my_direct_requests_endpoint(
     return list_technician_direct_requests(claims, db)
 
 
-@router.get("/me/direct-requests/{solicitud_id}", response_model=TechnicianDirectRequestOut, status_code=status.HTTP_200_OK)
+@router.get("/me/direct-requests/{solicitud_id}", response_model=TechnicianDirectRequestDetail, status_code=status.HTTP_200_OK)
 def get_my_direct_request_detail_endpoint(
     solicitud_id: str,
     response: Response,
@@ -218,42 +447,31 @@ def reject_my_direct_request_endpoint(
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return respond_to_direct_request(solicitud_id, "RECHAZADA", claims, db)
-
-
-def complete_direct_request(
-    solicitud_id: str,
-    claims: dict,
-    db: Session,
-) -> dict:
-    """HU-44 / HU-45: Permite al técnico marcar como COMPLETADA una solicitud aceptada."""
-    record = _get_owned_direct_request(solicitud_id, claims, db)
-    current_state = (record.estado or "PENDIENTE").strip().upper()
-    if current_state not in ("ACEPTADA", "EN_PROCESO"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Solo puedes completar solicitudes en estado ACEPTADA o EN_PROCESO (estado actual: {current_state}).",
-        )
-    record.estado = "COMPLETADA"
-    record.completada_en = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(record)
-
-    clients_by_uid, services_by_id = _resolve_related_maps(db, [record])
-    return _serialize_direct_request(record, clients_by_uid=clients_by_uid, services_by_id=services_by_id)
+    return respond_to_direct_request(solicitud_id, "CANCELADA", claims, db)
 
 
 @router.patch(
-    "/me/direct-requests/{solicitud_id}/complete",
+    "/me/direct-requests/{solicitud_id}/start",
     response_model=TechnicianDirectRequestOut,
     status_code=status.HTTP_200_OK,
 )
-def complete_my_direct_request_endpoint(
+@router.post(
+    "/me/requests/{solicitud_id}/start",
+    response_model=TechnicianDirectRequestOut,
+    status_code=status.HTTP_200_OK,
+)
+def start_my_request_execution_endpoint(
     solicitud_id: str,
     response: Response,
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     response.headers["Cache-Control"] = "no-store, private"
-    return complete_direct_request(solicitud_id, claims, db)
+    return start_technician_request_execution(solicitud_id, claims, db)
 
+
+from app.service_completion import (  # noqa: E402, F401
+    report_direct_request_completion_endpoint,
+    report_service_completion,
+    report_service_completion_endpoint,
+)

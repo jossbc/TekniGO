@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import DirectRequest, Service
+from app.request_states import record_creation
 
 
 class DirectRequestRepository:
@@ -21,6 +22,7 @@ class DirectRequestRepository:
         db_request = DirectRequest(**request_data)
         db.add(db_request)
         try:
+            record_creation(db, db_request)
             db.commit()
         except IntegrityError:
             db.rollback()

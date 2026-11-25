@@ -66,20 +66,17 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
     setActionLoading(id);
     setActionError("");
     setActionNotice("");
-    const nextState = decision === "accept" ? "ACEPTADA" : "RECHAZADA";
     const successText =
       decision === "accept"
         ? "Solicitud aceptada correctamente."
         : "Solicitud rechazada correctamente.";
 
     try {
-      if (decision === "accept") {
-        await acceptTechnicianDirectRequest(user, id);
-      } else {
-        await rejectTechnicianDirectRequest(user, id);
-      }
+      const updated = decision === "accept"
+        ? await acceptTechnicianDirectRequest(user, id)
+        : await rejectTechnicianDirectRequest(user, id);
       setRequests((prev) =>
-        prev.map((req) => (req.id === id ? { ...req, estado: nextState } : req)),
+        prev.map((req) => (req.id === id ? { ...req, estado: updated.estado } : req)),
       );
       setActionNotice(successText);
     } catch (err) {
@@ -180,7 +177,7 @@ export default function TechnicianIncomingRequestsCard({ user }: { user: User })
           }}
         >
           <Inbox size={18} style={{ color: "var(--blue)", flexShrink: 0 }} />
-          <span>Cuando recibas una nueva petición directa de un cliente, aparecerá aquí para responder al instante.</span>
+          <span>Cuando recibas una nueva petición directa de un cliente, aparecerá aquí para responder al instante. Si ya te aceptaron en una oferta abierta o solicitud directa, gestiónala en &quot;Ver todas las solicitudes&quot;.</span>
         </div>
       ) : (
         <div style={{ display: "grid", gap: "10px", marginTop: "4px" }}>

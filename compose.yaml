@@ -14,6 +14,9 @@ services:
       IDENTITY_SERVICE_TOKEN: ${IDENTITY_SERVICE_TOKEN:?Set IDENTITY_SERVICE_TOKEN in the shell}
     depends_on:
       - identity
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - default
       - identity
@@ -31,6 +34,7 @@ services:
   frontend:
     build:
       context: ./frontend
+      target: runtime
       args:
         VITE_API_URL: http://localhost:8000
         VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}

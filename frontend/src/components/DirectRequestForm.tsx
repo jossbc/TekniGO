@@ -2,7 +2,8 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { Calculator, ClipboardList, X } from "lucide-react";
 import type { CoverageZone } from "../CoverageZoneSelector";
 import { createDirectRequest, estimateBudget } from "../lib/directRequests";
-
+import { PaymentMethodSelector, type MetodoPago } from "./PaymentMethodSelector";
+import { SecurePaymentGatewayModal, type CardPaymentResult } from "./SecurePaymentGatewayModal";
 interface DirectRequestFormProps {
   tecnicoId: string;
   coverageZones: CoverageZone[];
@@ -31,17 +32,29 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
 
   const municipalities = [...new Set(coverageZones.map((zone) => zone.municipio))];
   const [municipio, setMunicipio] = useState("");
-  const [sector, setSector] = useState("");
+  const [sectorPreset, setSectorPreset] = useState("");
+  const [customSector, setCustomSector] = useState("");
   const [direccion, setDireccion] = useState("");
   const [fechaHora, setFechaHora] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [cantidad, setCantidad] = useState<number>(1);
-  const [metodoPago, setMetodoPago] = useState("Efectivo");
+  const [metodoPago, setMetodoPago] = useState<MetodoPago>("efectivo");
+
+  const availableSectors = [
+    ...new Set(
+      coverageZones
+        .filter((zone) => zone.municipio === municipio && zone.sector.trim())
+        .map((zone) => zone.sector.trim()),
+    ),
+  ];
+  const sector = (sectorPreset === "__OTRO__" ? customSector : sectorPreset).trim();
 
   const [totalEstimado, setTotalEstimado] = useState<number | null>(null);
   const [loadingEstimate, setLoadingEstimate] = useState(false);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showGatewayModal, setShowGatewayModal] = useState(false);
+  const [cardResult, setCardResult] = useState<CardPaymentResult | null>(null);
 
   const handleCalculate = async () => {
     if (!Number.isInteger(cantidad) || cantidad < 1 || loadingEstimate) return;
@@ -64,9 +77,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)) return;
+    const executeSubmission = async (referencia?: string) => {
     setLoadingSubmit(true);
     setError(null);
 
@@ -81,6 +92,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
         descripcion,
         cantidad,
         metodo_pago: metodoPago,
+        referencia_pasarela: referencia || cardResult?.referenciaPasarela || undefined,
       };
 
       await createDirectRequest(requestData);
@@ -90,6 +102,19 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
     } finally {
       setLoadingSubmit(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)) return;
+
+    // HU-37 CA-03: Si es tarjeta, requerir pasarela antes de enviar
+    if (metodoPago === "tarjeta" && !cardResult) {
+      setShowGatewayModal(true);
+      return;
+    }
+
+    await executeSubmission();
   };
 
   return (
@@ -113,13 +138,20 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
         </header>
 
         <div className="direct-request-body">
-          {error && <div className="alert" role="alert">{error}</div>}
-
           <div className="field-row">
             <label className="field">
               Municipio
-              <select required autoFocus value={municipio} onChange={(e) => setMunicipio(e.target.value)}
-                disabled={!municipalities.length}>
+              <select
+                required
+                autoFocus
+                value={municipio}
+                onChange={(e) => {
+                  setMunicipio(e.target.value);
+                  setSectorPreset("");
+                  setCustomSector("");
+                }}
+                disabled={!municipalities.length}
+              >
                 <option value="" disabled>Selecciona un municipio</option>
                 {municipalities.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
@@ -127,8 +159,30 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
             </label>
             <label className="field">
               Sector
-              <input type="text" required value={sector} onChange={(e) => setSector(e.target.value)}
-                placeholder="Ej. Colonia Kennedy" />
+              <select
+                required
+                value={sectorPreset}
+                onChange={(e) => setSectorPreset(e.target.value)}
+                disabled={!municipio}
+              >
+                <option value="" disabled>
+                  {municipio ? "Selecciona un sector" : "Primero elige un municipio"}
+                </option>
+                {availableSectors.map((sec) => (
+                  <option key={sec} value={sec}>{sec}</option>
+                ))}
+                <option value="__OTRO__">+ Otro sector (escribir manualmente)...</option>
+              </select>
+              {sectorPreset === "__OTRO__" && (
+                <input
+                  type="text"
+                  required
+                  value={customSector}
+                  onChange={(e) => setCustomSector(e.target.value)}
+                  placeholder="Ej. Colonia Kennedy"
+                  style={{ marginTop: 6 }}
+                />
+              )}
             </label>
           </div>
           <label className="field">
@@ -136,19 +190,20 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
             <input type="text" required value={direccion} onChange={(e) => setDireccion(e.target.value)}
               placeholder="Casa, bloque o punto de referencia" />
           </label>
-          <div className="field-row">
+                    <div className="field-row">
             <label className="field">
               Fecha y hora
               <input type="datetime-local" required value={fechaHora} onChange={(e) => setFechaHora(e.target.value)} />
             </label>
-            <label className="field">
-              Método de pago
-              <select value={metodoPago} onChange={(e) => setMetodoPago(e.target.value)}>
-                <option value="Efectivo">Efectivo</option>
-                <option value="Transferencia">Transferencia</option>
-              </select>
-            </label>
           </div>
+
+          <PaymentMethodSelector
+            value={metodoPago}
+            onChange={setMetodoPago}
+            montoBase={totalEstimado}
+            showSummary={totalEstimado !== null}
+            disabled={loadingSubmit}
+          />
           <label className="field">
             Descripción del problema
             <textarea required rows={3} value={descripcion} onChange={(e) => setDescripcion(e.target.value)}
@@ -180,12 +235,24 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
           </section>
         </div>
 
+        {error && <div className="alert direct-request-error" role="alert">{error}</div>}
         <footer className="direct-request-actions">
           <button type="button" className="button button-outline" onClick={onCancel} disabled={loadingSubmit}>Cancelar</button>
           <button type="submit" className="button" disabled={loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)}>
             {loadingSubmit ? "Enviando…" : "Confirmar solicitud"}
           </button>
         </footer>
+          {showGatewayModal && totalEstimado !== null && (
+          <SecurePaymentGatewayModal
+            monto={totalEstimado}
+            onSuccess={(result) => {
+              setCardResult(result);
+              setShowGatewayModal(false);
+              executeSubmission(result.referenciaPasarela);
+            }}
+            onCancel={() => setShowGatewayModal(false)}
+          />
+        )}
       </form>
     </dialog>
   );

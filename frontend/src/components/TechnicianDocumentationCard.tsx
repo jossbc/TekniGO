@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, CheckCircle2, Clock3, ShieldCheck } from 'lucide-react'
+import { ArrowUpRight, Clock3, ShieldCheck } from 'lucide-react'
 import { api, errorMessage } from '../lib/api'
 
 type DocumentationStatus = { estado_verificacion: string; requisitos_pendientes: { nombre: string; motivo?: string | null }[] }
@@ -38,19 +38,19 @@ export default function TechnicianDocumentationCard({ user }: { user: User }) {
       document.removeEventListener('visibilitychange', refresh)
     }
   }, [user])
-  const verified = data?.estado_verificacion === 'VERIFICADO'
-  const labels: Record<string, string> = { VERIFICADO: 'Verificado', EN_REVISION: 'En revisión', RECHAZADO: 'Requiere correcciones', RESTRINGIDO: 'Requiere actualización', PENDIENTE: 'Documentos pendientes', NO_VERIFICADO: 'Documentos pendientes' }
+  if (data?.estado_verificacion === 'VERIFICADO' || (!data && !error)) return null
+  const labels: Record<string, string> = { EN_REVISION: 'En revisión', RECHAZADO: 'Requiere correcciones', RESTRINGIDO: 'Requiere actualización', PENDIENTE: 'Documentos pendientes', NO_VERIFICADO: 'Documentos pendientes' }
   return <section className="account-card">
     <span className="step-icon"><ShieldCheck size={22} /></span>
     <h2>Documentación del técnico</h2>
     {data ? <>
-      <span className={`status-pill${verified ? ' status-pill-verified' : ''}`} role="status">
-        {verified ? <CheckCircle2 size={15} /> : <Clock3 size={15} />} {labels[data.estado_verificacion] || 'Pendiente de verificación'}
+      <span className="status-pill" role="status">
+        <Clock3 size={15} /> {labels[data.estado_verificacion] || 'Pendiente de verificación'}
       </span>
-      <p>{verified ? 'Tu identidad, antecedentes policiales y penales están aprobados y tu teléfono está verificado.' : data.estado_verificacion === 'EN_REVISION' ? 'Tus documentos están pendientes de revisión administrativa.' : 'Completa o corrige los requisitos pendientes de tu perfil técnico.'}</p>
-      {!verified && data.requisitos_pendientes?.length > 0 && <ul>{data.requisitos_pendientes.map(item => <li key={item.nombre}>{item.motivo || item.nombre}</li>)}</ul>}
-    </> : !error && <p role="status">Consultando documentación.</p>}
+      <p>{data.estado_verificacion === 'EN_REVISION' ? 'Tus documentos están pendientes de revisión administrativa.' : 'Completa o corrige los requisitos pendientes de tu perfil técnico.'}</p>
+      {data.requisitos_pendientes?.length > 0 && <ul>{data.requisitos_pendientes.map(item => <li key={item.nombre}>{item.motivo || item.nombre}</li>)}</ul>}
+    </> : null}
     {error && <p className="alert" role="alert">No pudimos actualizar el estado: {error}</p>}
-    <Link className={verified ? 'link' : 'button'} style={{ width: 'auto' }} to="/verificacion">{verified ? 'Ver documentos aprobados' : 'Revisar documentos y antecedentes'} <ArrowUpRight size={15} /></Link>
+    <Link className="button" style={{ width: 'auto' }} to="/verificacion">Revisar documentos y antecedentes <ArrowUpRight size={15} /></Link>
   </section>
 }

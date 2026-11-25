@@ -67,3 +67,13 @@ jobs:
             backend/test-results.txt
             backend/migrations.sql
           if-no-files-found: warn
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [frontend, backend]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    secrets:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}

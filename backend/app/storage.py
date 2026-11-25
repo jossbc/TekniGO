@@ -22,9 +22,13 @@ ALLOWED_CONTENT_TYPES = {
 }
 
 PRIVATE_BUCKET = "documentos-identidad"
+SETTLEMENT_PROOF_TYPE = "COMPROBANTE_LIQUIDACION"
+SETTLEMENT_FOLDER = "liquidaciones"
+IDENTITY_FOLDER = "identidad"
 PRIVATE_DOCUMENT_TYPES = frozenset({
     "DNI_FRONTAL", "DNI_REVERSO", "SELFIE",
     "ANTECEDENTES_POLICIALES", "ANTECEDENTES_PENALES", "CERTIFICACION_OFICIO",
+    "COMPROBANTE_LIQUIDACION", "EVIDENCIA_CANCELACION",
 })
 DEFAULT_LOCAL_DIR = Path(__file__).resolve().parent.parent / ".private_storage"
 
@@ -158,7 +162,8 @@ class PrivateDocumentStorage:
         real_mime = validate_document_bytes(content, declared_content_type, label)
         ext = ALLOWED_CONTENT_TYPES[real_mime]
         digest = hashlib.sha256(content).hexdigest()
-        object_key = f"identidad/{user_id}/{doc_type.lower()}_{uuid.uuid4().hex}{ext}.enc"
+        folder = SETTLEMENT_FOLDER if doc_type == SETTLEMENT_PROOF_TYPE else IDENTITY_FOLDER
+        object_key = f"{folder}/{user_id}/{doc_type.lower()}_{uuid.uuid4().hex}{ext}.enc"
         encrypted = encrypt_bytes(content)
 
         config = self._supabase_config()
@@ -176,14 +181,20 @@ class PrivateDocumentStorage:
             sha256=digest,
         )
 
-    def read_private(self, ruta_privada: str) -> bytes:
+    @staticmethod
+    def _object_key(ruta_privada: str) -> str:
         prefix = f"private://{PRIVATE_BUCKET}/"
         if not ruta_privada.startswith(prefix):
             raise ValueError("Ruta privada desconocida")
         object_key = ruta_privada[len(prefix) :]
-        types = "|".join(sorted(kind.lower() for kind in PRIVATE_DOCUMENT_TYPES))
-        if not re.fullmatch(rf"identidad/[0-9a-f-]{{36}}/(?:{types})_[0-9a-f]{{32}}\.(?:jpg|png|webp|pdf)\.enc", object_key):
+        identity_types = "|".join(sorted(k.lower() for k in PRIVATE_DOCUMENT_TYPES if k != SETTLEMENT_PROOF_TYPE))
+        folder = rf"(?:{IDENTITY_FOLDER}/[0-9a-f-]{{36}}/(?:{identity_types})|{SETTLEMENT_FOLDER}/[0-9a-f-]{{36}}/{SETTLEMENT_PROOF_TYPE.lower()})"
+        if not re.fullmatch(rf"{folder}_[0-9a-f]{{32}}\.(?:jpg|png|webp|pdf)\.enc", object_key):
             raise ValueError("Ruta privada inválida")
+        return object_key
+
+    def read_private(self, ruta_privada: str) -> bytes:
+        object_key = self._object_key(ruta_privada)
         config = self._supabase_config()
         if config:
             payload = self._download_supabase(*config, object_key)
@@ -193,6 +204,29 @@ class PrivateDocumentStorage:
             return decrypt_bytes(payload)
         except ValueError:
             raise HTTPException(502, "No se pudo comprobar la integridad del documento privado") from None
+
+    def delete_private(self, ruta_privada: str) -> None:
+        """Elimina un archivo privado (limpieza si falla el registro). Es idempotente."""
+        object_key = self._object_key(ruta_privada)
+        config = self._supabase_config()
+        if not config:
+            self._local_target(object_key).unlink(missing_ok=True)
+            return
+        base_url, service_key = config
+        req = urllib.request.Request(
+            f"{base_url}/storage/v1/object/{PRIVATE_BUCKET}/{object_key}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
+        )
+        try:
+            with _private_urlopen(req):
+                pass
+        except urllib.error.HTTPError as error:
+            error.close()
+            if error.code != 404:
+                raise HTTPException(502, "No se pudo eliminar el documento privado") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise HTTPException(502, "Error de conexión con el almacenamiento privado") from None
 
     def _download_supabase(self, base_url: str, service_key: str, object_key: str) -> bytes:
         req = urllib.request.Request(

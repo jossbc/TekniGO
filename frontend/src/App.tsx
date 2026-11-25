@@ -64,6 +64,8 @@ export default function App() {
       <Route path="/solicitudes/nueva" element={user ? <PublishOpenRequestPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/mis-solicitudes" element={user ? <ClientRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/mis-solicitudes/:id" element={user ? <ClientRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/mis-trabajos" element={user ? <ClientRequestsPage user={user} jobsOnly /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/mis-trabajos/:id" element={user ? <ClientRequestsPage user={user} jobsOnly /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico" element={user ? <AccountPage user={user} space="TECNICO" /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/oportunidades" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/oportunidades/:id" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />

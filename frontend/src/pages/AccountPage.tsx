@@ -14,7 +14,10 @@ import EmailVerification from "../components/EmailVerification";
 import PhoneVerification from "../components/PhoneVerification";
 import { AvailabilityToggle } from "../components/AvailabilityToggle";
 import TechnicianDocumentationCard from "../components/TechnicianDocumentationCard";
+import TechnicianSettlementCard from "../components/TechnicianSettlementCard";
+import TechnicianPayoutCard from "../components/TechnicianPayoutCard";
 import TechnicianIncomingRequestsCard from "../components/TechnicianIncomingRequestsCard";
+import TechnicianActiveJobsCard from "../components/TechnicianActiveJobsCard";
 
 export default function AccountPage({ user, space }: { user: User; space?: "CLIENTE" | "TECNICO" }) {
   const location = useLocation();
@@ -92,6 +95,9 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
               <Link className="button button-outline" to="/mis-solicitudes">
                 Mis solicitudes
               </Link>
+              <Link className="button button-outline" to="/mis-trabajos">
+                Mis trabajos
+              </Link>
               {profile && profile.roles.includes("TECNICO") && (
                 <Link className="button button-outline" to="/tecnico">
                   Cambiar a Técnico
@@ -151,8 +157,8 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
             {roleNotice}
           </div>
         )}
-        {profile && <EmailVerification user={user} />}
-        {profile && <PhoneVerification user={user} />}
+        {profile && <EmailVerification user={user} hideWhenVerified />}
+        {profile && <PhoneVerification user={user} hideWhenVerified />}
         {roleNotice && (
           <div className="success-alert" role="status">
             {roleNotice}
@@ -178,26 +184,26 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
                   </Button>
                 )}
               </section>
-              <section className="account-card">
-                <span className="step-icon">
-                  <ShieldCheck size={22} />
-                </span>
-                <h2>{profile.estado_identidad === "VERIFICADO" ? "Identidad verificada" : profile.estado_identidad === "EN_REVISION" ? "Identidad en revisión" : "Verificación pendiente"}</h2>
-                <p>
-                  {profile.estado_identidad === "VERIFICADO"
-                    ? "Tu identidad fue verificada correctamente."
-                    : profile.estado_identidad === "EN_REVISION"
+              {profile.estado_identidad !== "VERIFICADO" && (
+                <section className="account-card">
+                  <span className="step-icon">
+                    <ShieldCheck size={22} />
+                  </span>
+                  <h2>{profile.estado_identidad === "EN_REVISION" ? "Identidad en revisión" : "Verificación pendiente"}</h2>
+                  <p>
+                    {profile.estado_identidad === "EN_REVISION"
                       ? "Recibimos tus documentos. Están pendientes de revisión administrativa."
                       : "Para contratar u ofrecer servicios necesitas completar la verificación de identidad."}
-                </p>
-                <span className={`status-pill${profile.estado_identidad === "VERIFICADO" ? " status-pill-verified" : ""}`}>
-                  {profile.estado_identidad === "VERIFICADO" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Clock3 size={15} aria-hidden="true" />}{" "}
-                  {profile.estado_identidad === "VERIFICADO" ? "Verificado" : profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
-                </span>
-                <Link to="/verificacion">
-                  {profile.estado_identidad === "EN_REVISION" || profile.estado_identidad === "VERIFICADO" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />
-                </Link>
-              </section>
+                  </p>
+                  <span className="status-pill">
+                    <Clock3 size={15} aria-hidden="true" />{" "}
+                    {profile.estado_identidad === "EN_REVISION" ? "En revisión" : "Pendiente de verificación"}
+                  </span>
+                  <Link to="/verificacion">
+                    {profile.estado_identidad === "EN_REVISION" ? "Ver estado de identidad" : "Subir DNI y selfie"} <ArrowUpRight size={15} />
+                  </Link>
+                </section>
+              )}
               {profile.roles.includes("CLIENTE") && (space === "CLIENTE" || !space) && (
                 <section className="account-card">
                   <span className="step-icon">
@@ -211,6 +217,8 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
                 </section>
               )}
               {profile.roles.includes("TECNICO") && <TechnicianDocumentationCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianSettlementCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianPayoutCard user={user} />}
               {/* Tarjeta de Ofertas disponibles */}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && (
                 <section className="account-card">
@@ -227,6 +235,7 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
 
               {/* Tarjeta de Solicitudes entrantes con preview (HU-22) */}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianIncomingRequestsCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianActiveJobsCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <AvailabilityToggle user={user} />}
             </div>
           </>

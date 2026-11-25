@@ -90,7 +90,13 @@ def update_coverage_zones(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo los técnicos pueden configurar zonas de cobertura.",
         )
-     # Evitar duplicados exactos (mismo departamento, municipio y sector)
+    tech_profile = db.get(TechnicianProfile, user.id)
+    if not tech_profile:
+        tech_profile = TechnicianProfile(usuario_id=user.id, disponible=False)
+        db.add(tech_profile)
+        db.flush()
+
+    # Evitar duplicados exactos (mismo departamento, municipio y sector)
     seen = set()
     cleaned_zones = []
     for item in payload.zonas_cobertura:
@@ -242,6 +248,7 @@ def get_technicians_catalog(
     municipio: str = Query(None, description="Filtrar por municipio"),
     db: Session = Depends(get_db),
     departamento: str | None = None,
+    sector: str | None = None,
     calificacion_minima: Optional[float] = None,
 ):
     from app.reviews import sync_expired_reviews
@@ -262,7 +269,7 @@ def get_technicians_catalog(
         )
     )
 
-    if isinstance(calificacion_minima, (int, float)):
+    if isinstance(calificacion_minima, (int, float)) and not isinstance(calificacion_minima, bool):
         query = query.where(TechnicianProfile.calificacion_promedio >= calificacion_minima)
 
     # Filtros de la HU-13 + Búsqueda por nombre
@@ -274,17 +281,21 @@ def get_technicians_catalog(
         query = (
             query.join(TechnicianSpecialty, User.id == TechnicianSpecialty.usuario_id)
             .join(Specialty, TechnicianSpecialty.especialidad_id == Specialty.id)
+            .where(Specialty.activa.is_(True))
             .where(*(Specialty.nombre.icontains(term, autoescape=True) for term in specialty_terms))
         )
 
     departamento = (departamento or "").strip()
     municipio = (municipio or "").strip()
-    if departamento or municipio:
+    sector = (sector or "").strip()
+    if departamento or municipio or sector:
         query = query.join(CoverageZone, User.id == CoverageZone.usuario_id)
         if departamento:
             query = query.where(CoverageZone.departamento == departamento)
         if municipio:
             query = query.where(CoverageZone.municipio.icontains(municipio, autoescape=True))
+        if sector:
+            query = query.where(CoverageZone.sector.icontains(sector, autoescape=True))
 
     results = db.execute(query).unique().all()
 
@@ -309,7 +320,7 @@ def get_technicians_catalog(
         specs_query = (
             select(Specialty.nombre)
             .join(TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id)
-            .where(TechnicianSpecialty.usuario_id == user.id)
+            .where(TechnicianSpecialty.usuario_id == user.id, Specialty.activa.is_(True))
         )
         specs = db.scalars(specs_query).all()
 
@@ -404,12 +415,14 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
     # 1. Obtener Especialidades
     specs_query = select(Specialty.nombre).join(
         TechnicianSpecialty, Specialty.id == TechnicianSpecialty.especialidad_id
-    ).where(TechnicianSpecialty.usuario_id == user.id)
+    ).where(TechnicianSpecialty.usuario_id == user.id, Specialty.activa.is_(True))
     specs = db.scalars(specs_query).all()
 
     # 2. Obtener Servicios Activos (CA-05 de HU-13)
     from app.models import Service 
-    services_query = select(Service).where(Service.usuario_id == user.id, Service.activo == True)
+    services_query = select(Service).join(Specialty, Specialty.id == Service.especialidad_id).where(
+        Service.usuario_id == user.id, Service.activo.is_(True), Specialty.activa.is_(True)
+    )
     services = db.scalars(services_query).all()
     coverage_zones = db.scalars(
         select(CoverageZone)

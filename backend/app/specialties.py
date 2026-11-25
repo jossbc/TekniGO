@@ -47,6 +47,16 @@ def specialties_of(db, user_id):
     return [{"id": str(s.id), "nombre": s.nombre} for s in rows]
 
 
+def require_active_specialty(db: Session, specialty_id: uuid.UUID) -> Specialty:
+    specialty = db.scalar(
+        select(Specialty).where(Specialty.id == specialty_id)
+        .with_for_update(read=True).execution_options(populate_existing=True)
+    )
+    if specialty is None or not specialty.activa:
+        raise HTTPException(400, "La especialidad seleccionada no existe o está desactivada.")
+    return specialty
+
+
 def suggestions_of(db, user_id):
     rows = db.scalars(
         select(SpecialtySuggestion)
@@ -59,7 +69,7 @@ def suggestions_of(db, user_id):
 # HU-07 ST-02: catálogo de especialidades disponibles (CA-01).
 @router.get("/specialties")
 def list_specialties(claims=Depends(get_current_user), db: Session = Depends(get_db)):
-    specialties = db.scalars(select(Specialty).order_by(Specialty.nombre)).all()
+    specialties = db.scalars(select(Specialty).where(Specialty.activa.is_(True)).order_by(Specialty.nombre)).all()
     return [{"id": str(s.id), "nombre": s.nombre} for s in specialties]
 
 
@@ -77,7 +87,7 @@ def save_my_specialties(data: SpecialtySelection, claims=Depends(get_current_use
     ids = data.especialidad_ids
     if len(set(ids)) != len(ids):
         raise HTTPException(400, "No puedes repetir especialidades")
-    found = db.scalars(select(Specialty.id).where(Specialty.id.in_(ids))).all()
+    found = db.scalars(select(Specialty.id).where(Specialty.id.in_(ids), Specialty.activa.is_(True))).all()
     if len(found) != len(ids):
         raise HTTPException(400, "Una o más especialidades no existen")
     try:

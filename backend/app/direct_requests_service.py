@@ -6,9 +6,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.adjustment_repository import SqlAlchemyAdjustmentRepository
+from app.adjustment_service import to_money
 from app.direct_requests_repository import DirectRequestRepository
-from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse
-from app.models import CoverageZone, User
+from app.direct_requests_schemas import CreateDirectRequest, EstimateRequest, EstimateResponse, RegisterAdjustmentRequest, UpdatePaymentMethodRequest
+from app.models import CoverageZone, DirectRequest, User
+from app.request_states import state_key
+from app.specialties import require_active_specialty
 from app.technician_activation import require_operational_technician
 
 MAX_ESTIMATE_TOTAL = Decimal("99999999.99")
@@ -41,6 +45,7 @@ class DirectRequestService:
                 detail="No se puede calcular un presupuesto para un servicio inactivo.",
             )
 
+        require_active_specialty(db, servicio.especialidad_id)
         total_estimado = DirectRequestService._compute_total(servicio.tarifa_base, request.cantidad)
 
         return EstimateResponse(
@@ -91,6 +96,7 @@ class DirectRequestService:
                 detail="Servicio inválido o inactivo.",
             )
 
+        require_active_specialty(db, servicio.especialidad_id)
         # El perfil público usa el UUID; las solicitudes se guardan con el UID de Firebase.
         tecnico = db.get(User, servicio.usuario_id)
         if not tecnico or request.tecnico_id not in (str(tecnico.id), tecnico.firebase_uid):
@@ -128,6 +134,9 @@ class DirectRequestService:
             "unidad_cobro": servicio.unidad_cobro,
             "monto_base": total_calculado,
             "metodo_pago": request.metodo_pago,
+            "referencia_pasarela": request.referencia_pasarela,
+            "monto_ajuste": Decimal("0.00"),
+            "monto_total": total_calculado,
             "estado": "PENDIENTE",
         }
 
@@ -138,3 +147,77 @@ class DirectRequestService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se pudo registrar la solicitud con los datos proporcionados.",
             ) from None
+
+    @staticmethod
+    def update_payment_method(
+        db: Session,
+        solicitud_id: str,
+        request: UpdatePaymentMethodRequest,
+        current_user: dict,
+    ) -> DirectRequest:
+        """HU-37 CA-04: Permite actualizar método antes de ser aceptada; bloquea una vez aceptada."""
+        client_uid = current_user.get("uid") if isinstance(current_user, dict) else None
+        if not client_uid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
+        record = db.scalar(
+            select(DirectRequest).where(DirectRequest.id == solicitud_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
+        if record.cliente_id != client_uid:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes permiso para modificar esta solicitud.")
+        if state_key(record.estado or "PENDIENTE") in {"ACEPTADA", "ASIGNADA", "EN PROCESO", "COMPLETADA"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Una contratación ya aceptada conserva el método inicial; no se permite modificarlo (CA-04).",
+            )
+        nuevo_metodo = request.metodo_pago.lower()
+        record.metodo_pago = nuevo_metodo
+        if nuevo_metodo == "tarjeta":
+            if request.referencia_pasarela:
+                record.referencia_pasarela = request.referencia_pasarela
+        else:
+            record.referencia_pasarela = None
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
+    def register_adjustment(
+        db: Session,
+        solicitud_id: str,
+        request: RegisterAdjustmentRequest,
+        current_user: dict,
+    ) -> DirectRequest:
+        """HU-37 CA-04 + HU-36 CA-05: solo registra el medio de pago de la diferencia de un ajuste YA aprobado."""
+        user_uid = current_user.get("uid") if isinstance(current_user, dict) else None
+        if not user_uid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sesión inválida o expirada.")
+        record = db.scalar(
+            select(DirectRequest).where(DirectRequest.id == solicitud_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
+        if user_uid != record.cliente_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="Solo el cliente propietario define el medio de pago de la diferencia.")
+        adjustment = SqlAlchemyAdjustmentRepository().get(db, "DIRECTA", str(record.id))
+        if adjustment is not None:
+            if adjustment.estado != "APROBADO":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail="El ajuste debe ser aprobado por el cliente antes de registrar su medio de pago.")
+            diferencia = to_money(adjustment.diferencia)
+            if diferencia <= 0 or to_money(request.monto_ajuste) != diferencia:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail=f"El monto debe ser la diferencia aprobada (L. {diferencia}).")
+        monto_ajuste_dec = to_money(request.monto_ajuste)
+        base_dec = to_money(record.monto_base or 0)
+        record.monto_ajuste = monto_ajuste_dec
+        record.metodo_pago_ajuste = request.metodo_pago_ajuste.lower()
+        record.referencia_pasarela_ajuste = request.referencia_pasarela_ajuste
+        record.monto_total = to_money(base_dec + monto_ajuste_dec)
+        db.commit()
+        db.refresh(record)
+        return record

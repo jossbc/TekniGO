@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { FolderOpen } from 'lucide-react'
+import { FolderOpen, Landmark, ShieldAlert, Wallet } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCertificates from '../components/AdminCertificates'
+import AdminIncidentsManager from '../lib/AdminIncidentsManager'
+import AdminSettlementsManager from '../components/AdminSettlementsManager'
+import AdminPayoutsManager from '../components/AdminPayoutsManager'
+import AdminCancellationJustifications from '../components/AdminCancellationJustifications'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -18,16 +22,80 @@ const labels: Record<string, string> = {
 
 export default function AdminPage({ user }: { user: User }) {
   const { state, retry } = useAccount(user)
-  return <div className="site">
-    <Header authenticated email={user.email} accountHref="/admin" accountLabel="Administración" />
-    <main className="account admin-panel">
-      <div className="admin-page-heading">
-        <h1>Revisión de expedientes</h1>
-      </div>
-      {state.status !== 'ready' ? <AccountStatus state={state} retry={retry} /> :
-        !state.profile.roles.includes('ADMIN') ? <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p> : <DossierManager user={user} />}
-    </main>
-  </div>
+  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts'>('dossiers')
+
+  return (
+    <div className="site">
+      <Header authenticated email={user.email} accountHref="/admin" accountLabel="Administración" />
+      <main className="account admin-panel">
+        <div className="admin-page-heading">
+          <h1>Panel de Administración</h1>
+        </div>
+        {state.status !== 'ready' ? (
+          <AccountStatus state={state} retry={retry} />
+        ) : !state.profile.roles.includes('ADMIN') ? (
+          <p className="alert" role="alert">Acceso denegado. Esta sección requiere una cuenta administradora.</p>
+        ) : (
+          <>
+            {/* Pestañas de administración (CA-02) */}
+            <div className="admin-toolbar" style={{ marginBottom: "20px" }}>
+              <div className="dossier-filters" role="tablist" aria-label="Secciones de administración">
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'dossiers' ? '' : 'button-outline'}
+                  aria-selected={tab === 'dossiers'}
+                  onClick={() => setTab('dossiers')}
+                >
+                  <FolderOpen size={16} /> Expedientes de identidad
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'incidents' ? '' : 'button-outline'}
+                  aria-selected={tab === 'incidents'}
+                  onClick={() => setTab('incidents')}
+                >
+                  <ShieldAlert size={16} /> Incidencias y moderación
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'settlements' ? '' : 'button-outline'}
+                  aria-selected={tab === 'settlements'}
+                  onClick={() => setTab('settlements')}
+                >
+                  <Landmark size={16} /> Liquidaciones
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'payouts' ? '' : 'button-outline'}
+                  aria-selected={tab === 'payouts'}
+                  onClick={() => setTab('payouts')}
+                >
+                  <Wallet size={16} /> Desembolsos
+                </Button>
+              </div>
+            </div>
+
+          {tab === 'dossiers'
+            ? <DossierManager user={user} />
+            : tab === 'incidents'
+              ? (
+                <>
+                  <AdminIncidentsManager user={user} />
+                  <AdminCancellationJustifications user={user} />
+                </>
+              )
+              : tab === 'settlements'
+                ? <AdminSettlementsManager user={user} />
+                : <AdminPayoutsManager user={user} />}
+          </>
+        )}
+      </main>
+    </div>
+  )
 }
 
 function RoleBadges({ roles }: { roles: string[] }) {

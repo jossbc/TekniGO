@@ -37,7 +37,7 @@ new Function('require', 'module', 'exports', result.outputFiles[0].text)(id => {
 const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...React.Children.toArray(tree.props?.children).flatMap(nodes)]
 const flush = () => new Promise(resolve => setImmediate(resolve))
 
-test('documentation card refreshes from pending to verified on focus and removes upload prompt', async () => {
+test('documentation card stays hidden while loading and disappears after verification on focus', async () => {
   harness = { index: 0, state: [], effects: [] }
   const user = { getIdToken: async () => 'token' }
   const originalFetch = globalThis.fetch
@@ -60,16 +60,13 @@ test('documentation card refreshes from pending to verified on focus and removes
     return tree
   }
   try {
-    assert.ok(render().some(node => node.props.children === 'Consultando documentación.'))
+    assert.deepEqual(render(), [])
     await flush()
-    assert.ok(render().some(node => Array.isArray(node.props.children) && node.props.children.includes('Revisar documentos y antecedentes')))
+    assert.ok(render().some(node => node.props.to === '/verificacion'))
     verified = true
     window.dispatchEvent(new Event('focus'))
     await flush()
-    const approved = render()
-    assert.ok(approved.some(node => Array.isArray(node.props.children) && node.props.children.includes('Verificado')))
-    assert.ok(approved.some(node => Array.isArray(node.props.children) && node.props.children.includes('Ver documentos aprobados')))
-    assert.ok(!approved.some(node => Array.isArray(node.props.children) && node.props.children.includes('Revisar documentos y antecedentes')))
+    assert.deepEqual(render(), [])
     assert.equal(calls, 2)
     cleanups.splice(0).forEach(cleanup => cleanup())
     window.dispatchEvent(new Event('focus'))

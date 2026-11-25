@@ -22,12 +22,19 @@ ENV VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID
 
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:alpine AS runtime
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]
+
+FROM runtime AS compose
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+FROM runtime AS azure
+COPY nginx.azure.conf /etc/nginx/conf.d/default.conf
+ARG BUILD_COMMIT
+RUN test -n "$BUILD_COMMIT" && printf '%s\n' "$BUILD_COMMIT" > /usr/share/nginx/html/version.txt

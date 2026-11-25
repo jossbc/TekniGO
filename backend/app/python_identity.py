@@ -22,7 +22,7 @@ def run_worker(payload: dict) -> dict:
     environment = os.environ.copy()
     # Provider libraries must not inherit database, Firebase or storage secrets.
     for key in list(environment):
-        if any(part in key.upper() for part in ('SECRET', 'TOKEN', 'PASSWORD', 'API_KEY', 'SERVICE_ROLE', 'DATABASE_URL', 'GOOGLE_APPLICATION_CREDENTIALS')):
+        if any(part in key.upper() for part in ('SECRET', 'TOKEN', 'PASSWORD', 'API_KEY', 'SERVICE_ROLE', 'DATABASE_URL', 'GOOGLE_APPLICATION_CREDENTIALS', 'FIREBASE_ADMIN_CREDENTIALS_JSON')):
             environment.pop(key, None)
     environment.update({
         'PYTHONIOENCODING': 'utf-8', 'TF_CPP_MIN_LOG_LEVEL': '3',

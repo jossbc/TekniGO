@@ -304,7 +304,7 @@ Trabajamos con una rama por tarea y revisión antes de integrar los cambios. Reu
 
 Para publicar las pantallas en Vercel, usa `frontend` como carpeta del proyecto, `npm run build` como comando de construcción y `dist` como carpeta de salida.
 
-El servidor tiene una configuración inicial para Render en [render.yaml](render.yaml). Antes de publicar, configura Firebase, la conexión a Supabase y `CORS_ORIGINS` con la dirección de la web autorizada. Aplica también las actualizaciones pendientes de la base de datos y revisa el almacenamiento privado de documentos.
+Antes de publicar, configura Firebase, la conexión a Supabase y `CORS_ORIGINS` con la dirección de la web autorizada. Aplica también las actualizaciones pendientes de la base de datos y revisa el almacenamiento privado de documentos.
 
 La referencia de colores y tipografías está en [la guía de diseño](docs/linea-grafica.md).
 

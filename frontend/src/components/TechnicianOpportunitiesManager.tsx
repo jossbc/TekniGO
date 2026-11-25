@@ -1,11 +1,15 @@
+import RequestTimeline from "./RequestTimeline";
+import StartServiceAction from "./StartServiceAction";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
+import { Link } from "react-router-dom";
 import {
   Briefcase,
   Calendar,
   CheckCircle2,
   ClipboardList,
   CreditCard,
+  DollarSign,
   EyeOff,
   FileText,
   Lock,
@@ -16,7 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
-import { formatLempiras } from "../lib/clientRequests";
+import { formatLempiras, formatRequestStateLabel } from "../lib/clientRequests";
 import {
   acceptPublishedBudgetApi,
   discardOpportunityApi,
@@ -24,12 +28,14 @@ import {
   fetchMyTechnicianSpecialties,
   getOpportunityDetailApi,
   listAvailableOpportunitiesApi,
+  submitCounterOfferApi,
   type AvailableOpportunitiesResponse,
   type OpportunityStateFilter,
   type SpecialtyOption,
   type TechnicianCoverageZoneItem,
   type TechnicianOpportunityItem,
 } from "../lib/openRequests";
+import CounterOfferModal from "./CounterOfferModal";
 
 const PAGE_SIZE = 10;
 
@@ -49,18 +55,11 @@ function formatDateTime(iso: string | null | undefined): string {
   });
 }
 
-function formatOpportunityStateLabel(estado: string): string {
-  const key = (estado || "PUBLICADA").trim().toUpperCase().replace(/\s+/g, "_");
-  if (key === "CON_OFERTAS") return "Con ofertas";
-  if (key === "PUBLICADA") return "Publicada";
-  return estado;
-}
-
 function OpportunityStateBadge({ estado }: { estado: string }) {
   const key = (estado || "PUBLICADA").trim().toUpperCase().replace(/\s+/g, "_").toLowerCase();
   return (
     <span className={`request-status-badge request-status-${key}`}>
-      {formatOpportunityStateLabel(estado)}
+      {formatRequestStateLabel(estado)}
     </span>
   );
 }
@@ -163,6 +162,7 @@ export default function TechnicianOpportunitiesManager({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [acceptingBudgetId, setAcceptingBudgetId] = useState("");
+  const [counterOfferTarget, setCounterOfferTarget] = useState<TechnicianOpportunityItem | null>(null);
 
   useEffect(() => {
     setSelectedId(initialRequestId);
@@ -181,7 +181,7 @@ export default function TechnicianOpportunitiesManager({
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [user, refreshTick]);
 
   const availableMunicipios = useMemo(() => {
     const unique = new Set<string>();
@@ -325,11 +325,114 @@ export default function TechnicianOpportunitiesManager({
       setAcceptingBudgetId("");
     }
   }
+  
+    async function handleCounterOfferSubmit(monto: number, justificacion: string) {
+    if (!counterOfferTarget) return;
+    setListError("");
+    setDetailError("");
+    setListNotice("");
+    const response = await submitCounterOfferApi(user, counterOfferTarget.id, {
+      monto,
+      justificacion,
+    });
+    setListNotice(
+      response.mensaje ||
+        `Contraoferta enviada por L. ${monto.toFixed(2)}. Queda pendiente de decisión del cliente.`,
+    );
+    if (detail && detail.id === counterOfferTarget.id) {
+      setDetail(response.solicitud);
+    }
+    setRefreshTick((v) => v + 1);
+  }
+  
 
   const hasActiveFilters = Boolean(especialidadId || municipio || sector || estado !== "TODOS");
 
   return (
     <div className="client-requests-section">
+      {/* Resumen de zonas de cobertura activas del técnico con filtro rápido */}
+      <div
+        style={{
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: 12,
+          padding: "0.85rem 1rem",
+          marginBottom: "0.85rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.5rem",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <strong style={{ fontSize: "0.9rem", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <MapPin size={16} color="var(--blue)" />
+            Mis zonas de cobertura activas ({coverageZones.length})
+          </strong>
+          <Link to="/perfil" style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--blue)" }}>
+            Editar o agregar más zonas en mi perfil →
+          </Link>
+        </div>
+
+        {coverageZones.length === 0 ? (
+          <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
+            Aún no tienes zonas de cobertura guardadas en tu perfil.
+          </span>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.45rem" }}>
+            <button
+              type="button"
+              onClick={() => {
+                setMunicipio("");
+                setSector("");
+                setOffset(0);
+              }}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                fontSize: "0.82rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                border: !municipio && !sector ? "1px solid #2563eb" : "1px solid #cbd5e1",
+                background: !municipio && !sector ? "#2563eb" : "#fff",
+                color: !municipio && !sector ? "#fff" : "#334155",
+              }}
+            >
+              Todas mis zonas
+            </button>
+            {coverageZones.map((z, idx) => {
+              const active = municipio === z.municipio && sector === z.sector;
+              return (
+                <button
+                  key={`${z.departamento}-${z.municipio}-${z.sector}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setMunicipio(z.municipio);
+                    setSector(z.sector);
+                    setOffset(0);
+                  }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    border: active ? "1px solid #2563eb" : "1px solid #bfdbfe",
+                    background: active ? "#2563eb" : "#eff6ff",
+                    color: active ? "#fff" : "#1d4ed8",
+                  }}
+                >
+                  <MapPin size={12} />
+                  {z.municipio}: {z.sector}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Barra de filtros por oficio, cobertura y estado (ST-01, CA-01, CA-06) */}
       <div className="client-requests-toolbar">
         <div className="client-requests-filter-controls" style={{ flexWrap: "wrap", gap: "0.75rem" }}>
@@ -429,7 +532,12 @@ export default function TechnicianOpportunitiesManager({
 
       {listError && (
         <div className="alert" role="alert">
-          {listError}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <span>{listError}</span>
+            <Link className="button button-outline" to="/perfil" style={{ width: "auto" }}>
+              Ir a mi perfil profesional
+            </Link>
+          </div>
         </div>
       )}
 
@@ -444,11 +552,18 @@ export default function TechnicianOpportunitiesManager({
             {page.mensaje ||
               "No hay solicitudes abiertas Publicadas o Con ofertas que coincidan con los filtros actuales."}
           </p>
-          {hasActiveFilters && (
-            <Button type="button" className="button-outline" onClick={clearFilters}>
-              Limpiar y revisar filtros
-            </Button>
-          )}
+          <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap", marginTop: "8px" }}>
+            {hasActiveFilters && (
+              <Button type="button" className="button-outline" onClick={clearFilters}>
+                Limpiar y revisar filtros
+              </Button>
+            )}
+            {(specialties.length === 0 || coverageZones.length === 0) && (
+              <Link className="button" to="/perfil" style={{ width: "auto" }}>
+                Configurar especialidades y zonas en mi perfil
+              </Link>
+            )}
+          </div>
         </section>
       )}
 
@@ -466,7 +581,7 @@ export default function TechnicianOpportunitiesManager({
             {page.solicitudes.map((item) => (
               <article
                 key={item.id}
-                className={`client-request-item${selectedId === item.id ? " client-request-item-selected" : ""}`}
+                className={`client-request-item opportunity-card${selectedId === item.id ? " client-request-item-selected" : ""}`}
               >
                 <div className="client-request-item-main">
                   <div className="client-request-badges">
@@ -499,14 +614,15 @@ export default function TechnicianOpportunitiesManager({
                   </p>
                 </div>
 
-                <div className="client-request-item-side">
+                <div className="client-request-item-side opportunity-card-footer">
                   <div className="client-request-budget">
                     <span>Presupuesto ofrecido</span>
                     <strong>{formatLempiras(item.presupuesto)}</strong>
                   </div>
 
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <div className="opportunity-card-actions">
                     {!item.mi_propuesta ? (
+                      <>
                       <Button
                         type="button"
                         disabled={acceptingBudgetId === item.id || discardingId === item.id}
@@ -516,10 +632,23 @@ export default function TechnicianOpportunitiesManager({
                         <CheckCircle2 size={15} />
                         {acceptingBudgetId === item.id ? "Enviando…" : "Aceptar presupuesto"}
                       </Button>
+                      <Button
+                          type="button"
+                          className="button-outline"
+                          disabled={acceptingBudgetId === item.id || discardingId === item.id}
+                          aria-label={`Proponer otro monto para ${item.especialidad?.nombre || "oportunidad"}`}
+                          onClick={() => setCounterOfferTarget(item)}
+                        >
+                          <DollarSign size={15} />
+                          Contraoferta
+                        </Button>
+                      </>
                     ) : (
                       <Button type="button" className="button-outline" disabled>
                         <CheckCircle2 size={15} />
-                        Propuesta enviada (Pendiente)
+                        {item.mi_propuesta.tipo === "CONTRAOFERTA"
+                          ? "Contraoferta enviada (Pendiente)"
+                          : "Propuesta enviada (Pendiente)"}
                       </Button>
                     )}
                     <Button
@@ -648,70 +777,126 @@ export default function TechnicianOpportunitiesManager({
                 <p>{detail.descripcion}</p>
               </section>
 
-              <section className="client-request-box" aria-label="Acciones sobre la oportunidad">
-                <h3>Postulación y acciones sobre esta publicación</h3>
-                <div className="client-request-actions">
-                  {detail.mi_propuesta ? (
-                    <div className="client-request-action-row" role="status">
-                      <div>
-                        <strong>Propuesta enviada · Pendiente de decisión del cliente</strong>
-                        <p>
-                          Te postulaste aceptando el monto de{" "}
-                          <strong>{formatLempiras(detail.mi_propuesta.monto)}</strong> el{" "}
-                          {formatDateTime(detail.mi_propuesta.creada_en)}. El trabajo no se adjudica
-                          automáticamente hasta que el cliente tome una decisión.
-                        </p>
+              {detail.linea_tiempo ? (
+                <>
+                  <RequestTimeline items={detail.linea_tiempo} />
+                  {detail.estado === "ACEPTADA" && !detail.ubicacion_exacta_protegida && (
+                    <StartServiceAction
+                      user={user}
+                      path={`/open-requests/${encodeURIComponent(detail.id)}/start`}
+                      paymentMethod={detail.metodo_pago}
+                      cardPaymentConfirmed={detail.pago_tarjeta_confirmado}
+                      onStarted={() => setRefreshTick((tick) => tick + 1)}
+                    />
+                  )}
+                </>
+              ) : (
+                <section className="client-request-box" aria-label="Acciones sobre la oportunidad">
+                  <h3>Postulación y acciones sobre esta publicación</h3>
+                  <div className="client-request-actions">
+                    {detail.mi_propuesta ? (
+                      <div className="client-request-action-row" role="status">
+                        <div>
+                          <strong>
+                            {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "Contraoferta enviada" : "Propuesta enviada"} · Pendiente de decisión del cliente
+                          </strong>
+                          <p>
+                            Te postulaste con{" "}
+                            {detail.mi_propuesta.tipo === "CONTRAOFERTA" ? "una contraoferta de " : "el monto de "}
+                            <strong>{formatLempiras(detail.mi_propuesta.monto)}</strong> el{" "}
+                            {formatDateTime(detail.mi_propuesta.creada_en)}. El trabajo no se adjudica
+                            automáticamente hasta que el cliente tome una decisión.
+                          </p>
+                          {detail.mi_propuesta.justificacion && (
+                            <p style={{ margin: "4px 0 0", fontStyle: "italic", color: "var(--muted)" }}>
+                              Justificación: "{detail.mi_propuesta.justificacion}"
+                            </p>
+                          )}
+                        </div>
+                        <Button type="button" className="button-outline" style={{ width: "auto" }} disabled>
+                          <CheckCircle2 size={15} />
+                          Propuesta activa ({detail.mi_propuesta.estado})
+                        </Button>
                       </div>
-                      <Button type="button" className="button-outline" style={{ width: "auto" }} disabled>
-                        <CheckCircle2 size={15} />
-                        Propuesta activa ({detail.mi_propuesta.estado})
-                      </Button>
-                    </div>
-                  ) : (
+                    ) : (
+                      <>
+                        <div className="client-request-action-row">
+                          <div>
+                            <strong>Aceptar monto publicado ({formatLempiras(detail.presupuesto)})</strong>
+                            <p>
+                              Envía tu propuesta por el presupuesto del cliente. Tu postulación quedará en estado
+                              pendiente de decisión sin adjudicar el trabajo automáticamente.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            style={{ width: "auto" }}
+                            disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
+                            onClick={() => handleAcceptBudget(detail.id, true)}
+                          >
+                            <CheckCircle2 size={15} />
+                            {acceptingBudgetId === detail.id ? "Enviando propuesta…" : "Aceptar monto publicado"}
+                          </Button>
+                        </div>
+
+                        <div className="client-request-action-row">
+                          <div>
+                            <strong>Proponer otro monto (Contraoferta)</strong>
+                            <p>
+                              Si consideras que el presupuesto no cubre los costos o complejidad, envía una contraoferta con el monto que propones.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            className="button-outline"
+                            style={{ width: "auto" }}
+                            disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
+                            onClick={() => setCounterOfferTarget(detail)}
+                          >
+                            <DollarSign size={15} />
+                            Proponer otro monto
+                          </Button>
+                        </div>
+                      </>
+                    )}
+
                     <div className="client-request-action-row">
                       <div>
-                        <strong>Aceptar monto publicado ({formatLempiras(detail.presupuesto)})</strong>
+                        <strong>Descartar de mi listado</strong>
                         <p>
-                          Envía tu propuesta por el presupuesto del cliente. Tu postulación quedará en estado
-                          pendiente de decisión sin adjudicar el trabajo automáticamente.
+                          Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
+                          técnicos.
                         </p>
                       </div>
                       <Button
                         type="button"
+                        className="button-outline"
                         style={{ width: "auto" }}
-                        disabled={acceptingBudgetId === detail.id || discardingId === detail.id}
-                        onClick={() => handleAcceptBudget(detail.id, true)}
+                        disabled={discardingId === detail.id || acceptingBudgetId === detail.id}
+                        onClick={() => handleDiscard(detail.id, true)}
                       >
-                        <CheckCircle2 size={15} />
-                        {acceptingBudgetId === detail.id ? "Enviando propuesta…" : "Aceptar monto publicado"}
+                        <EyeOff size={15} />
+                        {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
                       </Button>
                     </div>
-                  )}
-
-                  <div className="client-request-action-row">
-                    <div>
-                      <strong>Descartar de mi listado</strong>
-                      <p>
-                        Oculta esta publicación de tu bandeja personal sin cancelarla ni afectar a otros
-                        técnicos.
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      className="button-outline"
-                      style={{ width: "auto" }}
-                      disabled={discardingId === detail.id || acceptingBudgetId === detail.id}
-                      onClick={() => handleDiscard(detail.id, true)}
-                    >
-                      <EyeOff size={15} />
-                      {discardingId === detail.id ? "Descartando…" : "Descartar publicación"}
-                    </Button>
                   </div>
-                </div>
-              </section>
+                </section>
+              )}
             </section>
           )}
         </OpportunityDetailModal>
+      )}
+            {counterOfferTarget && (
+        <CounterOfferModal
+          isOpen={Boolean(counterOfferTarget)}
+          onClose={() => setCounterOfferTarget(null)}
+          onSubmit={handleCounterOfferSubmit}
+          solicitudId={counterOfferTarget.id}
+          presupuestoOriginal={counterOfferTarget.presupuesto}
+          especialidadNombre={counterOfferTarget.especialidad?.nombre}
+          municipio={counterOfferTarget.municipio}
+          sector={counterOfferTarget.sector}
+        />
       )}
     </div>
   );

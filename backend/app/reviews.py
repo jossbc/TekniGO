@@ -3,32 +3,54 @@
 Cubre:
 - HU-44: Calificar al técnico por parte del cliente.
 - HU-45: Calificar al cliente por parte del técnico.
-- HU-46: Publicación de reseñas, doble ciego, publicación bilateral y silenciosa a las 48h,
-         cálculo de promedios, distribución de estrellas y reputación en Honduras (America/Tegucigalpa).
+- HU-46: Publicación de reseñas (doble ciego, publicación bilateral simultánea o silenciosa a las 48h),
+         cálculo de promedios, distribución de estrellas y reputación localizada en Honduras (America/Tegucigalpa).
+
+Arquitectura y Principios SOLID aplicados:
+- Adapter + LSP/OCP (`ReviewableRequestAdapter`): unifica la consulta de solicitudes directas y abiertas,
+  la extracción de participantes, validación de estado COMPLETADA y fecha de cierre real desde HU-35/HU-32.
+- Strategy + OCP/DIP (`ReviewPublicationStrategy`): encapsula las políticas de publicación
+  (publicación bilateral instantánea vs. vencimiento silencioso de 48 horas con reloj inyectable).
+- SRP / ISP: esquemas Pydantic segregados por caso de uso y funciones de dominio cohesivas.
 """
-import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Literal, Optional
-from zoneinfo import ZoneInfo
+from typing import Any, Callable, Literal, Optional, Protocol
+import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, field_validator
-from sqlalchemy import cast, func, or_, select, String
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import DirectRequest, OpenRequest, ServiceReview, TechnicianProfile, User
+from app.models import (
+    DirectRequest,
+    OpenRequest,
+    RequestStateEvent,
+    ServiceReview,
+    TechnicianProfile,
+    User,
+    ensure_utc_datetime,
+)
 from app.security import get_current_user
 
-TEGUCIGALPA_TZ = ZoneInfo("America/Tegucigalpa")
+REVIEW_WINDOW_HOURS = 48
+TEGUCIGALPA_TZ_NAME = "America/Tegucigalpa"
+try:
+    TEGUCIGALPA_TZ = ZoneInfo(TEGUCIGALPA_TZ_NAME)
+except ZoneInfoNotFoundError:
+    TEGUCIGALPA_TZ = timezone(timedelta(hours=-6), name=TEGUCIGALPA_TZ_NAME)
 
 router = APIRouter(prefix="/reviews", tags=["Reviews & Reputation"])
 
 
-# --- ESQUEMAS PYDANTIC ---
+# --- ESQUEMAS PYDANTIC SEGREGADOS (SRP / ISP) ---
 
 
 class CreateReviewSchema(BaseModel):
+    """DTO de entrada estricto para registrar una reseña bilateral (HU-44 / HU-45)."""
+
     model_config = ConfigDict(extra="forbid")
 
     tipo_solicitud: Literal["DIRECTA", "ABIERTA"]
@@ -61,6 +83,8 @@ class CreateReviewSchema(BaseModel):
 
 
 class ServiceReviewOut(BaseModel):
+    """DTO de salida para una reseña individual localizada en America/Tegucigalpa."""
+
     id: str
     tipo_solicitud: str
     solicitud_id: str
@@ -76,7 +100,18 @@ class ServiceReviewOut(BaseModel):
     publicada_en: Optional[str] = None
 
 
+class SubmitReviewResponseOut(BaseModel):
+    """DTO de respuesta al crear una reseña indicando si se publicó de inmediato o quedó pendiente."""
+
+    resena: ServiceReviewOut
+    estado_publicacion: Literal["PENDIENTE", "PUBLICADA"]
+    publicada_inmediata: bool
+    mensaje: str
+
+
 class ReputationSummaryOut(BaseModel):
+    """DTO segregado únicamente para el resumen de reputación de un usuario."""
+
     usuario_id: str
     promedio: Optional[float]
     total_resenas: int
@@ -84,37 +119,52 @@ class ReputationSummaryOut(BaseModel):
     distribucion_estrellas: dict[str, int]
 
 
+class UserPublicReviewsOut(ReputationSummaryOut):
+    """DTO de perfil público con resumen de reputación y lista de reseñas publicadas."""
+
+    resenas: list[ServiceReviewOut]
+
+
 class ServiceReviewsStatusOut(BaseModel):
+    """DTO para inspeccionar el estado bilateral (doble ciego) dentro de una contratación."""
+
     tipo_solicitud: str
     solicitud_id: str
     servicio_completado: bool
     mi_resena: Optional[ServiceReviewOut] = None
     contraparte_resena: Optional[ServiceReviewOut] = None
     contraparte_ha_calificado: bool = False
-    estado_publicacion_general: str  # 'NINGUNA', 'PENDIENTE', 'PUBLICADA'
+    estado_publicacion_general: Literal["NINGUNA", "PENDIENTE", "PUBLICADA"]
 
 
-# --- HELPERS ---
+class SyncExpirationsOut(BaseModel):
+    """DTO de respuesta para la sincronización idempotente de reseñas vencidas a 48h."""
+
+    publicadas: int
+    mensaje: str
+
+
+# --- HELPERS DE FECHA, IDENTIDAD Y REPUTACIÓN ---
 
 
 def to_tegucigalpa_iso(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(TEGUCIGALPA_TZ).isoformat()
+    utc_dt = ensure_utc_datetime(dt)
+    assert utc_dt is not None
+    return utc_dt.astimezone(TEGUCIGALPA_TZ).isoformat()
 
 
-def _clean_uuid(val: Any) -> uuid.UUID:
-    if isinstance(val, uuid.UUID):
-        return val
+def _parse_iso_utc(raw_value: Any) -> Optional[datetime]:
+    if isinstance(raw_value, datetime):
+        return ensure_utc_datetime(raw_value)
+    if not raw_value:
+        return None
     try:
-        return uuid.UUID(str(val).strip())
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Identificador inválido: {val}",
-        ) from None
+        parsed = datetime.fromisoformat(str(raw_value).strip())
+        return ensure_utc_datetime(parsed)
+    except ValueError:
+        return None
 
 
 def _find_user_by_id_or_firebase_uid(user_id_or_uid: Any, db: Session) -> Optional[User]:
@@ -122,7 +172,7 @@ def _find_user_by_id_or_firebase_uid(user_id_or_uid: Any, db: Session) -> Option
     clean_uuid_obj = None
     try:
         clean_uuid_obj = uuid.UUID(raw_str)
-    except Exception:
+    except ValueError:
         pass
 
     conditions = [User.firebase_uid == raw_str]
@@ -141,62 +191,232 @@ def _get_authenticated_user(claims: dict, db: Session) -> User:
     return user
 
 
-def _resolve_service_request(
-    tipo_solicitud: str,
-    solicitud_id: str,
-    db: Session,
-) -> tuple[Any, User, User, datetime]:
-    """Recupera la solicitud, el cliente, el técnico y la fecha de finalización."""
-    clean_id = (solicitud_id or "").strip()
-    norm_tipo = tipo_solicitud.strip().upper()
+# --- PATRÓN ADAPTER + LSP / OCP (SOLICITUD DIRECTA vs. ABIERTA) ---
 
-    if norm_tipo == "DIRECTA":
-        bind = db.get_bind()
+
+class ReviewableRequestAdapter(Protocol):
+    """Patrón Adapter + Principios SOLID (LSP, OCP, ISP):
+    Contrato unificado para consultar solicitudes DirectRequest/OpenRequest elegibles para reseña,
+    extraer sus participantes, verificar estado COMPLETADA y determinar la fecha de cierre real.
+    """
+
+    tipo_solicitud: Literal["DIRECTA", "ABIERTA"]
+
+    def find_request(self, db: Session, clean_id: str) -> Any | None: ...
+
+    def extract_participants(self, record: Any, db: Session) -> tuple[User, User]: ...
+
+    def is_completed(self, record: Any) -> bool: ...
+
+    def resolve_completed_at(self, record: Any, db: Session) -> datetime: ...
+
+
+class _BaseReviewableRequestAdapter:
+    """Comportamiento común reutilizable para adaptadores de solicitudes evaluables (DRY / LSP)."""
+
+    tipo_solicitud: Literal["DIRECTA", "ABIERTA"]
+
+    def extract_participants(self, record: Any, db: Session) -> tuple[User, User]:
+        client_uid = getattr(record, "cliente_id", None)
+        tech_uid = getattr(record, "tecnico_id", None)
+        client_user = _find_user_by_id_or_firebase_uid(client_uid, db) if client_uid else None
+        tech_user = _find_user_by_id_or_firebase_uid(tech_uid, db) if tech_uid else None
+        if client_user is None or tech_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La solicitud no tiene cliente o técnico asignado válido.",
+            )
+        return client_user, tech_user
+
+    def is_completed(self, record: Any) -> bool:
+        return (getattr(record, "estado", None) or "").strip().upper() == "COMPLETADA"
+
+    def resolve_completed_at(self, record: Any, db: Session) -> datetime:
+        """Obtiene la fecha real de cierre alineada con HU-35 (`seguimiento_recepcion`) y HU-32 (`historial_estados_solicitud`)."""
+        tracking = getattr(record, "seguimiento_recepcion", None) or {}
+        if isinstance(tracking, dict):
+            closed_from_tracking = _parse_iso_utc(tracking.get("fecha_cierre"))
+            if closed_from_tracking is not None:
+                return closed_from_tracking
+            deadline_from_tracking = _parse_iso_utc(tracking.get("plazo_resena_vence_en"))
+            if deadline_from_tracking is not None:
+                return deadline_from_tracking - timedelta(hours=REVIEW_WINDOW_HOURS)
+
+        event_dt = db.scalar(
+            select(RequestStateEvent.fecha)
+            .where(
+                RequestStateEvent.modalidad == self.tipo_solicitud,
+                RequestStateEvent.solicitud_id == str(record.id),
+                RequestStateEvent.estado == "COMPLETADA",
+            )
+            .order_by(RequestStateEvent.id.desc())
+            .limit(1)
+        )
+        parsed_event_dt = ensure_utc_datetime(event_dt)
+        if parsed_event_dt is not None:
+            return parsed_event_dt
+
+        fallback = (
+            getattr(record, "finalizacion_reportada_en", None)
+            or getattr(record, "fecha_hora", None)
+            or getattr(record, "creada_en", None)
+            or datetime.now(timezone.utc)
+        )
+        normalized = ensure_utc_datetime(fallback)
+        assert normalized is not None
+        return normalized
+
+
+class DirectReviewableRequestAdapter(_BaseReviewableRequestAdapter):
+    """Adaptador concreto para solicitudes directas (`DirectRequest`)."""
+
+    tipo_solicitud: Literal["DIRECTA", "ABIERTA"] = "DIRECTA"
+
+    def find_request(self, db: Session, clean_id: str) -> DirectRequest | None:
+        if not clean_id:
+            return None
         lookup_id = clean_id
+        bind = db.get_bind()
         if bind is not None and bind.dialect.name == "postgresql":
             try:
                 lookup_id = str(uuid.UUID(clean_id))
             except ValueError:
-                raise HTTPException(status_code=404, detail="Solicitud directa no encontrada.") from None
+                return None
+        return db.scalar(select(DirectRequest).where(DirectRequest.id == lookup_id))
 
-        record = db.scalar(select(DirectRequest).where(cast(DirectRequest.id, String) == str(lookup_id)))
-        if not record:
-            raise HTTPException(status_code=404, detail="Solicitud directa no encontrada.")
 
-        client_user = _find_user_by_id_or_firebase_uid(record.cliente_id, db)
-        tech_user = _find_user_by_id_or_firebase_uid(record.tecnico_id, db)
+class OpenReviewableRequestAdapter(_BaseReviewableRequestAdapter):
+    """Adaptador concreto para licitaciones/solicitudes abiertas (`OpenRequest`)."""
 
-    elif norm_tipo == "ABIERTA":
-        record = db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id))
-        if not record:
-            raise HTTPException(status_code=404, detail="Solicitud abierta no encontrada.")
+    tipo_solicitud: Literal["DIRECTA", "ABIERTA"] = "ABIERTA"
 
-        client_user = _find_user_by_id_or_firebase_uid(record.cliente_id, db)
-        tech_user = (
-            _find_user_by_id_or_firebase_uid(record.tecnico_id, db)
-            if record.tecnico_id
-            else None
+    def find_request(self, db: Session, clean_id: str) -> OpenRequest | None:
+        if not clean_id:
+            return None
+        return db.scalar(select(OpenRequest).where(OpenRequest.id == clean_id))
+
+
+_REVIEWABLE_ADAPTERS: dict[str, ReviewableRequestAdapter] = {
+    "DIRECTA": DirectReviewableRequestAdapter(),
+    "ABIERTA": OpenReviewableRequestAdapter(),
+}
+
+
+def _get_reviewable_adapter(tipo_solicitud: str) -> ReviewableRequestAdapter:
+    norm_tipo = (tipo_solicitud or "").strip().upper()
+    adapter = _REVIEWABLE_ADAPTERS.get(norm_tipo)
+    if adapter is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tipo de solicitud inválido. Usa DIRECTA o ABIERTA.",
         )
-    else:
-        raise HTTPException(status_code=400, detail="Tipo de solicitud inválido. Usa DIRECTA o ABIERTA.")
+    return adapter
 
-    if not client_user or not tech_user:
-        raise HTTPException(status_code=400, detail="La solicitud no tiene cliente o técnico asignado válido.")
 
-    completada_en = (
-        getattr(record, "completada_en", None)
-        or getattr(record, "fecha_hora", None)
-        or getattr(record, "creada_en", None)
-        or datetime.now(timezone.utc)
-    )
-    if completada_en.tzinfo is None:
-        completada_en = completada_en.replace(tzinfo=timezone.utc)
+def _resolve_service_request(
+    tipo_solicitud: str,
+    solicitud_id: str,
+    db: Session,
+) -> tuple[ReviewableRequestAdapter, Any, User, User, datetime]:
+    """Recupera el adaptador de modalidad, el registro, cliente, técnico y la fecha de cierre real."""
+    adapter = _get_reviewable_adapter(tipo_solicitud)
+    clean_id = (solicitud_id or "").strip()
+    record = adapter.find_request(db, clean_id)
+    if record is None:
+        label = "directa" if adapter.tipo_solicitud == "DIRECTA" else "abierta"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Solicitud {label} no encontrada.")
 
-    return record, client_user, tech_user, completada_en
+    client_user, tech_user = adapter.extract_participants(record, db)
+    completed_at = adapter.resolve_completed_at(record, db)
+    return adapter, record, client_user, tech_user, completed_at
+
+
+# --- PATRÓN STRATEGY + OCP / DIP (POLÍTICAS DE PUBLICACIÓN DE RESEÑAS) ---
+
+
+class ReviewPublicationStrategy(Protocol):
+    """Patrón Strategy + Principios SOLID (OCP, DIP, SRP):
+    Contrato desacoplado para determinar si una reseña debe publicarse de inmediato
+    (publicación bilateral mutua o expiración silenciosa del plazo de 48 horas).
+    """
+
+    name: str
+
+    def should_publish(
+        self,
+        *,
+        counterpart_review: Optional[ServiceReview],
+        completed_at: datetime,
+        now: datetime,
+    ) -> bool: ...
+
+
+class BilateralMutualPublicationStrategy:
+    """HU-46 CA-01: Publica instantáneamente ambas reseñas en cuanto la segunda parte evalúa."""
+
+    name = "BILATERAL_SIMULTANEA"
+
+    def should_publish(
+        self,
+        *,
+        counterpart_review: Optional[ServiceReview],
+        completed_at: datetime,
+        now: datetime,
+    ) -> bool:
+        return counterpart_review is not None
+
+
+class SilentTimeoutPublicationStrategy:
+    """HU-46 CA-01/CA-02: Publica silenciosamente al cumplirse 48h desde la fecha de cierre del servicio."""
+
+    name = "EXPIRACION_SILENCIOSA_48H"
+
+    def __init__(self, window_hours: int = REVIEW_WINDOW_HOURS) -> None:
+        self.window_hours = window_hours
+
+    def should_publish(
+        self,
+        *,
+        counterpart_review: Optional[ServiceReview],
+        completed_at: datetime,
+        now: datetime,
+    ) -> bool:
+        now_utc = ensure_utc_datetime(now)
+        completed_utc = ensure_utc_datetime(completed_at)
+        assert now_utc is not None and completed_utc is not None
+        elapsed_hours = (now_utc - completed_utc).total_seconds() / 3600.0
+        return elapsed_hours >= float(self.window_hours)
+
+
+_DEFAULT_PUBLICATION_STRATEGIES: tuple[ReviewPublicationStrategy, ...] = (
+    BilateralMutualPublicationStrategy(),
+    SilentTimeoutPublicationStrategy(window_hours=REVIEW_WINDOW_HOURS),
+)
+
+
+def evaluate_review_publication_policy(
+    *,
+    counterpart_review: Optional[ServiceReview],
+    completed_at: datetime,
+    now: datetime,
+    strategies: Optional[tuple[ReviewPublicationStrategy, ...]] = None,
+) -> tuple[bool, Optional[str]]:
+    """Evalúa las estrategias configuradas y devuelve si corresponde publicar inmediatamente."""
+    for strategy in strategies or _DEFAULT_PUBLICATION_STRATEGIES:
+        if strategy.should_publish(
+            counterpart_review=counterpart_review,
+            completed_at=completed_at,
+            now=now,
+        ):
+            return True, strategy.name
+    return False, None
+
+
+# --- CÁLCULO DE REPUTACIÓN Y SINCRONIZACIÓN SILENCIOSA ---
 
 
 def _recompute_user_reputation(user_id: uuid.UUID, db: Session) -> Optional[float]:
-    """Calcula el promedio publicado y actualiza TechnicianProfile si corresponde."""
+    """Calcula el promedio de calificaciones publicadas y sincroniza `TechnicianProfile`."""
     published_scores = list(
         db.scalars(
             select(ServiceReview.puntuacion).where(
@@ -218,17 +438,18 @@ def _recompute_user_reputation(user_id: uuid.UUID, db: Session) -> Optional[floa
 def sync_expired_reviews(
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
+    *,
+    window_hours: int = REVIEW_WINDOW_HOURS,
 ) -> int:
-    """HU-46 CA-01/CA-02/CA-03: Sincronización silenciosa e idempotente de reseñas tras 48h.
+    """HU-46 CA-01/CA-02/CA-03: Sincronización silenciosa e idempotente tras expirar 48h desde el cierre.
 
-    Si han transcurrido >= 48 horas desde fecha_completado_servicio y existe una reseña
-    PENDIENTE, se publica automáticamente. No genera reseñas falsas.
+    Si han transcurrido >= 48 horas desde `fecha_completado_servicio` y una reseña sigue `PENDIENTE`,
+    pasa a `PUBLICADA` de forma silenciosa y recalcula promedios. Nunca inventa reseñas falsas.
     """
-    now = clock_fn() if clock_fn else datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+    now = ensure_utc_datetime(clock_fn() if clock_fn else datetime.now(timezone.utc))
+    assert now is not None
 
-    cutoff = now - timedelta(hours=48)
+    cutoff = now - timedelta(hours=window_hours)
 
     pending_reviews = list(
         db.scalars(
@@ -275,7 +496,7 @@ def _serialize_review(review: ServiceReview, db: Session) -> ServiceReviewOut:
     )
 
 
-# --- FUNCIONES DE SERVICIO (UTILIZABLES EN TESTS Y ENDPOINTS) ---
+# --- FUNCIONES DE SERVICIO (INYECCIÓN DE RELOJ Y ESTRATEGIAS PARA TESTS) ---
 
 
 def create_service_review(
@@ -283,22 +504,23 @@ def create_service_review(
     claims: dict,
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
-) -> dict:
+    *,
+    publication_strategies: Optional[tuple[ReviewPublicationStrategy, ...]] = None,
+) -> dict[str, Any]:
     """Crea una reseña cumpliendo todas las reglas de negocio de HU-44, HU-45 y HU-46."""
     current_user = _get_authenticated_user(claims, db)
-    record, client_user, tech_user, completed_at = _resolve_service_request(
+    adapter, record, client_user, tech_user, completed_at = _resolve_service_request(
         payload.tipo_solicitud, payload.solicitud_id, db
     )
 
-    # CA-01 y CA-05: El servicio debe estar en estado COMPLETADA
-    estado_actual = (getattr(record, "estado", None) or "").strip().upper()
-    if estado_actual != "COMPLETADA":
+    # CA-01 y CA-05: El servicio debe estar en estado real COMPLETADA (HU-35)
+    if not adapter.is_completed(record):
+        estado_actual = (getattr(record, "estado", None) or "").strip().upper()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Solo se pueden calificar servicios con estado COMPLETADA (estado actual: {estado_actual}).",
         )
 
-    # Determinar si el usuario autenticado es el cliente o el técnico
     is_client = current_user.id == client_user.id or current_user.firebase_uid == client_user.firebase_uid
     is_tech = current_user.id == tech_user.id or current_user.firebase_uid == tech_user.firebase_uid
 
@@ -319,12 +541,12 @@ def create_service_review(
         evaluado_id = client_user.id
         counterpart_role = "CLIENTE"
 
-    # CA-03: Unicidad (1 evaluación por rol por solicitud)
+    # CA-03: Unicidad (máximo 1 evaluación por rol por solicitud -> 409 Conflict)
     clean_solicitud_id = str(payload.solicitud_id).strip()
     existing_my_review = db.scalar(
         select(ServiceReview).where(
             ServiceReview.tipo_solicitud == payload.tipo_solicitud,
-            cast(ServiceReview.solicitud_id, String) == clean_solicitud_id,
+            ServiceReview.solicitud_id == clean_solicitud_id,
             ServiceReview.rol_evaluador == rol_evaluador,
         )
     )
@@ -334,27 +556,28 @@ def create_service_review(
             detail="Ya has calificado este servicio. No es posible enviar evaluaciones duplicadas.",
         )
 
-    now = clock_fn() if clock_fn else datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+    now = ensure_utc_datetime(clock_fn() if clock_fn else datetime.now(timezone.utc))
+    assert now is not None
 
     # Sincronizar vencimientos de 48h antes de verificar contraparte
-    sync_expired_reviews(db, clock_fn=clock_fn)
+    sync_expired_reviews(db, clock_fn=lambda: now)
 
-    # Verificar si la contraparte ya envió su reseña
     counterpart_review = db.scalar(
         select(ServiceReview).where(
             ServiceReview.tipo_solicitud == payload.tipo_solicitud,
-            cast(ServiceReview.solicitud_id, String) == clean_solicitud_id,
+            ServiceReview.solicitud_id == clean_solicitud_id,
             ServiceReview.rol_evaluador == counterpart_role,
         )
     )
 
-    # Si la contraparte ya evaluó o ya pasaron >= 48h desde que finalizó el servicio:
-    hours_since_completion = (now - completed_at).total_seconds() / 3600.0
-    should_publish_now = (counterpart_review is not None) or (hours_since_completion >= 48.0)
+    should_publish_now, _policy_matched = evaluate_review_publication_policy(
+        counterpart_review=counterpart_review,
+        completed_at=completed_at,
+        now=now,
+        strategies=publication_strategies,
+    )
 
-    initial_status = "PUBLICADA" if should_publish_now else "PENDIENTE"
+    initial_status: Literal["PENDIENTE", "PUBLICADA"] = "PUBLICADA" if should_publish_now else "PENDIENTE"
     published_at = now if should_publish_now else None
 
     new_review = ServiceReview(
@@ -373,14 +596,13 @@ def create_service_review(
     )
     db.add(new_review)
 
-    # Publicación bilateral instantánea si la contraparte estaba PENDIENTE
+    # Publicación bilateral simultánea si la contraparte estaba PENDIENTE
     if counterpart_review is not None and counterpart_review.estado_publicacion != "PUBLICADA":
         counterpart_review.estado_publicacion = "PUBLICADA"
         counterpart_review.publicada_en = now
 
     db.flush()
 
-    # Recomputar promedios si se publicó
     if should_publish_now:
         _recompute_user_reputation(evaluado_id, db)
         if counterpart_review is not None:
@@ -411,11 +633,11 @@ def get_service_reviews_status_data(
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
 ) -> ServiceReviewsStatusOut:
-    """Obtiene el estado de reseñas para una solicitud."""
+    """Obtiene el estado de reseñas para una solicitud manteniendo la regla de doble ciego."""
     sync_expired_reviews(db, clock_fn=clock_fn)
 
     current_user = _get_authenticated_user(claims, db)
-    record, client_user, tech_user, _ = _resolve_service_request(tipo_solicitud, solicitud_id, db)
+    adapter, record, client_user, tech_user, _ = _resolve_service_request(tipo_solicitud, solicitud_id, db)
 
     is_client = current_user.id == client_user.id or current_user.firebase_uid == client_user.firebase_uid
     is_tech = current_user.id == tech_user.id or current_user.firebase_uid == tech_user.firebase_uid
@@ -433,8 +655,8 @@ def get_service_reviews_status_data(
     reviews = list(
         db.scalars(
             select(ServiceReview).where(
-                ServiceReview.tipo_solicitud == tipo_solicitud.strip().upper(),
-                cast(ServiceReview.solicitud_id, String) == clean_id,
+                ServiceReview.tipo_solicitud == adapter.tipo_solicitud,
+                ServiceReview.solicitud_id == clean_id,
             )
         ).all()
     )
@@ -444,24 +666,22 @@ def get_service_reviews_status_data(
 
     my_rev_serialized = _serialize_review(my_rev, db) if my_rev else None
 
-    # Doble ciego: solo mostrar la reseña de la contraparte si está PUBLICADA
+    # Doble ciego: solo exponer la reseña de la contraparte si está PUBLICADA
     other_rev_serialized = None
     counterpart_has_reviewed = other_rev is not None
     if other_rev and other_rev.estado_publicacion == "PUBLICADA":
         other_rev_serialized = _serialize_review(other_rev, db)
 
-    general_status = "NINGUNA"
+    general_status: Literal["NINGUNA", "PENDIENTE", "PUBLICADA"] = "NINGUNA"
     if my_rev and my_rev.estado_publicacion == "PUBLICADA":
         general_status = "PUBLICADA"
     elif my_rev:
         general_status = "PENDIENTE"
 
-    estado_req = (getattr(record, "estado", None) or "").strip().upper()
-
     return ServiceReviewsStatusOut(
-        tipo_solicitud=tipo_solicitud.strip().upper(),
+        tipo_solicitud=adapter.tipo_solicitud,
         solicitud_id=clean_id,
-        servicio_completado=(estado_req == "COMPLETADA"),
+        servicio_completado=adapter.is_completed(record),
         mi_resena=my_rev_serialized,
         contraparte_resena=other_rev_serialized,
         contraparte_ha_calificado=counterpart_has_reviewed,
@@ -479,7 +699,7 @@ def get_user_reputation_summary(
 
     target_user = _find_user_by_id_or_firebase_uid(user_id, db)
     if not target_user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
 
     published_reviews = list(
         db.scalars(
@@ -521,12 +741,12 @@ def list_user_published_reviews(
     user_id: str,
     db: Session,
     clock_fn: Optional[Callable[[], datetime]] = None,
-) -> dict:
-    """Devuelve la lista de reseñas públicas de un usuario."""
+) -> dict[str, Any]:
+    """Devuelve la lista de reseñas públicas de un usuario junto con su resumen de reputación."""
     summary = get_user_reputation_summary(user_id, db, clock_fn=clock_fn)
     target_user = _find_user_by_id_or_firebase_uid(user_id, db)
     if not target_user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
 
     published = list(
         db.scalars(
@@ -553,12 +773,14 @@ def list_user_published_reviews(
 # --- ENDPOINTS FASTAPI ---
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=SubmitReviewResponseOut, status_code=status.HTTP_201_CREATED)
 def submit_service_review_endpoint(
     payload: CreateReviewSchema,
+    response: Response,
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    response.headers["Cache-Control"] = "no-store, private"
     return create_service_review(payload, claims, db)
 
 
@@ -566,9 +788,11 @@ def submit_service_review_endpoint(
 def get_service_reviews_status_endpoint(
     tipo_solicitud: str,
     solicitud_id: str,
+    response: Response,
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    response.headers["Cache-Control"] = "no-store, private"
     return get_service_reviews_status_data(tipo_solicitud, solicitud_id, claims, db)
 
 
@@ -582,7 +806,7 @@ def get_user_reputation_endpoint(
     return get_user_reputation_summary(user_id, db)
 
 
-@router.get("/users/{user_id}")
+@router.get("/users/{user_id}", response_model=UserPublicReviewsOut)
 def get_user_public_reviews_endpoint(
     user_id: str,
     response: Response,
@@ -592,10 +816,12 @@ def get_user_public_reviews_endpoint(
     return list_user_published_reviews(user_id, db)
 
 
-@router.post("/sync-expirations")
+@router.post("/sync-expirations", response_model=SyncExpirationsOut)
 def trigger_sync_expirations_endpoint(
+    response: Response,
     claims: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    response.headers["Cache-Control"] = "no-store, private"
     count = sync_expired_reviews(db)
     return {"publicadas": count, "mensaje": f"Se publicaron {count} reseñas vencidas de 48h."}

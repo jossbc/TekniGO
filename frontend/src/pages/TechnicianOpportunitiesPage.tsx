@@ -38,9 +38,14 @@ export default function TechnicianOpportunitiesPage({ user }: { user: User }) {
             <h1>Ofertas disponibles en tu zona</h1>
             <p>
               Consulta solicitudes abiertas compatibles con tus especialidades y zonas de cobertura,
-              revisa el presupuesto ofrecido y descarta las que no sean de tu interés.
+              revisa el presupuesto ofrecido y descarta las que no sean de tu interés. Cuando un cliente
+              acepte tu propuesta, el trabajo pasará a <strong>Mis solicitudes y trabajos</strong> para
+              iniciarlo y reportar su finalización.
             </p>
           </div>
+          <Link className="button button-outline" to="/tecnico/solicitudes" style={{ width: "auto" }}>
+            Ver mis solicitudes y trabajos
+          </Link>
         </div>
 
         {state.status !== "ready" ? (

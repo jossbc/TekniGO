@@ -1,0 +1,124 @@
+name: Deploy a Azure
+
+on:
+  workflow_call:
+    secrets:
+      DATABASE_URL:
+        required: true
+
+concurrency:
+  group: teknigo-azure-production
+  cancel-in-progress: false
+
+jobs:
+  azure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      RG: rg-teknigo
+      REGISTRY: acrteknigohydra.azurecr.io
+      BACKEND_IMAGE: acrteknigohydra.azurecr.io/teknigo-backend:${{ github.sha }}
+      FRONTEND_IMAGE: acrteknigohydra.azurecr.io/teknigo-frontend:${{ github.sha }}
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Comprobar credenciales de Azure
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            : "${!name:?Falta configurar $name en Environment variables de production}"
+          done
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verificar que el commit sigue en main
+        id: main
+        shell: bash
+        run: |
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          echo "deploy=$([[ "$latest" == "$GITHUB_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Construir y publicar imágenes
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          host=$(az containerapp show -g "$RG" -n teknigo-backend --query properties.configuration.ingress.fqdn -o tsv)
+          export VITE_API_URL="https://${host:?El backend no tiene hostname}"
+          echo "BACKEND_URL=$VITE_API_URL" >> "$GITHUB_ENV"
+          az acr login --name "${REGISTRY%%.*}"
+          docker build -t "$BACKEND_IMAGE" ./backend
+          docker build --target azure -t "$FRONTEND_IMAGE" --build-arg VITE_API_URL \
+            --build-arg "BUILD_COMMIT=$GITHUB_SHA" \
+            --build-arg "VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID:?Falta configurar Firebase}" \
+            --build-arg "VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID:?Falta configurar Firebase}" ./frontend
+          docker push "$BACKEND_IMAGE"
+          docker push "$FRONTEND_IMAGE"
+
+      - name: Aplicar migraciones en Supabase
+        if: steps.main.outputs.deploy == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          : "${DATABASE_URL:?Falta el secreto DATABASE_URL en production}"
+          schema=$(az containerapp show -g "$RG" -n teknigo-backend \
+            --query 'properties.template.containers[0].env[?name==`DATABASE_SCHEMA`]' -o json)
+          DATABASE_SCHEMA=$(jq -er 'if length == 0 then "public" else .[0].value // error("DATABASE_SCHEMA debe ser un valor explícito en Azure") end' <<< "$schema")
+          export DATABASE_SCHEMA
+          docker run --rm -e DATABASE_URL -e DATABASE_SCHEMA "$BACKEND_IMAGE" python -m alembic upgrade head
+
+      - name: Actualizar TekniGO en Azure
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          az containerapp update -g "$RG" -n teknigo-backend --image "$BACKEND_IMAGE" --only-show-errors -o none
+          # En Express, una petición despierta el backend cuando está escalado a cero.
+          for attempt in {1..18}; do
+            if curl --fail --silent --show-error --max-time 10 "$BACKEND_URL/health" &&
+              az containerapp revision list -g "$RG" -n teknigo-backend --only-show-errors -o json |
+              jq -e --arg image "$BACKEND_IMAGE" 'any(.[];
+                .properties.active and .properties.provisioningState == "Provisioned" and
+                any(.properties.template.containers[]?; .image == $image))' > /dev/null; then
+              az containerapp update -g "$RG" -n teknigo-frontend --image "$FRONTEND_IMAGE" --only-show-errors -o none
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::El backend no respondió con la imagen esperada: $BACKEND_IMAGE."
+          az containerapp revision list -g "$RG" -n teknigo-backend --only-show-errors \
+            --query '[].{revision:name,activa:properties.active,estado:properties.provisioningState,salud:properties.healthState,imagen:properties.template.containers[0].image}' -o table
+          exit 1
+
+      - name: Verificar la versión publicada del frontend
+        if: steps.main.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          host=$(az containerapp show -g "$RG" -n teknigo-frontend \
+            --query properties.configuration.ingress.fqdn --only-show-errors -o tsv)
+          url="https://${host:?El frontend no tiene hostname}"
+          for attempt in {1..12}; do
+            if served=$(curl --fail --silent --show-error --max-time 10 "$url/version.txt?commit=$GITHUB_SHA") &&
+              [[ "$served" == "$GITHUB_SHA" ]]; then
+              echo "Frontend publicado: $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::El frontend en $url no sirve el commit $GITHUB_SHA."
+          az containerapp revision list -g "$RG" -n teknigo-frontend --only-show-errors \
+            --query '[].{revision:name,activa:properties.active,estado:properties.provisioningState,salud:properties.healthState,imagen:properties.template.containers[0].image}' -o table
+          exit 1
