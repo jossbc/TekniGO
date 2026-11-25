@@ -1,3 +1,5 @@
+import os
+import threading
 import uuid
 from decimal import Decimal
 from datetime import datetime, date, timedelta, timezone
@@ -7,6 +9,41 @@ from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Int
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+_UUID7_LOCK = threading.Lock()
+_UUID7_LAST_MS = 0
+_UUID7_SEQ = 0
+
+
+def monotonic_uuid7(moment: datetime | None = None) -> uuid.UUID:
+    """Genera un UUIDv7 ordenable por tiempo manteniendo unicidad y orden estricto ante empates."""
+    global _UUID7_LAST_MS, _UUID7_SEQ
+    if moment is not None:
+        normalized = ensure_utc_datetime(moment)
+        assert normalized is not None
+        ts_ms = max(0, int(normalized.timestamp() * 1000))
+    else:
+        ts_ms = max(0, int(datetime.now(timezone.utc).timestamp() * 1000))
+
+    with _UUID7_LOCK:
+        if ts_ms < _UUID7_LAST_MS:
+            ts_ms = _UUID7_LAST_MS
+        if ts_ms == _UUID7_LAST_MS:
+            _UUID7_SEQ += 1
+            if _UUID7_SEQ > 0xFFF:
+                ts_ms += 1
+                _UUID7_LAST_MS = ts_ms
+                _UUID7_SEQ = 0
+        else:
+            _UUID7_LAST_MS = ts_ms
+            _UUID7_SEQ = 0
+        seq = _UUID7_SEQ
+
+    ts_bytes = ts_ms.to_bytes(6, "big")
+    rand_bytes = bytearray(os.urandom(8))
+    rand_bytes[0] = (rand_bytes[0] & 0x3F) | 0x80
+    ver_seq = bytes([(0x70 | ((seq >> 8) & 0x0F)), seq & 0xFF])
+    return uuid.UUID(bytes=ts_bytes + ver_seq + bytes(rand_bytes))
 
 CONFIRMATION_WINDOW_HOURS = 48
 CONFIRMATION_WINDOW = timedelta(hours=CONFIRMATION_WINDOW_HOURS)
@@ -1133,3 +1170,89 @@ class FinancialLedgerEntry(Base):
     referencia_pasarela = Column(String(220), nullable=True)
     detalle = Column(JSON, nullable=False, default=dict)
     creado_en = Column(DateTime(timezone=True), nullable=False)
+
+
+class NotificationEvent(Base):
+    """HU-47 ST-02: cola outbox persistente de eventos de notificación con soporte de reintentos idempotentes."""
+
+    __tablename__ = "eventos_notificacion"
+    __table_args__ = (
+        UniqueConstraint("clave_evento", name="uq_eventos_notificacion_clave_evento"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE', 'PROCESADO', 'FALLIDO')",
+            name="ck_evento_notificacion_estado",
+        ),
+        CheckConstraint("intentos >= 0", name="ck_evento_notificacion_intentos"),
+        CheckConstraint(
+            "length(trim(clave_evento)) > 0 AND length(trim(tipo_evento)) > 0",
+            name="ck_evento_notificacion_claves",
+        ),
+        Index("ix_eventos_notificacion_estado_creado", "estado", "creado_en"),
+        Index("ix_eventos_notificacion_tipo", "tipo_evento"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=monotonic_uuid7)
+    clave_evento: Mapped[str] = mapped_column(String(180), nullable=False)
+    tipo_evento: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_seguro: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    estado: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE"
+    )
+    intentos: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    ultimo_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+    procesado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class UserNotification(Base):
+    """HU-47 ST-01 / ST-03 / ST-05: bandeja persistente por destinatario con idempotencia estricta y enlaces internos."""
+
+    __tablename__ = "notificaciones_bandeja"
+    __table_args__ = (
+        UniqueConstraint(
+            "destinatario_id",
+            "clave_idempotencia",
+            name="uq_notificacion_destinatario_idempotencia",
+        ),
+        UniqueConstraint(
+            "evento_id",
+            "destinatario_id",
+            name="uq_notificacion_evento_destinatario",
+        ),
+        CheckConstraint(
+            "length(trim(titulo)) > 0 AND length(trim(resumen)) > 0 AND length(trim(enlace_ruta)) > 0",
+            name="ck_notificacion_campos_no_vacios",
+        ),
+        CheckConstraint("enlace_ruta LIKE '/%'", name="ck_notificacion_enlace_interno"),
+        Index("ix_notificaciones_destinatario_creada", "destinatario_id", "creada_en", "id"),
+        Index("ix_notificaciones_destinatario_leida", "destinatario_id", "leida", "creada_en"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=monotonic_uuid7)
+    evento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eventos_notificacion.id"), nullable=False)
+    destinatario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    clave_idempotencia: Mapped[str] = mapped_column(String(200), nullable=False)
+    tipo_evento: Mapped[str] = mapped_column(String(64), nullable=False)
+    titulo: Mapped[str] = mapped_column(String(160), nullable=False)
+    resumen: Mapped[str] = mapped_column(Text, nullable=False)
+    enlace_ruta: Mapped[str] = mapped_column(String(240), nullable=False)
+    recurso_tipo: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recurso_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadatos_seguros: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    leida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+    evento = relationship("NotificationEvent", foreign_keys=[evento_id])
+    destinatario = relationship("User", foreign_keys=[destinatario_id])

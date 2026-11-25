@@ -70,6 +70,7 @@ export default function App() {
       <Route path="/tecnico/oportunidades" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/oportunidades/:id" element={user ? <TechnicianOpportunitiesPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="/tecnico/solicitudes" element={user ? <TechnicianRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
+      <Route path="/tecnico/solicitudes/:id" element={user ? <TechnicianRequestsPage user={user} /> : <Navigate to="/ingresar" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

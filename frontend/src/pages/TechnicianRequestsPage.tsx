@@ -1,6 +1,6 @@
 import type { User } from "firebase/auth";
 import { ArrowLeft } from "lucide-react";
-import { Link, Navigate } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import Header from "../components/Header";
 import { AccountStatus } from "../components/AccountStatus";
 import { TechnicianRequestsManager } from "../components/TechnicianRequestsManager";
@@ -8,6 +8,7 @@ import { accountPath } from "../lib/accountPath";
 import { useAccount } from "../lib/useAccount";
 
 export default function TechnicianRequestsPage({ user }: { user: User }) {
+  const { id } = useParams<{ id?: string }>();
   const { state, retry } = useAccount(user);
   const profile = state.status === "ready" ? state.profile : null;
 
@@ -31,7 +32,7 @@ export default function TechnicianRequestsPage({ user }: { user: User }) {
         {state.status !== "ready" ? (
           <AccountStatus state={state} retry={retry} />
         ) : (
-          <TechnicianRequestsManager user={user} />
+          <TechnicianRequestsManager user={user} initialRequestId={id || ""} />
         )}
       </main>
     </div>

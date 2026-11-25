@@ -17,6 +17,7 @@ from app.models import (
     TechnicianStatusAudit,
     User,
 )
+from app.notifications_events import notify_operational_restriction
 from app.security import get_current_user
 
 MAX_ANTIGUEDAD_ANTECEDENTES_DIAS = 90
@@ -384,6 +385,17 @@ def sync_technician_verification_state(
                 creado_en=datetime.now(timezone.utc),
             )
         )
+        if new_state in ("RESTRINGIDO", "RECHAZADO") and proceso_responsable != "REVISION_DOCUMENTAL_ADMIN":
+            any_expired = any(r["estado"] in ("VENCIDO", "INVALIDADO") for r in evaluation["requisitos"])
+            phone_bad = not evaluation["telefono_verificado"]
+            motivo_codigo = "TELEFONO_NO_VERIFICADO" if (phone_bad and not any_expired) else "DOCUMENTOS_VENCIDOS"
+            notify_operational_restriction(
+                db,
+                user.id,
+                motivo_codigo=motivo_codigo,
+                cycle_key=f"{new_state}:{proceso_responsable}:{(today or date.today()).isoformat()}",
+                role="TECNICO",
+            )
 
     return evaluation
 

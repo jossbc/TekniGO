@@ -20,6 +20,7 @@ from app.models import (
     ensure_utc_datetime,
     format_tegucigalpa_iso,
 )
+from app.notifications_events import notify_direct_request_decision
 from app.request_states import request_timeline, start_request_service, state_key, transition_request
 from app.security import get_current_user
 from app.service_reception import get_service_reception_tracking
@@ -352,6 +353,7 @@ def respond_to_direct_request(
                 detail="Con tarjeta se requiere confirmación y referencia de pago de pasarela antes de aceptar la solicitud (CA-03).",
             )
     transition_request(db, record, target_estado, role="TECNICO", uid=claims["uid"])
+    notify_direct_request_decision(db, record, accepted=(target_estado == "ACEPTADA"))
     db.commit()
     db.refresh(record)
 

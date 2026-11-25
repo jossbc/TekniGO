@@ -28,6 +28,7 @@ import { AlertTriangle, MessageSquare } from "lucide-react";
 import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
+import { subscribeGeneralNotificationLiveUpdate, subscribeProposalLiveUpdate } from "../lib/notifications";
 
 export type DirectRequest = TechnicianDirectRequest;
 
@@ -73,7 +74,7 @@ function formatDateTime(iso: string | null | undefined): string {
   });
 }
 
-export function TechnicianRequestsManager({ user }: { user: User }) {
+export function TechnicianRequestsManager({ user, initialRequestId = "" }: { user: User; initialRequestId?: string }) {
   const [requests, setRequests] = useState<DirectRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -130,7 +131,15 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     listTechnicianDirectRequests(user)
       .then((data) => {
         if (!active) return;
-        setRequests(Array.isArray(data) ? data : []);
+        const rows = Array.isArray(data) ? data : [];
+        setRequests(rows);
+        if (initialRequestId) {
+          const matched = rows.find((item) => item.id === initialRequestId);
+          if (matched) {
+            setTrackingId(matched.id);
+            setTrackingModality(getRequestModality(matched));
+          }
+        }
       })
       .catch((err) => {
         if (!active) return;
@@ -143,9 +152,23 @@ export function TechnicianRequestsManager({ user }: { user: User }) {
     return () => {
       active = false;
     };
-  }, [user, refreshTick]);
+  }, [user, refreshTick, initialRequestId]);
 
   const [modalityFilter, setModalityFilter] = useState<ModalidadFilter>("TODAS");
+
+  // HU-47 (CA-05): Actualización automática tras avisos en vivo de propuestas o estados
+  useEffect(() => {
+    const unsubProposal = subscribeProposalLiveUpdate(() => {
+      setRefreshTick((v) => v + 1);
+    });
+    const unsubGeneral = subscribeGeneralNotificationLiveUpdate(() => {
+      setRefreshTick((v) => v + 1);
+    });
+    return () => {
+      unsubProposal();
+      unsubGeneral();
+    };
+  }, []);
 
   async function handleDecision(id: string, decision: "accept" | "reject") {
     setActionLoading(id);

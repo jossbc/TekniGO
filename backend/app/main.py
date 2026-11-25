@@ -38,6 +38,8 @@ from app.incident_management import router as incident_management_router
 from app.settlements_router import router as settlements_router
 from app.payouts_router import router as payouts_router
 from app.chat_router import router as chat_router
+from app.notifications_router import router as notifications_router
+from app.notifications_consumer import process_pending_notification_events
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,9 @@ def _run_auto_completion_once() -> None:
         total = result.get("total_completadas_automaticamente", 0)
         if total:
             logger.info("Cierre automático 48h completó %s servicio(s).", total)
+        pending_res = process_pending_notification_events(session)
+        if pending_res.get("procesados"):
+            logger.info("Consumidor de notificaciones reprocesó %s evento(s).", pending_res["procesados"])
 
 
 async def _auto_completion_worker() -> None:
@@ -100,6 +105,7 @@ app.include_router(incident_management_router)
 app.include_router(settlements_router)
 app.include_router(payouts_router)
 app.include_router(chat_router)
+app.include_router(notifications_router)
 app.include_router(cancellation_router)
 app.include_router(adjustment_router)
 app.include_router(cancellation_justification_router)

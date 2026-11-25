@@ -28,6 +28,7 @@ import { CancelRequestModal } from "./CancellationForms";
 import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
+import { subscribeProposalLiveUpdate } from "../lib/notifications";
 import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
@@ -472,6 +473,15 @@ export default function ClientRequestsManager({
   const [showIncidentModal, setShowIncidentModal] = useState(false);
   const [incidentReason, setIncidentReason] = useState("");
   const [openingIncident, setOpeningIncident] = useState(false);
+
+  // HU-47 (CA-05): Actualización automática de propuestas al recibir notificación en vivo
+  useEffect(
+    () =>
+      subscribeProposalLiveUpdate(() => {
+        setRefreshTick((v) => v + 1);
+      }),
+    [],
+  );
 
   async function handleConfirmReception() {
     if (!detail || confirmingReception) return;

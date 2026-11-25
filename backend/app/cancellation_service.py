@@ -14,6 +14,7 @@ from app.cancellation_evidence import EvidenceStore
 from app.cancellation_repository import CancellationRepository
 from app.financial_settlement import check_third_unjustified_fault_alert, get_refund_for_request
 from app.models import RequestCancellation, User, ensure_utc_datetime, format_tegucigalpa_iso
+from app.notifications_events import notify_service_cancelled, notify_third_fault_admin_alert
 from app.request_states import state_key, transition_request
 from app.service_reception import _find_locked_request
 
@@ -131,8 +132,18 @@ def cancel_request(
     db.flush()
     for observer in observers:
         observer.on_cancelled(db, record, cancellation)
+    notify_service_cancelled(db, record, modalidad=modalidad, actor_role=actor_role, now=moment)
     db.commit()
     data = serialize_cancellation(cancellation)
     data["reembolso"] = get_refund_for_request(db, modalidad, record_id)
-    data["alerta_administrativa"] = check_third_unjustified_fault_alert(db, cancellation.responsable_uid)
+    alert = check_third_unjustified_fault_alert(db, cancellation.responsable_uid)
+    data["alerta_administrativa"] = alert
+    if alert.get("alerta_administrativa_activa"):
+        notify_third_fault_admin_alert(
+            db,
+            responsible_uid=cancellation.responsable_uid,
+            solicitud_id=record_id,
+            now=moment,
+        )
+        db.commit()
     return data
