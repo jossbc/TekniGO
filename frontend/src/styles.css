@@ -16,6 +16,12 @@
   min-width: 0;
 }
 .account-card, .success-alert, .status-pill { overflow-wrap: anywhere; }
+@media print {
+  body:has(.service-receipt-print) * { visibility: hidden; }
+  .service-receipt-print, .service-receipt-print * { visibility: visible !important; }
+  .service-receipt-print { position: fixed; inset: 0; border: 0; }
+  .service-receipt-print .service-receipt-actions { display: none; }
+}
 .account-card fieldset { min-inline-size: 0; }
 input, select, textarea { min-width: 0; max-width: 100%; }
 textarea { font: inherit; resize: vertical; }

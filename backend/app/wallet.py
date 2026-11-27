@@ -9,10 +9,13 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.financial_settlement import calculate_payment_split, record_ledger_entry_once, to_money
 from app.models import (
-    DirectRequest, FinancialLedgerEntry, OpenRequest, User, format_tegucigalpa_iso,
+    CommissionSettlementAudit, DirectRequest, FinancialLedgerEntry, OpenRequest, OperationalSettings,
+    PayoutLedgerEntry, TechnicianProfile, User, format_tegucigalpa_iso,
 )
+from app.payouts import available_balance, reserved_balance
 from app.security import get_current_user
 from app.service_reception import _canonical_state, _find_locked_request
+from app.settlements import outstanding_debt
 
 router = APIRouter(tags=["Billetera y cobros en efectivo"])
 REQUEST_MODELS = {"DIRECTA": DirectRequest, "ABIERTA": OpenRequest}
@@ -157,3 +160,114 @@ def _request_uuid(value: str) -> str:
         return str(uuid.UUID(value))
     except ValueError:
         raise HTTPException(404, "No se encontró la solicitud.") from None
+
+
+def wallet_overview(db: Session, user: User) -> dict:
+    profile = db.get(TechnicianProfile, user.id)
+    settings = db.get(OperationalSettings, 1)
+    collections = cash_history(db, user)
+    return {
+        "saldo_disponible": str(available_balance(db, user)),
+        "saldo_reservado": str(reserved_balance(db, user)),
+        "efectivo_recibido": str(sum((Decimal(row["efectivo"]) for row in collections if row["registrado_en"]), Decimal("0.00"))),
+        "comisiones_pendientes": str(outstanding_debt(db, user)),
+        "restriccion_financiera": bool(profile and profile.restriccion_financiera),
+        "servicios_efectivo_sin_liquidar": int(profile.servicios_efectivo_sin_liquidar or 0) if profile else 0,
+        "limite_deuda": str(settings.limite_deuda) if settings and settings.limite_deuda is not None else None,
+        "limite_sin_liquidar": settings.limite_sin_liquidar if settings else 5,
+        "movimientos": wallet_movements(db, user),
+    }
+
+
+def wallet_movements(db: Session, user: User) -> list[dict]:
+    rows = []
+    for entry in db.scalars(select(FinancialLedgerEntry).where(
+        FinancialLedgerEntry.tipo_movimiento.in_(("CIERRE_SERVICIO", "COBRO_EFECTIVO")),
+        FinancialLedgerEntry.detalle["tecnico_id"].as_string().in_((user.firebase_uid, str(user.id))),
+    )):
+        closed = entry.tipo_movimiento == "CIERRE_SERVICIO"
+        rows.append({
+            "id": entry.id,
+            "fecha": format_tegucigalpa_iso(entry.creado_en),
+            "servicio": entry.solicitud_id,
+            "concepto": "Cierre de servicio" if closed else "Efectivo recibido fuera de la plataforma",
+            "debito": entry.detalle.get("compensacion_saldo_disponible", "0.00") if closed else "0.00",
+            "credito": entry.detalle["credito_digital_tecnico"] if closed else "0.00",
+            "saldo": entry.detalle.get("saldo_disponible_resultante") if closed else None,
+            "deuda_generada": entry.detalle.get("deuda_generada", "0.00") if closed else "0.00",
+            "deuda_liquidada": "0.00",
+        })
+    for entry in db.scalars(select(PayoutLedgerEntry).where(PayoutLedgerEntry.tecnico_id == user.id)):
+        reserve = entry.tipo_movimiento == "RESERVA_DESEMBOLSO"
+        released = entry.tipo_movimiento == "LIBERACION_RESERVA"
+        rows.append({
+            "id": str(entry.id),
+            "fecha": format_tegucigalpa_iso(entry.creado_en),
+            "servicio": None,
+            "concepto": {
+                "RESERVA_DESEMBOLSO": "Reserva para retiro", "DEBITO_DESEMBOLSO": "Retiro pagado",
+                "LIBERACION_RESERVA": "Liberación de reserva",
+            }[entry.tipo_movimiento],
+            "debito": str(entry.importe) if reserve else "0.00",
+            "credito": str(entry.importe) if released else "0.00",
+            "saldo": str(entry.saldo_libre_resultante),
+            "deuda_generada": "0.00",
+            "deuda_liquidada": "0.00",
+        })
+    for entry in db.scalars(select(CommissionSettlementAudit).where(
+        CommissionSettlementAudit.tecnico_id == user.id, CommissionSettlementAudit.importe_aplicado > 0,
+    )):
+        rows.append({
+            "id": str(entry.id), "fecha": format_tegucigalpa_iso(entry.creado_en), "servicio": None,
+            "concepto": "Liquidación de comisiones", "debito": "0.00", "credito": "0.00", "saldo": None,
+            "deuda_generada": "0.00", "deuda_liquidada": str(entry.importe_aplicado),
+        })
+    return sorted(rows, key=lambda row: (row["fecha"] or "", row["id"]), reverse=True)
+
+
+@router.get("/users/me/wallet")
+def my_wallet(response: Response, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store, private"
+    user = _account(db, claims["uid"])
+    if not any(role.rol == "TECNICO" for role in user.roles):
+        raise HTTPException(403, "Se requiere el rol técnico.")
+    return wallet_overview(db, user)
+
+
+@router.get("/admin/technicians/{technician_uid}/wallet")
+def admin_wallet(technician_uid: str, response: Response, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store, private"
+    admin = _account(db, claims["uid"])
+    if not any(role.rol == "ADMIN" for role in admin.roles):
+        raise HTTPException(403, "Se requiere el rol administrador.")
+    return wallet_overview(db, _account(db, technician_uid))
+
+
+@router.get("/users/me/service-receipts/{request_id}")
+def service_receipt(request_id: str, response: Response, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    response.headers["Cache-Control"] = "no-store, private"
+    request_id = _request_uuid(request_id)
+    user = _account(db, claims["uid"])
+    identities = {user.firebase_uid, str(user.id)}
+    for modalidad, model in REQUEST_MODELS.items():
+        record = db.get(model, request_id)
+        if record is None:
+            continue
+        if not identities.intersection((record.cliente_id, record.tecnico_id)) and not any(
+            role.rol == "ADMIN" for role in user.roles
+        ):
+            break
+        split = _closure_split(record)
+        if _canonical_state(record.estado) != "COMPLETADA" or split is None:
+            break
+        return {
+            "solicitud_id": request_id,
+            "modalidad": modalidad,
+            "fecha_cierre": (record.seguimiento_recepcion or {}).get("fecha_cierre"),
+            **{field: split[field] for field in (
+                "moneda", "monto_base", "monto_ajuste", "monto_total", "metodo_pago_base",
+                "metodo_pago_ajuste", "cobrado_digital", "cobrado_efectivo", "tasa_comision",
+                "monto_comision", "monto_neto_tecnico",
+            )},
+        }
+    raise HTTPException(404, "No se encontró el comprobante de este servicio.")

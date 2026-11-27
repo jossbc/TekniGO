@@ -1,4 +1,5 @@
 import RequestTimeline from "./RequestTimeline";
+import ServiceReceipt from "./ServiceReceipt";
 import { getOpportunityDetailApi, type TechnicianOpportunityItem } from "../lib/openRequests";
 import { useState, useEffect } from "react";
 import type { User } from "firebase/auth";
@@ -727,6 +728,8 @@ export function TechnicianRequestsManager({ user, initialRequestId = "" }: { use
                     {tracking?.linea_tiempo && <RequestTimeline items={tracking.linea_tiempo} />}
                   </div>
                 )}
+
+                {normalizedState === "COMPLETADA" && <ServiceReceipt user={user} requestId={req.id} />}
 
                 {isChatEnabledForState(req.estado) && (
                   <div style={{ flexBasis: "100%", marginTop: "8px" }}>

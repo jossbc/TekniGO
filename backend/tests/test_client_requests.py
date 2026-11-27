@@ -4,7 +4,7 @@ import unittest
 import uuid
 
 from fastapi import FastAPI, HTTPException, Response
-from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String, Text, create_engine
+from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String, Text, create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -20,7 +20,7 @@ from app.client_requests import (
     router,
 )
 from app.database import Base
-from app.models import DirectRequest, Service, Specialty, TechnicianProfile, User, UserRole
+from app.models import DirectRequest, FinancialLedgerEntry, OperationalSettings, Service, Specialty, TechnicianProfile, User, UserRole
 from app.service_reception import (
     AdminResolveIncidentSchema,
     ConfirmReceptionSchema,
@@ -34,6 +34,8 @@ from app.service_reception import (
     run_scheduled_auto_completion,
     validate_sprint3_financial_settlement,
 )
+from app.technician_direct_requests import respond_to_direct_request
+from app.wallet import register_cash_collection, service_receipt, wallet_overview
 
 class ClientRequestsPaginationTests(unittest.TestCase):
     def setUp(self):
@@ -553,6 +555,69 @@ class ServiceReceptionHU35Tests(unittest.TestCase):
 
     def tearDown(self):
         ClientRequestsPaginationTests.tearDown(self)
+
+    def test_wallet_compensation_cash_idempotency_and_historical_receipt(self):
+        settings = OperationalSettings(id=1, comision_porcentaje=Decimal("20"), limite_deuda=Decimal("20"))
+        self.db.add(settings)
+        self.db.commit()
+        tech = {"uid": self.tech_only.firebase_uid}
+        client = {"uid": self.client_a.firebase_uid}
+
+        def complete(base, method, adjustment="0.00"):
+            request = self._add_direct_request(client_uid=client["uid"], estado="EN PROCESO", monto_base=base)
+            request.metodo_pago = method
+            request.monto_ajuste = Decimal(adjustment)
+            request.metodo_pago_ajuste = "efectivo" if request.monto_ajuste else None
+            request.monto_total = Decimal(base) + request.monto_ajuste
+            self.db.commit()
+            report_service_completion_by_technician(request.id, tech, self.db)
+            confirm_service_reception_by_client(request.id, client, self.db)
+            return request
+
+        digital = complete("100.00", "tarjeta")
+        self.assertEqual(wallet_overview(self.db, self.tech_only)["saldo_disponible"], "80.00")
+        settings.comision_porcentaje = Decimal("10")
+        self.db.commit()
+        cash = complete("1000.00", "efectivo")
+        wallet = wallet_overview(self.db, self.tech_only)
+        self.assertEqual(wallet["saldo_disponible"], "0.00")
+        self.assertEqual(wallet["comisiones_pendientes"], "20.00")
+        self.assertTrue(wallet["restriccion_financiera"])
+        self.assertEqual(wallet["servicios_efectivo_sin_liquidar"], 1)
+        pending = self._add_direct_request(client_uid=client["uid"])
+        with self.assertRaises(HTTPException) as blocked:
+            respond_to_direct_request(pending.id, "ACEPTADA", tech, self.db)
+        self.assertEqual(blocked.exception.status_code, 403)
+
+        first = register_cash_collection(self.db, tech["uid"], cash.id)
+        second = register_cash_collection(self.db, tech["uid"], cash.id)
+        self.assertEqual(first["comision"], "100.00")
+        self.assertFalse(first["reintento_idempotente"])
+        self.assertTrue(second["reintento_idempotente"])
+        wallet = wallet_overview(self.db, self.tech_only)
+        self.assertEqual(wallet["efectivo_recibido"], "1000.00")
+        self.assertEqual(wallet["comisiones_pendientes"], "20.00")
+        self.assertEqual(wallet["servicios_efectivo_sin_liquidar"], 1)
+
+        mixed = complete("500.00", "tarjeta", "200.00")
+        payment = register_cash_collection(self.db, tech["uid"], mixed.id)
+        self.assertEqual((payment["digital"], payment["efectivo_base"], payment["efectivo_ajuste"], payment["comision"]),
+                         ("500.00", "0.00", "200.00", "70.00"))
+        receipt = service_receipt(digital.id, Response(), client, self.db)
+        self.assertEqual((receipt["monto_comision"], receipt["monto_neto_tecnico"]), ("20.00", "80.00"))
+        with self.assertRaises(HTTPException) as unavailable:
+            service_receipt(cash.id, Response(), {"uid": self.client_b.firebase_uid}, self.db)
+        self.assertEqual(unavailable.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as forbidden:
+            register_cash_collection(self.db, client["uid"], cash.id)
+        self.assertEqual(forbidden.exception.status_code, 403)
+        cancelled = self._add_direct_request(client_uid=client["uid"], estado="CANCELADA")
+        with self.assertRaises(HTTPException) as invalid:
+            register_cash_collection(self.db, tech["uid"], cancelled.id)
+        self.assertEqual(invalid.exception.status_code, 409)
+        self.assertEqual(len(self.db.scalars(select(FinancialLedgerEntry).where(
+            FinancialLedgerEntry.tipo_movimiento == "COBRO_EFECTIVO",
+        )).all()), 2)
     def test_scheduled_reception_requires_an_administrator(self):
         from app.security import get_current_user
         from app.service_reception import router as reception_router
