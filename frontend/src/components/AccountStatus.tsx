@@ -35,6 +35,10 @@ export function AccountStatus({ state, retry }: { state: AccountState; retry: ()
       </Button>
     </div>
   </>
+  if (state.status === 'deleted') return <>
+    <p role="status">Tu perfil de TekniGO ya fue eliminado. Confirma tu contraseña para eliminar también el acceso de inicio de sesión.</p>
+    <Link to="/perfil" className="link">Ir a Mi perfil</Link>
+  </>
   if (state.status === 'error') return <>
     <p role="alert">{state.message}</p>
     <Button onClick={retry}>Reintentar</Button>

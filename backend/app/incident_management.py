@@ -639,6 +639,7 @@ def _apply_resolution_effect(
 
             emit_and_process_idempotent_completion_event(
                 record,
+                db,
                 modalidad=modalidad,
                 autor_cierre="ADMIN",
                 closed_at=eval_now,

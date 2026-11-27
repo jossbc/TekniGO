@@ -11,6 +11,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.notification_read_state import NotificationReadStatus, resolve_notification_read_state
 
+ACCOUNT_DELETED = "ELIMINADA"
+
 _UUID7_LOCK = threading.Lock()
 _UUID7_LAST_MS = 0
 _UUID7_SEQ = 0

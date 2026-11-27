@@ -10,7 +10,8 @@ from app.phone_verification import phone_verification_status, confirm_phone_veri
 
 class PhoneVerificationTests(unittest.TestCase):
     def setUp(self):
-        self.user = SimpleNamespace(id=uuid.uuid4(), firebase_uid='user-1', telefono='+50498765432', telefono_verificado=False)
+        self.user = SimpleNamespace(id=uuid.uuid4(), firebase_uid='user-1', telefono='+50498765432',
+                                    telefono_verificado=False, estado_identidad='PENDIENTE')
 
     @patch('app.phone_verification.auth.get_user')
     def test_only_number_of_the_same_firebase_account_matches(self, get_user):

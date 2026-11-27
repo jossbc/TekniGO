@@ -55,6 +55,7 @@ export default function AccountMenu({ name, email, accountHref = '/perfil', acco
       <div className="account-menu-identity"><strong>{name || 'Tu cuenta'}</strong>{address && <span>{address}</span>}</div>
       {accountHref === '/perfil' && <Link className="account-menu-item" role="menuitem" to="/mi-cuenta" onClick={() => setOpen(false)}><LayoutDashboard size={16} />Mi cuenta</Link>}
       <Link className="account-menu-item" role="menuitem" to={accountHref} onClick={() => setOpen(false)}><UserRound size={16} />{accountLabel}</Link>
+      {accountHref !== '/perfil' && <Link className="account-menu-item" role="menuitem" to="/perfil" onClick={() => setOpen(false)}><UserRound size={16} />Mi perfil</Link>}
       <div className="account-menu-divider" />
       <LogoutButton variant="menu" />
     </div>}

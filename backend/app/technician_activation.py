@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import (
+    ACCOUNT_DELETED,
     IdentityDocument,
     IdentityVerificationRequest,
     TechnicianProfile,
@@ -463,7 +464,10 @@ def run_scheduled_expiration_review(
     rows = db.execute(
         select(User, TechnicianProfile)
         .join(TechnicianProfile, User.id == TechnicianProfile.usuario_id)
+        .where(User.estado_identidad != ACCOUNT_DELETED)
         .order_by(User.creado_en.asc(), User.id.asc())
+        .with_for_update(of=User)
+        .execution_options(populate_existing=True)
     ).all()
 
     affected: list[dict] = []

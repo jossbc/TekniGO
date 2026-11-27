@@ -1,4 +1,5 @@
 import RequestTimeline from "./RequestTimeline";
+import ServiceReceipt from "./ServiceReceipt";
 import { useEffect, useId, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { Link } from "react-router-dom";
@@ -1583,6 +1584,9 @@ export default function ClientRequestsManager({
                   onChanged={() => setRefreshTick((v) => v + 1)} />
               )}
               <RequestTimeline items={detail.linea_tiempo} />
+              {detail.estado.trim().toUpperCase() === "COMPLETADA" && (
+                <ServiceReceipt key={detail.id} user={user} requestId={detail.id} />
+              )}
 
               {/* CA-04: Acciones permitidas según situación */}
               <section className="client-request-box" aria-label="Acciones disponibles">

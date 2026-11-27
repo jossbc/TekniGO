@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, User
+from app.models import ACCOUNT_DELETED, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, User
 from app.security import get_current_user
 from app.storage import PrivateDocumentStorage, validate_document_bytes
 
@@ -29,6 +29,8 @@ def _get_user(claims: dict, db: Session, *, lock: bool = False) -> User:
     user = db.scalar(query.execution_options(populate_existing=True))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")
+    if user.estado_identidad == ACCOUNT_DELETED:
+        raise HTTPException(410, "Esta cuenta de TekniGO fue eliminada.")
     return user
 
 

@@ -2,6 +2,7 @@
 import os
 import uuid
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.identity_documents import _require_admin
-from app.models import CatalogChange, OperationalSettings, Specialty, SuggestedTariff, User
+from app.models import CatalogChange, OperationalSettings, Specialty, SpecialtySuggestion, SuggestedTariff, User
 from app.security import get_current_user
 from app.services import VALID_UNITS, validate_unit
 
@@ -34,6 +35,10 @@ class TariffInput(BaseModel):
     promedio: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
 
 
+class SuggestionDecision(BaseModel):
+    estado: Literal["APROBADA", "RECHAZADA"]
+
+
 class SettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     comision_porcentaje: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
@@ -47,6 +52,16 @@ def _demo_enabled():
 
 def _category(row):
     return {"id": str(row.id), "nombre": row.nombre, "activa": row.activa}
+
+
+def _suggestion(row):
+    return {"id": str(row.id), "nombre": row.nombre, "estado": row.estado}
+
+
+def _matching_category(db, name, excluded_id=None):
+    key = " ".join(name.split()).casefold()
+    return next((row for row in db.scalars(select(Specialty))
+                 if row.id != excluded_id and " ".join(row.nombre.split()).casefold() == key), None)
 
 
 def _settings(row):
@@ -78,6 +93,9 @@ def get_catalog(claims=Depends(get_current_user), db: Session = Depends(get_db))
     _require_admin(claims, db)
     categories = db.scalars(select(Specialty).order_by(Specialty.nombre)).all()
     tariffs = db.scalars(select(SuggestedTariff).order_by(SuggestedTariff.especialidad_id, SuggestedTariff.unidad)).all()
+    pending = db.scalars(select(SpecialtySuggestion)
+                         .where(SpecialtySuggestion.estado == "PENDIENTE")
+                         .order_by(SpecialtySuggestion.creado_en, SpecialtySuggestion.id)).all()
     return {
         "categorias": [_category(row) for row in categories],
         "tarifas": [{"especialidad_id": str(row.especialidad_id), "unidad": row.unidad,
@@ -85,6 +103,7 @@ def get_catalog(claims=Depends(get_current_user), db: Session = Depends(get_db))
         "unidades": sorted(VALID_UNITS),
         "configuracion": _settings(get_operational_settings(db)),
         "demo_habilitada": _demo_enabled(),
+        "sugerencias": [_suggestion(row) for row in pending],
     }
 
 
@@ -100,23 +119,57 @@ def get_history(claims=Depends(get_current_user), db: Session = Depends(get_db))
             for row, name in rows]
 
 
-def _save_category(db, admin, data, row=None):
+def _stage_category(db, admin, data, row=None):
     previous = _category(row) if row is not None else None
-    for existing in db.scalars(select(Specialty)).all():
-        if (row is None or existing.id != row.id) and " ".join(existing.nombre.split()).lower() == data.nombre.lower():
-            raise HTTPException(409, "Ya existe una categoría con ese nombre.")
+    if _matching_category(db, data.nombre, row.id if row else None):
+        raise HTTPException(409, "Ya existe una categoría con ese nombre.")
     if row is None:
         row = Specialty()
         db.add(row)
     row.nombre, row.activa = data.nombre, data.activa
+    db.flush()
+    current = _category(row)
+    _audit(db, admin, f"categoria:{row.id}", previous, current)
+    return current
+
+
+def _save_category(db, admin, data, row=None):
     try:
-        db.flush()
-        current = _category(row)
-        _audit(db, admin, f"categoria:{row.id}", previous, current)
+        current = _stage_category(db, admin, data, row)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Ya existe una categoría con ese nombre.") from None
+    return current
+
+
+@router.put("/suggestions/{suggestion_id}")
+def review_suggestion(suggestion_id: uuid.UUID, data: SuggestionDecision, claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    admin = _require_admin(claims, db)
+    row = db.scalar(select(SpecialtySuggestion).where(SpecialtySuggestion.id == suggestion_id)
+                    .with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise HTTPException(404, "No existe la sugerencia.")
+    if row.estado == data.estado:
+        return _suggestion(row)
+    if row.estado != "PENDIENTE":
+        raise HTTPException(409, "La sugerencia ya fue revisada.")
+
+    previous = _suggestion(row)
+    try:
+        if data.estado == "APROBADA":
+            existing = _matching_category(db, row.nombre)
+            if existing is None:
+                _stage_category(db, admin, CategoryInput(nombre=row.nombre))
+            elif not existing.activa:
+                raise HTTPException(409, "El oficio ya existe y está desactivado. Actívalo antes de aprobar esta sugerencia.")
+        row.estado = data.estado
+        current = _suggestion(row)
+        _audit(db, admin, f"sugerencia:{row.id}", previous, current)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "El catálogo cambió durante la revisión. Actualiza e intenta nuevamente.") from None
     return current
 
 

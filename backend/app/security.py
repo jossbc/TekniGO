@@ -28,6 +28,7 @@ def get_current_user(
         auth.ExpiredIdTokenError,
         auth.RevokedIdTokenError,
         auth.UserDisabledError,
+        auth.UserNotFoundError,
         ValueError,
     ):
         raise HTTPException(

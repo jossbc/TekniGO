@@ -30,6 +30,7 @@ from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
 from app.reviews import router as reviews_router
 from app.admin_catalog import router as admin_catalog_router
+from app.admin_reports import router as admin_reports_router
 from app.service_reception import (
     router as service_reception_router,
     run_scheduled_auto_completion,
@@ -38,6 +39,7 @@ from app.service_completion import router as service_completion_router
 from app.incident_management import router as incident_management_router
 from app.settlements_router import router as settlements_router
 from app.payouts_router import router as payouts_router
+from app.wallet import router as wallet_router
 from app.chat_router import router as chat_router
 from app.notifications_router import router as notifications_router
 from app.notifications_consumer import process_pending_notification_events
@@ -100,11 +102,13 @@ app.include_router(open_requests_router)
 app.include_router(certifications_router)
 app.include_router(reviews_router)
 app.include_router(admin_catalog_router)
+app.include_router(admin_reports_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
 app.include_router(incident_management_router)
 app.include_router(settlements_router)
 app.include_router(payouts_router)
+app.include_router(wallet_router)
 app.include_router(chat_router)
 app.include_router(notifications_router)
 app.include_router(cancellation_router)

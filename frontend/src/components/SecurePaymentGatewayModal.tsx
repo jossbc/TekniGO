@@ -18,7 +18,7 @@ export const SecurePaymentGatewayModal: React.FC<SecurePaymentGatewayModalProps>
   monto,
   onSuccess,
   onCancel,
-  titulo = "Pasarela de Pago Segura",
+  titulo = "Pago de prueba",
 }) => {
   const [nombreTitular, setNombreTitular] = useState("");
   const [numeroTarjeta, setNumeroTarjeta] = useState("");
@@ -186,7 +186,7 @@ export const SecurePaymentGatewayModal: React.FC<SecurePaymentGatewayModalProps>
           <div className="gateway-security-notice">
             <ShieldCheck size={16} aria-hidden="true" />
             <p>
-              Conexión cifrada de 256 bits. TekniGO no almacena números de tarjeta ni códigos de seguridad en sus servidores.
+              Simulación local. Usa únicamente datos ficticios de tarjeta. El simulador no realiza cargos.
             </p>
           </div>
 
@@ -200,7 +200,7 @@ export const SecurePaymentGatewayModal: React.FC<SecurePaymentGatewayModalProps>
               Cancelar
             </button>
             <button type="submit" className="button" disabled={processing}>
-              {processing ? "Autorizando pago…" : `Autorizar L. ${monto.toFixed(2)}`}
+              {processing ? "Simulando autorización…" : `Simular pago de L. ${monto.toFixed(2)}`}
             </button>
           </footer>
         </form>

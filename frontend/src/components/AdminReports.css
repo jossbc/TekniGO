@@ -1,0 +1,108 @@
+.demand-dashboard {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.demand-dashboard h2,
+.demand-dashboard h3,
+.demand-dashboard p,
+.demand-dashboard dl {
+  margin-block: 0;
+}
+
+.demand-dashboard .account-card {
+  margin: 0;
+  min-width: 0;
+}
+
+.demand-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+
+.demand-heading p,
+.demand-period,
+.demand-note {
+  color: var(--muted);
+}
+
+.demand-heading .button,
+.demand-filters .button,
+.demand-expand {
+  width: auto;
+}
+
+.demand-filters,
+.demand-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: .75rem;
+}
+
+.demand-filters { align-items: end; }
+.demand-filters .field { margin: 0; }
+.demand-kpis .account-card { padding: 1rem; }
+.demand-kpis dt { color: var(--muted); }
+.demand-kpis dd { margin: .25rem 0 0; font-size: 1.75rem; font-weight: 700; }
+
+.demand-insights dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: .8rem;
+  margin-top: .7rem;
+}
+
+.demand-insights dt { color: var(--muted); font-size: .9rem; }
+.demand-insights dd { margin: .25rem 0 0; font-weight: 650; }
+
+.demand-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.demand-rank {
+  display: grid;
+  gap: .7rem;
+  margin: .75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.demand-rank li > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .7rem;
+}
+
+.demand-rank strong { text-align: right; white-space: nowrap; }
+.demand-rank meter { display: block; inline-size: 100%; block-size: .6rem; }
+.demand-rank meter::-webkit-meter-bar { background: #e2e8f0; border: 0; }
+.demand-rank meter::-webkit-meter-optimum-value { background: #2563a6; }
+.demand-rank meter::-moz-meter-bar { background: #2563a6; }
+.demand-expand { margin-top: 1rem; }
+
+.demand-daily {
+  display: flex;
+  height: 7rem;
+  margin-top: .75rem;
+  border-bottom: 1px solid #94a3b8;
+}
+
+.demand-daily > div { display: flex; align-items: end; flex: 1; min-width: 0; }
+.demand-daily span { flex: 1; margin-inline: min(1px, 10%); background: #2563a6; border-radius: 2px 2px 0 0; }
+.demand-daily-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: .85rem; }
+.demand-card details { margin-top: .75rem; }
+.demand-card summary { cursor: pointer; }
+.demand-card table { width: 100%; text-align: left; margin-top: .5rem; }
+.demand-card td, .demand-card th { padding: .3rem .5rem; }
+
+@media (max-width: 500px) {
+  .demand-rank strong { white-space: normal; }
+}
