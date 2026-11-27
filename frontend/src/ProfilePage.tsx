@@ -1,4 +1,5 @@
 import TechnicianCertificates from "./components/TechnicianCertificates";
+import DeleteAccount from "./components/DeleteAccount";
 import LoadingState from "./components/LoadingState";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -659,6 +660,7 @@ export default function ProfilePage({ user, onName }: { user: User; onName?: (na
           <TechnicianCertificates user={user} />
         </div>
       )}
+      {profile && <DeleteAccount user={user} />}
     </main>
   );
 }

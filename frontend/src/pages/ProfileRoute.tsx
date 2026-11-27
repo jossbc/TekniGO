@@ -4,6 +4,7 @@ import Header from "../components/Header";
 import { AccountStatus } from "../components/AccountStatus";
 import { useAccount } from "../lib/useAccount";
 import ProfilePage from "../ProfilePage";
+import DeleteAccount from "../components/DeleteAccount";
 
 export default function ProfileRoute({ user }: { user: User }) {
   const [name, setName] = useState<string>();
@@ -16,6 +17,7 @@ export default function ProfileRoute({ user }: { user: User }) {
       ) : (
         <main className="account">
           <AccountStatus state={state} retry={retry} />
+          {state.status === "deleted" && <DeleteAccount user={user} pendingFirebaseDeletion />}
         </main>
       )}
     </div>

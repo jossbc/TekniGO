@@ -1,19 +1,29 @@
 import re
+import time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth, exceptions
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import TechnicianProfile, User, UserRole
-from app.security import get_current_user
+from app.models import ACCOUNT_DELETED, Service, TechnicianProfile, User, UserRole
+from app.security import TOKEN_CLOCK_SKEW_SECONDS, get_current_user
 from app.technician_activation import sync_technician_verification_state
 
 router = APIRouter()
+
+
+def _require_live_account(user: User | None) -> User:
+    if user is None:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    if user.estado_identidad == ACCOUNT_DELETED:
+        raise HTTPException(410, "Esta cuenta de TekniGO fue eliminada.")
+    return user
+
 
 class Registration(BaseModel):
     nombre_completo: str = Field(min_length=2, max_length=150)
@@ -105,9 +115,7 @@ def ensure_role(db: Session, user: User, role: Literal["CLIENTE", "TECNICO"]) ->
 
 @router.post("/users/me/roles")
 def add_role(data: RoleAddition, claims=Depends(get_current_user), db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update())
-    if not user:
-        raise HTTPException(404, "Completa tu registro en TekniGO")
+    user = _require_live_account(db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update()))
     try:
         ensure_role(db, user, data.rol)
         db.commit()
@@ -120,8 +128,9 @@ def add_role(data: RoleAddition, claims=Depends(get_current_user), db: Session =
 
 @router.post("/users/register", status_code=201)
 def register(data: Registration, claims=Depends(get_current_user), db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
+    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update())
     if user:
+        _require_live_account(user)
         if user.dni != data.dni or user.telefono != data.telefono:
             raise HTTPException(409, "La cuenta ya tiene otros datos de identidad. Usa su flujo de actualización.")
     else:
@@ -144,16 +153,12 @@ def register(data: Registration, claims=Depends(get_current_user), db: Session =
 @router.get("/users/me")
 def me(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
-    if not user:
-        raise HTTPException(404, "Completa tu registro en TekniGO")
-    return profile(user)
+    return profile(_require_live_account(user))
 
 @router.get("/users/me/personal")
 def my_personal_data(claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
-    if not user:
-        raise HTTPException(404, "Completa tu registro en TekniGO")
-    return own_profile(user)
+    return own_profile(_require_live_account(user))
 
 def ensure_free(db, user, column, value, message):
     taken = db.scalar(select(User.id).where(column == value, User.id != user.id))
@@ -164,9 +169,7 @@ def ensure_free(db, user, column, value, message):
 # HU-06 ST-02: actualización del perfil (teléfono y correo).
 @router.patch("/users/me")
 def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
-    if not user:
-        raise HTTPException(404, "Completa tu registro en TekniGO")
+    user = _require_live_account(db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update()))
     if data.telefono is None and data.correo is None:
         raise HTTPException(400, "No enviaste ningún dato para actualizar")
 
@@ -217,3 +220,37 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
 @router.post("/auth/logout", status_code=204)
 def logout(claims=Depends(get_current_user)):
     auth.revoke_refresh_tokens(claims["uid"])
+
+
+@router.delete("/users/me", status_code=204)
+def delete_my_account(claims=Depends(get_current_user), db: Session = Depends(get_db)):
+    auth_time = claims.get("auth_time")
+    if not isinstance(auth_time, (float, int)) or not -TOKEN_CLOCK_SKEW_SECONDS <= time.time() - auth_time <= 300:
+        raise HTTPException(403, "Confirma tu contraseña antes de eliminar la cuenta.")
+
+    uid = claims["uid"]
+    user = db.scalar(select(User).where(User.firebase_uid == uid).with_for_update().execution_options(populate_existing=True))
+    if user is None:
+        raise HTTPException(404, "Completa tu registro en TekniGO")
+    if user.estado_identidad != ACCOUNT_DELETED:
+        # Keep the internal references used by requests and audit records.
+        user.nombre_completo = "Cuenta eliminada"
+        user.correo = f"{user.id.hex}@cuenta-eliminada.invalid"
+        user.dni = f"X{user.id.hex[:12]}"
+        user.telefono = f"X{user.id.hex[:15]}"
+        user.telefono_verificado = False
+        user.estado_identidad = ACCOUNT_DELETED
+        technician = db.get(TechnicianProfile, user.id)
+        if technician is not None:
+            technician.disponible = False
+            technician.suspendido = True
+            db.execute(update(Service).where(Service.usuario_id == user.id).values(activo=False))
+        db.execute(delete(UserRole).where(UserRole.usuario_id == user.id))
+        db.commit()
+
+    try:
+        auth.delete_user(uid)
+    except auth.UserNotFoundError:
+        pass
+    except exceptions.FirebaseError:
+        raise HTTPException(503, "Se eliminó el perfil de TekniGO. Intenta de nuevo para terminar de quitar el acceso.") from None

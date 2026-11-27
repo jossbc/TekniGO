@@ -5,6 +5,7 @@ export type AccountState =
   | { status: 'loading' }
   | { status: 'ready'; profile: Profile }
   | { status: 'missing' }
+  | { status: 'deleted' }
   | { status: 'unauthorized' }
   | { status: 'error'; message: string }
 
@@ -12,6 +13,7 @@ export async function loadAccount(user: User): Promise<AccountState> {
   try {
     return { status: 'ready', profile: await api<Profile>('/users/me', user) }
   } catch (error) {
+    if (error instanceof ApiError && error.status === 410) return { status: 'deleted' }
     if (error instanceof ApiError && error.status === 404 && error.message === 'Completa tu registro en TekniGO') {
       return { status: 'missing' }
     }
