@@ -279,10 +279,6 @@ export default function TechnicianPublicProfilePage({ user }: { user: User }) {
             tecnicoId={technician.usuario_id}
             coverageZones={coverageZones ?? []}
             servicioId={selectedServiceId}
-            onSuccess={() => {
-              setShowForm(false);
-              alert("¡Solicitud enviada exitosamente al técnico!");
-            }}
             onCancel={() => setShowForm(false)}
           />
         )}

@@ -1,20 +1,23 @@
 import React, { useEffect, useId, useRef, useState } from "react";
-import { Calculator, ClipboardList, X } from "lucide-react";
+import { Calculator, CheckCircle2, ClipboardList, X } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { CoverageZone } from "../CoverageZoneSelector";
 import { createDirectRequest, estimateBudget } from "../lib/directRequests";
 import { PaymentMethodSelector, type MetodoPago } from "./PaymentMethodSelector";
 import { SecurePaymentGatewayModal, type CardPaymentResult } from "./SecurePaymentGatewayModal";
+import { Button } from "./ui";
 interface DirectRequestFormProps {
   tecnicoId: string;
   coverageZones: CoverageZone[];
   servicioId: string;
-  onSuccess: () => void;
   onCancel: () => void;
 }
 
-export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId, coverageZones, servicioId, onSuccess, onCancel }) => {
+export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId, coverageZones, servicioId, onCancel }) => {
   const dialog = useRef<HTMLDialogElement>(null);
+  const confirmationTitle = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
+  const [submitted, setSubmitted] = useState(false);
 
   useEffect(() => {
     const element = dialog.current;
@@ -29,6 +32,10 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
     };
   }, []);
+
+  useEffect(() => {
+    if (submitted) confirmationTitle.current?.focus();
+  }, [submitted]);
 
   const municipalities = [...new Set(coverageZones.map((zone) => zone.municipio))];
   const [municipio, setMunicipio] = useState("");
@@ -96,7 +103,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
       };
 
       await createDirectRequest(requestData);
-      onSuccess();
+      setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al crear la solicitud");
     } finally {
@@ -118,13 +125,32 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
   };
 
   return (
-    <dialog ref={dialog} className="direct-request-modal" aria-labelledby={titleId}
+    <dialog ref={dialog}
+      className={submitted ? "direct-request-modal direct-request-confirmation" : "direct-request-modal"}
+      aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
         if (!loadingSubmit) onCancel();
       }}
     >
-      <form className="direct-request-form" onSubmit={handleSubmit}>
+      {submitted ? (
+        <section className="direct-request-form">
+          <header className="direct-request-heading">
+            <span className="step-icon"><CheckCircle2 size={22} aria-hidden="true" /></span>
+            <div>
+              <h2 ref={confirmationTitle} id={titleId} tabIndex={-1}>Solicitud enviada</h2>
+              <p>Puedes seguir el estado en Mis solicitudes.</p>
+            </div>
+            <button type="button" className="dossier-modal-close" aria-label="Cerrar confirmación" onClick={onCancel}>
+              <X size={20} aria-hidden="true" />
+            </button>
+          </header>
+          <footer className="direct-request-actions">
+            <Button type="button" className="button-outline" onClick={onCancel}>Listo</Button>
+            <Link className="button" to="/mis-solicitudes" onClick={onCancel}>Ver mis solicitudes</Link>
+          </footer>
+        </section>
+      ) : <form className="direct-request-form" onSubmit={handleSubmit}>
         <header className="direct-request-heading">
           <span className="step-icon"><ClipboardList size={20} aria-hidden="true" /></span>
           <div>
@@ -253,7 +279,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
             onCancel={() => setShowGatewayModal(false)}
           />
         )}
-      </form>
+      </form>}
     </dialog>
   );
 };

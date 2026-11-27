@@ -604,6 +604,8 @@ img, video, canvas { max-width: 100%; }
   box-shadow: 0 24px 80px #18263b40;
 }
 .direct-request-modal::backdrop { background: #18263b99; backdrop-filter: blur(3px); }
+.direct-request-confirmation { width: min(460px, calc(100% - 24px)); }
+.direct-request-confirmation .direct-request-heading { background: var(--surface); }
 .direct-request-form {
   --request-padding: clamp(16px, 4vw, 28px);
   display: grid;
