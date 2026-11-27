@@ -8,6 +8,7 @@ import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCatalog from '../components/AdminCatalog'
+import CashCollectionsCard from '../components/CashCollectionsCard'
 import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
 import AdminSettlementsManager from '../components/AdminSettlementsManager'
@@ -108,7 +109,10 @@ export default function AdminPage({ user }: { user: User }) {
                   </>
                 )
                 : tab === 'settlements'
-                  ? <AdminSettlementsManager user={user} />
+                  ? <>
+                      <AdminSettlementsManager user={user} />
+                      <CashCollectionsCard user={user} admin />
+                    </>
                   : tab === 'payouts'
                     ? <AdminPayoutsManager user={user} />
                     : <AdminCatalog user={user} />}

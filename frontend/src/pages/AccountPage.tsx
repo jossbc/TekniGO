@@ -16,6 +16,7 @@ import { AvailabilityToggle } from "../components/AvailabilityToggle";
 import TechnicianDocumentationCard from "../components/TechnicianDocumentationCard";
 import TechnicianSettlementCard from "../components/TechnicianSettlementCard";
 import TechnicianPayoutCard from "../components/TechnicianPayoutCard";
+import CashCollectionsCard from "../components/CashCollectionsCard";
 import TechnicianIncomingRequestsCard from "../components/TechnicianIncomingRequestsCard";
 import TechnicianActiveJobsCard from "../components/TechnicianActiveJobsCard";
 
@@ -219,6 +220,7 @@ export default function AccountPage({ user, space }: { user: User; space?: "CLIE
               {profile.roles.includes("TECNICO") && <TechnicianDocumentationCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianSettlementCard user={user} />}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <TechnicianPayoutCard user={user} />}
+              {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && <CashCollectionsCard user={user} />}
               {/* Tarjeta de Ofertas disponibles */}
               {profile.roles.includes("TECNICO") && (space === "TECNICO" || !space) && (
                 <section className="account-card">
