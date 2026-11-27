@@ -1,5 +1,5 @@
 import type { User } from "firebase/auth";
-import { api } from "./api";
+import { api, ApiError, resolveApiUrl } from "./api";
 
 export type CancellationCause = "VOLUNTARIA" | "INASISTENCIA_CONTRAPARTE" | "AJUSTE_RECHAZADO";
 export type FaultStatus = "NO_APLICA" | "PENDIENTE_JUSTIFICACION" | "JUSTIFICADA" | "NO_JUSTIFICADA";
@@ -138,3 +138,65 @@ export const confirmRefundApi = (user: User, solicitudId: string) =>
 
 export const normalizeState = (value?: string | null) =>
   (value ?? "").trim().toUpperCase().replace(/_/g, " ");
+
+export interface AdminCancellationJustification {
+  id: string;
+  cancelacion_id: number;
+  autor_uid: string;
+  autor_nombre: string;
+  solicitud_id: string | null;
+  modalidad: string | null;
+  causa_cancelacion: string | null;
+  motivo_cancelacion: string | null;
+  estado_previo: string | null;
+  responsable_rol: Rol | null;
+  estado_incumplimiento: FaultStatus | null;
+  cancelada_en: string | null;
+  motivo: string;
+  estado: "PENDIENTE" | "APROBADA" | "RECHAZADA";
+  enviada_en: string | null;
+  resuelta_en: string | null;
+  observaciones_admin: string | null;
+  evidencias_cancelacion_count: number;
+  evidencias_justificacion_count: number;
+  evidencias_unificadas?: Array<{ path: string }>;
+  alerta_administrativa?: {
+    faltas_no_justificadas_acumuladas: number;
+    alerta_administrativa_activa: boolean;
+  } | null;
+}
+
+export const listAdminJustificationsApi = (user: User, estado = "TODOS") =>
+  api<AdminCancellationJustification[]>(
+    `/admin/cancellation-justifications?estado=${encodeURIComponent(estado)}`,
+    user,
+  );
+
+export const resolveAdminJustificationApi = (
+  user: User,
+  justificationId: string,
+  payload: { decision: "APROBAR" | "RECHAZAR"; observaciones: string },
+) =>
+  api<JustificationRecord>(
+    `/admin/cancellation-justifications/${encodeURIComponent(justificationId)}/resolve`,
+    user,
+    payload,
+    "POST",
+  );
+
+export async function fetchAdminPrivateEvidenceBlob(
+  user: User,
+  path: string,
+): Promise<Blob> {
+  const send = async (refresh = false) =>
+    fetch(resolveApiUrl(path), {
+      headers: { Authorization: `Bearer ${await user.getIdToken(refresh)}` },
+      cache: "no-store",
+    });
+  let res = await send();
+  if (res.status === 401) res = await send(true);
+  if (!res.ok) {
+    throw new ApiError(res.status, "No se pudo abrir la evidencia privada.");
+  }
+  return res.blob();
+}

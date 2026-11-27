@@ -10,6 +10,7 @@ import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
 import AdminSettlementsManager from '../components/AdminSettlementsManager'
 import AdminPayoutsManager from '../components/AdminPayoutsManager'
+import AdminCancellationJustifications from '../components/AdminCancellationJustifications'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -81,7 +82,12 @@ export default function AdminPage({ user }: { user: User }) {
             {tab === 'dossiers'
               ? <DossierManager user={user} />
               : tab === 'incidents'
-                ? <AdminIncidentsManager user={user} />
+                ? (
+                  <>
+                    <AdminIncidentsManager user={user} />
+                    <AdminCancellationJustifications user={user} />
+                  </>
+                )
                 : tab === 'settlements'
                   ? <AdminSettlementsManager user={user} />
                   : <AdminPayoutsManager user={user} />}

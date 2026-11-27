@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,7 +12,8 @@ from app.cancellation_evidence import EvidenceStore
 from app.cancellation_policy import FaultStatus
 from app.cancellation_repository import CancellationRepository, JustificationRepository
 from app.client_requests import _find_request_by_id
-from app.models import CancellationJustification, ensure_utc_datetime, format_tegucigalpa_iso
+from app.financial_settlement import check_third_unjustified_fault_alert
+from app.models import CancellationJustification, User, ensure_utc_datetime, format_tegucigalpa_iso
 
 
 class JustificationDecision(str, Enum):
@@ -114,3 +116,64 @@ def resolve_justification(
     ).value
     db.commit()
     return serialize_justification(item)
+
+def list_admin_justifications(
+    db: Session,
+    *,
+    estado: str | None,
+    claims: dict,
+    cancellations: CancellationRepository,
+    justifications: JustificationRepository,
+) -> list[dict]:
+    """HU-36 CA-09 / CA-10: bandeja administrativa de justificaciones de cancelación con evidencia privada."""
+    require_admin(db, claims)
+    items = justifications.list_all(db, estado=estado)
+    author_uids = {item.autor_uid for item in items if item.autor_uid}
+    users_by_uid = (
+        {u.firebase_uid: u for u in db.scalars(select(User).where(User.firebase_uid.in_(author_uids))).all()}
+        if author_uids
+        else {}
+    )
+
+    rows: list[dict] = []
+    for item in items:
+        cancellation = cancellations.get_by_id(db, item.cancelacion_id)
+        author = users_by_uid.get(item.autor_uid)
+        data = serialize_justification(item)
+        just_refs = list(item.evidencias or [])
+        seen_refs = set(just_refs)
+        evidencias_unificadas = [
+            {"path": f"/admin/cancellation-justifications/{item.id}/evidence/{idx}"}
+            for idx in range(len(just_refs))
+        ]
+        if cancellation is not None:
+            for idx, ref in enumerate(list(cancellation.evidencias or [])):
+                if ref not in seen_refs:
+                    seen_refs.add(ref)
+                    evidencias_unificadas.append(
+                        {"path": f"/admin/cancellations/{cancellation.id}/evidence/{idx}"}
+                    )
+        data.update(
+            {
+                "autor_uid": item.autor_uid,
+                "autor_nombre": author.nombre_completo if author else "Usuario",
+                "solicitud_id": cancellation.solicitud_id if cancellation else None,
+                "modalidad": cancellation.modalidad if cancellation else None,
+                "causa_cancelacion": cancellation.causa if cancellation else None,
+                "motivo_cancelacion": cancellation.motivo if cancellation else None,
+                "estado_previo": cancellation.estado_previo if cancellation else None,
+                "responsable_rol": cancellation.responsable_rol if cancellation else None,
+                "estado_incumplimiento": cancellation.estado_incumplimiento if cancellation else None,
+                "cancelada_en": format_tegucigalpa_iso(cancellation.cancelada_en) if cancellation else None,
+                "evidencias_cancelacion_count": len(cancellation.evidencias or []) if cancellation else 0,
+                "evidencias_justificacion_count": len(item.evidencias or []),
+                "alerta_administrativa": (
+                    check_third_unjustified_fault_alert(db, cancellation.responsable_uid)
+                    if cancellation
+                    else None
+                ),
+                "evidencias_unificadas": evidencias_unificadas,
+            }
+        )
+        rows.append(data)
+    return rows
