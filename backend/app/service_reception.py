@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
-from app.models import DirectRequest, OpenRequest, User
+from app.financial_settlement import (
+    calculate_payment_split,
+    configured_commission_rate,
+    record_ledger_entry_once,
+)
+from app.models import DirectRequest, OpenRequest, OperationalSettings, TechnicianProfile, User
 from app.notifications_events import (
     notify_incident_opened,
     notify_incident_resolved,
@@ -20,6 +25,8 @@ from app.notifications_events import (
 )
 from app.request_states import transition_request
 from app.security import get_current_user
+from app.payouts import available_balance
+from app.settlements import outstanding_debt
 
 router = APIRouter(tags=["Confirmación de Recepción (HU-35)"])
 
@@ -258,6 +265,7 @@ def confirm_service_reception_by_client(
     if current_state == "COMPLETADA" or tracking.get("completada"):
         completion_bundle = emit_and_process_idempotent_completion_event(
             record,
+            db,
             modalidad=modalidad,
             autor_cierre=tracking.get("autor_cierre") or "CLIENTE",
             closed_at=tracking.get("_closed_at_dt") or _ensure_utc(now),
@@ -336,6 +344,7 @@ def confirm_service_reception_by_client(
     _save_tracking(record, updated_tracking)
     completion_bundle = emit_and_process_idempotent_completion_event(
         record,
+        db,
         modalidad=modalidad,
         autor_cierre="CLIENTE",
         closed_at=closed_at,
@@ -511,6 +520,7 @@ def run_scheduled_auto_completion(
         _save_tracking(record, updated_tracking)
         emit_and_process_idempotent_completion_event(
             record,
+            db,
             modalidad=modalidad,
             autor_cierre="SISTEMA",
             closed_at=eval_now,
@@ -837,6 +847,7 @@ def resolve_service_incident_by_admin(
         _save_tracking(record, updated_tracking)
         completion_bundle = emit_and_process_idempotent_completion_event(
             record,
+            db,
             modalidad=modalidad,
             autor_cierre="ADMIN",
             closed_at=eval_now,
@@ -961,8 +972,6 @@ def resolve_service_incident_endpoint(
 
 # --- HU-35 ST-04: Persistir evento único de cierre y consumidores financieros idempotentes ---
 
-DEFAULT_COMMISSION_RATE = Decimal("0.10")  # 10% de comisión de plataforma
-
 class FinancialEffectStrategy(Protocol):
     """
     Patrón Strategy + Principios SOLID (SRP, OCP, LSP, DIP):
@@ -1021,11 +1030,11 @@ def _resolve_financial_strategy(metodo_pago: str) -> FinancialEffectStrategy:
 
 def emit_and_process_idempotent_completion_event(
     record: Any,
+    db: Session,
     *,
     modalidad: str,
     autor_cierre: str,
     closed_at: datetime | None = None,
-    commission_rate: Decimal = DEFAULT_COMMISSION_RATE,
 ) -> dict[str, Any]:
     """
     HU-35 ST-04 (CA-05, CA-06, CA-07):
@@ -1056,8 +1065,7 @@ def emit_and_process_idempotent_completion_event(
             "reutilizado_idempotente": True,
         }
 
-    from app.financial_settlement import calculate_payment_split
-
+    commission_rate = configured_commission_rate(db)
     split = calculate_payment_split(record, commission_rate=commission_rate)
     monto_bruto = split.monto_total
     monto_comision = split.monto_comision
@@ -1073,6 +1081,23 @@ def emit_and_process_idempotent_completion_event(
             monto_comision,
             monto_neto_tecnico,
         )
+
+    technician_uid = getattr(record, "tecnico_id", None)
+    technician = db.scalar(select(User).where(User.firebase_uid == technician_uid).with_for_update()) if technician_uid else None
+    opening_balance = available_balance(db, technician) if technician else Decimal("0.00")
+    compensated = min(opening_balance, deuda_comision_efectivo)
+    pending_cash_debt = deuda_comision_efectivo - compensated
+    profile = db.get(TechnicianProfile, technician.id, populate_existing=True) if technician else None
+    if profile is not None and pending_cash_debt > 0:
+        profile.servicios_efectivo_sin_liquidar = (profile.servicios_efectivo_sin_liquidar or 0) + 1
+        settings = db.get(OperationalSettings, 1)
+        debt_limit = settings.limite_deuda if settings else None
+        service_limit = settings.limite_sin_liquidar if settings else 5
+        debt_after_close = outstanding_debt(db, technician) + pending_cash_debt
+        if profile.servicios_efectivo_sin_liquidar >= service_limit or (
+            debt_limit is not None and debt_after_close >= debt_limit
+        ):
+            profile.restriccion_financiera = True
 
     event_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"teknigo-cierre-{solicitud_id}"))
     idempotency_key = f"CIERRE-SERVICIO-{solicitud_id}"
@@ -1111,7 +1136,8 @@ def emit_and_process_idempotent_completion_event(
         "monto_comision": float(monto_comision),
         "monto_neto_tecnico": float(monto_neto_tecnico),
         "credito_digital_acreditado": float(credito_digital_tecnico),
-        "deuda_comision_efectivo": float(deuda_comision_efectivo),
+        "deuda_comision_efectivo": float(pending_cash_debt),
+        "compensacion_saldo_disponible": str(compensated),
         "estado_liquidacion": "REGISTRADO_SPRINT_2",
         "validado_sprint_3": False,
         "validado_sprint_3_en": None,
@@ -1121,6 +1147,29 @@ def emit_and_process_idempotent_completion_event(
     }
 
     _save_tracking(record, {**tracking, "evento_cierre": event_payload, "efecto_financiero": financial_effect})
+    record_ledger_entry_once(
+        db,
+        clave_idempotencia=f"CIERRE-SERVICIO:{modalidad}:{solicitud_id}",
+        modalidad=modalidad,
+        solicitud_id=solicitud_id,
+        tipo_movimiento="CIERRE_SERVICIO",
+        monto_base=split.monto_base,
+        monto_ajuste=split.monto_ajuste,
+        monto_total=split.monto_total,
+        tasa_comision=split.tasa_comision,
+        monto_comision=split.monto_comision,
+        metodo_pago=split.metodo_pago_base,
+        referencia_pasarela=None,
+        detalle={
+            **split.to_dict(),
+            "evento_id": event_id,
+            "tecnico_id": technician_uid,
+            "compensacion_saldo_disponible": str(compensated),
+            "deuda_generada": str(pending_cash_debt),
+            "saldo_disponible_resultante": str(opening_balance + credito_digital_tecnico - compensated),
+        },
+        now=eval_closed_at,
+    )
 
     return {
         "evento_cierre": event_payload,

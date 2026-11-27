@@ -143,27 +143,10 @@ def get_minimum_withdrawal(db) -> Decimal:
 
 
 def digital_credits_generated(db, user) -> Decimal:
-    """Fondos digitales acreditados por servicios cerrados con pago digital.
+    """Suma créditos digitales netos de compensaciones."""
+    from app.financial_settlement import completion_financial_totals
 
-    PROVISIONAL (HU-43): hoy vive en `seguimiento_recepcion.efecto_financiero.credito_digital_acreditado`
-    de `service_reception.py`. Cuando HU-40/41 integren el libro financiero, reemplazar solo esta función.
-    """
-    from sqlalchemy import select
-
-    from app.models import DirectRequest, OpenRequest
-
-    identities = {str(user.id), user.firebase_uid}
-    total = Decimal("0.00")
-    for model in (DirectRequest, OpenRequest):
-        rows = db.scalars(
-            select(model).where(model.tecnico_id.in_(identities), model.seguimiento_recepcion.is_not(None))
-        ).all()
-        for row in rows:
-            effect = (row.seguimiento_recepcion or {}).get("efecto_financiero") or {}
-            raw_credit = effect.get("credito_digital_acreditado")
-            if raw_credit not in (None, ""):
-                total += money(str(raw_credit))
-    return total
+    return completion_financial_totals(db, user)[0]
 
 
 def payout_idempotency_key(order_id, movement_type: str) -> str:

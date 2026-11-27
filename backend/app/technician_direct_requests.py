@@ -16,6 +16,7 @@ from app.models import (
     OpenRequest,
     Service,
     Specialty,
+    TechnicianProfile,
     User,
     ensure_utc_datetime,
     format_tegucigalpa_iso,
@@ -346,6 +347,10 @@ def respond_to_direct_request(
         )
     # HU-37 CA-03: Con efectivo no se invoca cobro digital; con tarjeta se solicita pago antes de Aceptada
     if target_estado == "ACEPTADA":
+        technician_id = db.scalar(select(User.id).where(User.firebase_uid == claims["uid"]).with_for_update())
+        profile = db.get(TechnicianProfile, technician_id, populate_existing=True) if technician_id else None
+        if profile is not None and profile.restriccion_financiera:
+            raise HTTPException(403, "Tu perfil técnico presenta una restricción financiera activa por saldo")
         metodo = (record.metodo_pago or "").strip().lower()
         if metodo == "tarjeta" and not record.referencia_pasarela:
             raise HTTPException(

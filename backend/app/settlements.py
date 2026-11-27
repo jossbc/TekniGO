@@ -84,29 +84,10 @@ def split_applied_amount(verified: Decimal, outstanding_debt: Decimal) -> tuple[
 
 
 def commission_debt_generated(db, user) -> Decimal:
-    """Deuda de comisión en efectivo generada por los servicios cerrados del técnico.
+    """Suma comisiones en efectivo devengadas después de compensaciones."""
+    from app.financial_settlement import completion_financial_totals
 
-    PROVISIONAL (HU-42): hoy esta deuda solo vive en el efecto financiero que
-    `service_reception` guarda en cada solicitud. Cuando HU-40/41 expongan el
-    libro financiero, reemplazar este cálculo (es el único punto de acoplamiento).
-    """
-    from sqlalchemy import select
-
-    from app.models import DirectRequest, OpenRequest
-
-    identities = {str(user.id), user.firebase_uid}
-    total = Decimal("0.00")
-    for model in (DirectRequest, OpenRequest):
-        rows = db.scalars(
-            select(model).where(model.tecnico_id.in_(identities), model.seguimiento_recepcion.is_not(None))
-        ).all()
-        for row in rows:
-            effect = (row.seguimiento_recepcion or {}).get("efecto_financiero") or {}
-            raw_debt = effect.get("deuda_comision_efectivo")
-            if raw_debt not in (None, ""):
-                # service_reception.py (Sprint 2) persiste JSON numérico; str() evita float binario en money().
-                total += money(str(raw_debt))
-    return total
+    return completion_financial_totals(db, user)[1]
 
 
 def outstanding_debt(db, user) -> Decimal:

@@ -13,7 +13,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    DirectRequest,
     FinancialLedgerEntry,
+    OpenRequest,
     OperationalSettings,
     PaymentRefund,
     RequestCancellation,
@@ -40,6 +42,36 @@ def configured_commission_rate(db: Session | None = None, fallback: Decimal = DE
         if settings is not None and settings.comision_porcentaje is not None:
             return (Decimal(str(settings.comision_porcentaje)) / Decimal("100")).quantize(Decimal("0.0001"))
     return fallback.quantize(Decimal("0.0001"))
+
+
+def completion_financial_totals(db: Session, user) -> tuple[Decimal, Decimal]:
+    """Returns spendable digital credits and accrued cash debt before settlements and payouts."""
+    identities = (user.firebase_uid, str(user.id))
+    credits = Decimal("0.00")
+    cash_debt = Decimal("0.00")
+    tracked = set()
+    entries = db.scalars(select(FinancialLedgerEntry).where(
+        FinancialLedgerEntry.tipo_movimiento == "CIERRE_SERVICIO",
+        FinancialLedgerEntry.detalle["tecnico_id"].as_string().in_(identities),
+    ))
+    for entry in entries:
+        tracked.add((entry.modalidad, entry.solicitud_id))
+        credits += to_money(entry.detalle["credito_digital_tecnico"])
+        credits -= to_money(entry.detalle.get("compensacion_saldo_disponible", 0))
+        cash_debt += to_money(entry.detalle.get("deuda_generada", entry.detalle["deuda_comision_efectivo"]))
+
+    for modalidad, model in (("DIRECTA", DirectRequest), ("ABIERTA", OpenRequest)):
+        rows = db.execute(select(model.id, model.seguimiento_recepcion).where(
+            model.tecnico_id.in_(identities), model.seguimiento_recepcion.is_not(None),
+        ))
+        for request_id, tracking in rows:
+            if (modalidad, str(request_id)) in tracked:
+                continue
+            effect = (tracking or {}).get("efecto_financiero") or {}
+            credits += to_money(effect.get("credito_digital_acreditado") or 0)
+            credits -= to_money(effect.get("compensacion_saldo_disponible") or 0)
+            cash_debt += to_money(effect.get("deuda_comision_efectivo") or 0)
+    return credits, cash_debt
 
 
 @dataclass(frozen=True)
