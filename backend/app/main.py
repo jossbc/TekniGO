@@ -30,6 +30,7 @@ from app.open_requests import router as open_requests_router
 from app.certifications import router as certifications_router
 from app.reviews import router as reviews_router
 from app.admin_catalog import router as admin_catalog_router
+from app.admin_reports import router as admin_reports_router
 from app.service_reception import (
     router as service_reception_router,
     run_scheduled_auto_completion,
@@ -101,6 +102,7 @@ app.include_router(open_requests_router)
 app.include_router(certifications_router)
 app.include_router(reviews_router)
 app.include_router(admin_catalog_router)
+app.include_router(admin_reports_router)
 app.include_router(service_reception_router)
 app.include_router(service_completion_router)
 app.include_router(incident_management_router)

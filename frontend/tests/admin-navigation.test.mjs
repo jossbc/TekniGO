@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url)
 let roles = []
 let adminTab
 const result = await build({
-  stdin: { contents: "export { default as AccountPage } from './src/pages/AccountPage'; export { default as AdminPage } from './src/pages/AdminPage'; export { default as AdminCatalog } from './src/components/AdminCatalog'; export { accountPath } from './src/lib/accountPath'", resolveDir: process.cwd(), loader:'tsx' },
+  stdin: { contents: "export { default as AccountPage } from './src/pages/AccountPage'; export { default as AdminPage } from './src/pages/AdminPage'; export { default as AdminCatalog } from './src/components/AdminCatalog'; export { default as AdminReports, demandReportCsv } from './src/components/AdminReports'; export { accountPath } from './src/lib/accountPath'", resolveDir: process.cwd(), loader:'tsx' },
   bundle:true, write:false, platform:'node', format:'cjs', packages:'external',
   loader:{ '.png':'dataurl', '.jpg':'dataurl', '.css':'empty' }, define:{ 'import.meta.env':'{}' },
   plugins:[{ name:'account-state', setup(build) {
@@ -76,4 +76,39 @@ test('admin can open the catalog and regular accounts cannot access it', () => {
   const restrictedPage = AdminPage({ user })
   assert.equal(findElement(restrictedPage, catalogTab), undefined)
   assert.equal(findElement(restrictedPage, catalogPanel), undefined)
+})
+
+test('admin can open demand reports and regular accounts cannot access them', () => {
+  const { AdminPage, AdminReports } = module.exports
+  const user = { uid: 'admin' }
+  const reportTab = node => node.props.role === 'tab' && node.props.children.includes(' Reportes')
+  const reportPanel = node => node.type === AdminReports
+
+  roles = ['ADMIN']
+  adminTab = undefined
+  findElement(AdminPage({ user }), reportTab).props.onClick()
+  assert.equal(findElement(AdminPage({ user }), reportPanel).props.user, user)
+
+  roles = ['TECNICO']
+  const restricted = AdminPage({ user })
+  assert.equal(findElement(restricted, reportTab), undefined)
+  assert.equal(findElement(restricted, reportPanel), undefined)
+})
+
+test('report CSV contains the applied filters and treats formula-like catalog names as text', () => {
+  const trade = '=1+"Prueba"'
+  const csv = module.exports.demandReportCsv({
+    filtros: { desde: '2026-11-09', hasta: '2026-11-10', oficio: 'trade', departamento: 'Cortés', municipio: null },
+    opciones: { oficios: [{ id: 'trade', nombre: trade }] },
+    resumen: { total: 2, directas: 1, abiertas: 1, contratadas: 0, completadas: 0 },
+    oficios: [{ nombre: trade, solicitudes: 2 }],
+    departamentos: [{ nombre: 'Cortés', solicitudes: 2 }],
+    municipios: [],
+    dias: [{ fecha: '2026-11-09', solicitudes: 2 }, { fecha: '2026-11-10', solicitudes: 0 }],
+    semana: [{ nombre: 'Lunes', solicitudes: 2, dias: 1, promedio: 2 }],
+  })
+  assert.match(csv, /"Filtro","Departamento","Cortés"/)
+  assert.match(csv, /"Oficio","'=1\+""Prueba""",2,/)
+  assert.match(csv, /"Fecha","2026-11-10",0,/)
+  assert.match(csv, /"Día de la semana","Lunes",2,"",1,2/)
 })

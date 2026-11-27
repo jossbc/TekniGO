@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import type { User } from 'firebase/auth'
-import { FolderOpen, Landmark, Settings, ShieldAlert, Wallet } from 'lucide-react'
+import { ChartNoAxesColumn, FolderOpen, Landmark, Settings, ShieldAlert, Wallet } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
 import AdminCatalog from '../components/AdminCatalog'
+import AdminReports from '../components/AdminReports'
 import CashCollectionsCard from '../components/CashCollectionsCard'
 import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
@@ -26,11 +27,11 @@ const labels: Record<string, string> = {
 export default function AdminPage({ user }: { user: User }) {
   const { search } = useLocation()
   const { state, retry } = useAccount(user)
-  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts' | 'catalog'>('dossiers')
+  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts' | 'catalog' | 'reports'>('dossiers')
 
   useEffect(() => {
     const requested = new URLSearchParams(search).get('tab')
-    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts' || requested === 'catalog') {
+    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts' || requested === 'catalog' || requested === 'reports') {
       setTab(requested)
     }
   }, [search])
@@ -51,6 +52,15 @@ export default function AdminPage({ user }: { user: User }) {
             {/* Pestañas de administración (CA-02) */}
             <div className="admin-toolbar" style={{ marginBottom: "20px" }}>
               <div className="dossier-filters" role="tablist" aria-label="Secciones de administración">
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'reports' ? '' : 'button-outline'}
+                  aria-selected={tab === 'reports'}
+                  onClick={() => setTab('reports')}
+                >
+                  <ChartNoAxesColumn size={16} /> Reportes
+                </Button>
                 <Button
                   role="tab"
                   type="button"
@@ -115,7 +125,9 @@ export default function AdminPage({ user }: { user: User }) {
                     </>
                   : tab === 'payouts'
                     ? <AdminPayoutsManager user={user} />
-                    : <AdminCatalog user={user} />}
+                    : tab === 'catalog'
+                      ? <AdminCatalog user={user} />
+                      : <AdminReports user={user} />}
           </>
         )}
       </main>
