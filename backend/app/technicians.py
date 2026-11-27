@@ -236,6 +236,7 @@ class CatalogTechnician(BaseModel):
     #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
     #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
+    total_resenas: Optional[int] = 0
 
     class Config:
         from_attributes = True
@@ -248,7 +249,11 @@ def get_technicians_catalog(
     db: Session = Depends(get_db),
     departamento: str | None = None,
     sector: str | None = None,
+    calificacion_minima: Optional[float] = None,
 ):
+    from app.reviews import get_technician_reputation_stats_map, sync_expired_reviews
+    sync_expired_reviews(db)
+
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.
     query = (
@@ -291,6 +296,8 @@ def get_technicians_catalog(
     results = db.execute(query).unique().all()
 
     certified = approved_certificate_owners(db, [user.id for user, _ in results])
+    tech_stats_by_uid = get_technician_reputation_stats_map([user.id for user, _ in results], db)
+    has_min_rating_filter = isinstance(calificacion_minima, (int, float)) and not isinstance(calificacion_minima, bool)
     catalog = []
     state_changed = False
     for user, profile in results:
@@ -307,6 +314,15 @@ def get_technicians_catalog(
         if not evaluation["habilitado_operativamente"]:
             continue
 
+        avg_rating, published_reviews_count = tech_stats_by_uid.get(user.id, (None, 0))
+        if profile.calificacion_promedio != avg_rating:
+            profile.calificacion_promedio = avg_rating
+            state_changed = True
+
+        if has_min_rating_filter:
+            if published_reviews_count == 0 or avg_rating is None or avg_rating < float(calificacion_minima):
+                continue
+
         # Obtener las especialidades reales del técnico (CA-02 de HU-12)
         specs_query = (
             select(Specialty.nombre)
@@ -316,6 +332,7 @@ def get_technicians_catalog(
         specs = db.scalars(specs_query).all()
 
         # CA-03: Mostrar Técnico Verificado separado de certificación y calificación, sin datos privados
+
         catalog.append({
             "usuario_id": str(user.id),
             "nombre_completo": user.nombre_completo,
@@ -325,9 +342,8 @@ def get_technicians_catalog(
             "estado_certificacion": "CERTIFICADO" if user.id in certified else "NO_CERTIFICADO",
             #"tarifa_base": float(profile.tarifa_base) if profile.tarifa_base else 0.0,
             #"unidad_cobro": str(profile.unidad_cobro) if profile.unidad_cobro else "POR_HORA", #SE QUITARON ESTOS CAMPOS DE PERFILES TECNICOS
-            "calificacion_promedio": (
-                float(profile.calificacion_promedio) if profile.calificacion_promedio is not None else None
-            ),
+            "calificacion_promedio": avg_rating,
+            "total_resenas": published_reviews_count,
         })
 
     if state_changed:
@@ -357,12 +373,18 @@ class TechnicianPublicProfile(BaseModel):
     #tarifa_base: float #SE ELIMINARON ESTOS CAMPOS DE LA TABLA DE PERFILES TECNICOS
     #unidad_cobro: str
     calificacion_promedio: Optional[float] = None
+    total_resenas: Optional[int] = 0
+    resenas: Optional[List[dict]] = []
     
     class Config:
         from_attributes = True
 
 @router.get("/profile/{user_id}", response_model=TechnicianPublicProfile, status_code=status.HTTP_200_OK)
 def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    from app.models import ServiceReview
+    from app.reviews import sync_expired_reviews, _serialize_review
+    sync_expired_reviews(db)
+
     # Buscar al usuario y su perfil de técnico
     user = db.get(User, user_id)
     if not user:
@@ -410,6 +432,25 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         for s in services
     ]
 
+    published_reviews = list(
+        db.scalars(
+            select(ServiceReview)
+            .where(
+                ServiceReview.evaluado_id == user.id,
+                ServiceReview.rol_evaluador == "CLIENTE",
+                ServiceReview.estado_publicacion == "PUBLICADA",
+            )
+            .order_by(ServiceReview.publicada_en.desc(), ServiceReview.creada_en.desc())
+        ).all()
+    )
+    total_revs = len(published_reviews)
+    avg_calc = round(float(sum(r.puntuacion for r in published_reviews)) / total_revs, 2) if total_revs > 0 else None
+    if tech_profile.calificacion_promedio != avg_calc:
+        tech_profile.calificacion_promedio = avg_calc
+        db.commit()
+
+    serialized_reviews = [_serialize_review(r, db).model_dump() for r in published_reviews]
+
     return {
         "usuario_id": str(user.id),
         "nombre_completo": user.nombre_completo,
@@ -421,9 +462,9 @@ def get_technician_public_profile(user_id: uuid.UUID, db: Session = Depends(get_
         "estado_certificacion": "CERTIFICADO" if approved_certificate_owners(db, [user.id]) else "NO_CERTIFICADO",
         #"tarifa_base": float(tech_profile.tarifa_base) if tech_profile.tarifa_base else 0.0, #SE ELIMINARON ESTOS CAMPOS DE PERFILES_TECNICOS
         #"unidad_cobro": str(tech_profile.unidad_cobro) if tech_profile.unidad_cobro else "POR_HORA",
-        "calificacion_promedio": (
-            float(tech_profile.calificacion_promedio) if tech_profile.calificacion_promedio is not None else None
-        ),
+        "calificacion_promedio": avg_calc,
+        "total_resenas": total_revs,
+        "resenas": serialized_reviews,
     }
 
 
@@ -765,6 +806,9 @@ def get_my_activation_status(
     claims=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from app.reviews import sync_expired_reviews
+
+    sync_expired_reviews(db)
     user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]))
     if not user:
         raise HTTPException(404, "Completa tu registro en TekniGO")

@@ -19,6 +19,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
+import ReviewModal from "./ReviewModal";
 import { Button } from "./ui";
 import { errorMessage } from "../lib/api";
 import CancellationNotice from "./CancellationNotice";
@@ -27,6 +28,7 @@ import { CancelRequestModal } from "./CancellationForms";
 import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
+import { subscribeProposalLiveUpdate } from "../lib/notifications";
 import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
@@ -180,6 +182,18 @@ const ACTION_LABELS: Record<string, { label: string; hint: string }> = {
   },
 };
 
+export function resolveReviewButtonState(
+  item: { id: string; mi_resena_enviada?: boolean; evaluacion_cerrada?: boolean },
+  localMap: Record<string, { sent: boolean; closed: boolean }>,
+): "ACTIVE" | "SENT_DISABLED" | "HIDDEN" {
+  const normId = (item.id || "").trim().toLowerCase();
+  const localReview = localMap[item.id] ?? localMap[normId];
+  const evaluacionCerrada = Boolean(item.evaluacion_cerrada || localReview?.closed);
+  if (evaluacionCerrada) return "HIDDEN";
+  const miResenaEnviada = Boolean(item.mi_resena_enviada || localReview?.sent);
+  return miResenaEnviada ? "SENT_DISABLED" : "ACTIVE";
+}
+
 export default function ClientRequestsManager({
   user,
   initialRequestId = "",
@@ -206,6 +220,12 @@ export default function ClientRequestsManager({
   const [executingAction, setExecutingAction] = useState("");
   const [showCancel, setShowCancel] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
+  const [ratingTarget, setRatingTarget] = useState<{
+    tipo_solicitud: "DIRECTA" | "ABIERTA";
+    solicitud_id: string;
+    evaluadoNombre: string;
+  } | null>(null);
+  const [reviewedState, setReviewedState] = useState<Record<string, { sent: boolean; closed: boolean }>>({});
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   //Manejar Estado de Conexión
@@ -454,6 +474,15 @@ export default function ClientRequestsManager({
   const [incidentReason, setIncidentReason] = useState("");
   const [openingIncident, setOpeningIncident] = useState(false);
 
+  // HU-47 (CA-05): Actualización automática de propuestas al recibir notificación en vivo
+  useEffect(
+    () =>
+      subscribeProposalLiveUpdate(() => {
+        setRefreshTick((v) => v + 1);
+      }),
+    [],
+  );
+
   async function handleConfirmReception() {
     if (!detail || confirmingReception) return;
     setConfirmingReception(true);
@@ -659,6 +688,63 @@ export default function ClientRequestsManager({
                       <FileText size={15} />
                       Ver detalle
                     </Button>
+                    {(() => {
+                      if (item.estado.trim().toUpperCase() !== "COMPLETADA" || !item.tecnico?.nombre_completo) {
+                        return null;
+                      }
+                      const reviewBtnState = resolveReviewButtonState(item, reviewedState);
+                      if (reviewBtnState === "HIDDEN") {
+                        return null;
+                      }
+                      if (reviewBtnState === "SENT_DISABLED") {
+                        return (
+                          <Button
+                            type="button"
+                            disabled
+                            style={{
+                              marginTop: "6px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: "0.85rem",
+                              padding: "0.45rem 0.8rem",
+                              background: "#f3f4f6",
+                              color: "#6b7280",
+                              border: "1px solid #d1d5db",
+                              cursor: "not-allowed",
+                              opacity: 0.85,
+                            }}
+                          >
+                            <Star size={14} fill="none" />
+                            Evaluación enviada
+                          </Button>
+                        );
+                      }
+                      return (
+                        <Button
+                          type="button"
+                          className="button"
+                          style={{
+                            marginTop: "6px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: "0.85rem",
+                            padding: "0.45rem 0.8rem",
+                          }}
+                          onClick={() =>
+                            setRatingTarget({
+                              tipo_solicitud: (item.modalidad || "").trim().toUpperCase() === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                              solicitud_id: item.id,
+                              evaluadoNombre: item.tecnico?.nombre_completo || "Técnico",
+                            })
+                          }
+                        >
+                          <Star size={14} fill="currentColor" />
+                          Calificar técnico
+                        </Button>
+                      );
+                    })()}
                   </div>
                 </article>
               );
@@ -1549,6 +1635,59 @@ export default function ClientRequestsManager({
                   />
                 )}
               </section>
+
+              {(() => {
+                if (detail.estado.trim().toUpperCase() !== "COMPLETADA" || !detail.tecnico?.nombre_completo) {
+                  return null;
+                }
+                const reviewBtnState = resolveReviewButtonState(detail, reviewedState);
+                if (reviewBtnState === "HIDDEN") {
+                  return null;
+                }
+                const miResenaEnviada = reviewBtnState === "SENT_DISABLED";
+                return (
+                  <section className="client-request-box" aria-label="Calificación del técnico">
+                    <h3>Calificación del servicio</h3>
+                    <p>El servicio ha sido marcado como completado. Puedes evaluar el trabajo realizado por el profesional.</p>
+                    {miResenaEnviada ? (
+                      <Button
+                        type="button"
+                        disabled
+                        style={{
+                          width: "auto",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          background: "#f3f4f6",
+                          color: "#6b7280",
+                          border: "1px solid #d1d5db",
+                          cursor: "not-allowed",
+                          opacity: 0.85,
+                        }}
+                      >
+                        <Star size={16} fill="none" />
+                        Evaluación enviada
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="button"
+                        style={{ width: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}
+                        onClick={() =>
+                          setRatingTarget({
+                            tipo_solicitud: (detail.modalidad || "").trim().toUpperCase() === "ABIERTA" ? "ABIERTA" : "DIRECTA",
+                            solicitud_id: detail.id,
+                            evaluadoNombre: detail.tecnico?.nombre_completo || "Técnico",
+                          })
+                        }
+                      >
+                        <Star size={16} fill="currentColor" />
+                        Calificar técnico
+                      </Button>
+                    )}
+                  </section>
+                );
+              })()}
             </section>
           )}
           {showAwardGateway && confirmAwardProp && (
@@ -1560,6 +1699,47 @@ export default function ClientRequestsManager({
             />
           )}
         </RequestDetailModal>
+      )}
+      {ratingTarget && (
+        <ReviewModal
+          user={user}
+          tipo_solicitud={ratingTarget.tipo_solicitud}
+          solicitud_id={ratingTarget.solicitud_id}
+          evaluadoNombre={ratingTarget.evaluadoNombre}
+          rolEvaluador="CLIENTE"
+          onClose={() => setRatingTarget(null)}
+          onSuccess={(res) => {
+            const targetId = ratingTarget.solicitud_id;
+            const normTargetId = targetId.trim().toLowerCase();
+            const closedNow = Boolean(
+              res.publicada ?? res.publicada_inmediata ?? res.estado_publicacion === "PUBLICADA",
+            );
+            setReviewedState((prev) => ({
+              ...prev,
+              [targetId]: { sent: true, closed: closedNow },
+              [normTargetId]: { sent: true, closed: closedNow },
+            }));
+            setPage((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    solicitudes: prev.solicitudes.map((item) =>
+                      item.id.trim().toLowerCase() === normTargetId
+                        ? { ...item, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                        : item,
+                    ),
+                  }
+                : prev,
+            );
+            setDetail((prev) =>
+              prev && prev.id.trim().toLowerCase() === normTargetId
+                ? { ...prev, mi_resena_enviada: true, evaluacion_cerrada: closedNow }
+                : prev,
+            );
+            setActionNotice(res.mensaje);
+            setRefreshTick((v) => v + 1);
+          }}
+        />
       )}
       {detail && (
         <ReportIncidentModal
@@ -1575,10 +1755,14 @@ export default function ClientRequestsManager({
           rol="CLIENTE"
         />
       )}
-            {detail && (
+      {detail && (
         <CancelRequestModal
-          isOpen={showCancel} onClose={() => setShowCancel(false)}
-          user={user} solicitudId={detail.id} rol="CLIENTE" estado={detail.estado}
+          isOpen={showCancel}
+          onClose={() => setShowCancel(false)}
+          user={user}
+          solicitudId={detail.id}
+          rol="CLIENTE"
+          estado={detail.estado}
           onDone={(msg) => { setActionNotice(msg); setRefreshTick((v) => v + 1); }}
         />
       )}

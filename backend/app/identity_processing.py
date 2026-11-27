@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.identity_documents import _get_user
 from app.models import DocumentReviewDecision, IdentityDocument, IdentityVerificationRequest, IdentityVerificationResult, TechnicianProfile
+from app.notifications_events import notify_verification_decision
 from app.storage import PrivateDocumentStorage, validate_document_bytes
 
 PROCESS = 'PROCESAMIENTO_IDENTIDAD'
@@ -198,6 +199,24 @@ def process_current_identity(
         db.flush()
         sync_technician_verification_state(user, technician, db,
             proceso_responsable=PROCESS, causa_override=reason)
+    else:
+        db.flush()
+    if state == 'VERIFICADO':
+        notify_verification_decision(
+            db,
+            user,
+            role='TECNICO' if technician is not None else 'CLIENTE',
+            outcome='DOCUMENTACION_APROBADA' if technician is not None else 'VERIFICADO',
+            cycle_key=f'auto:{result.id}',
+        )
+    elif state == 'RECHAZADO':
+        notify_verification_decision(
+            db,
+            user,
+            role='TECNICO' if technician is not None else 'CLIENTE',
+            outcome='RECHAZADO',
+            cycle_key=f'auto:{result.id}',
+        )
     db.commit()
     db.refresh(result)
     return result

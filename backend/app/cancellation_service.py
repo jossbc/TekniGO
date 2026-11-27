@@ -12,8 +12,10 @@ from app.cancellation_policy import (
 )
 from app.cancellation_evidence import EvidenceStore
 from app.cancellation_repository import CancellationRepository
+from app.fault_recidivism import FaultComputationService, serialize_recidivism_event
 from app.financial_settlement import check_third_unjustified_fault_alert, get_refund_for_request
 from app.models import RequestCancellation, User, ensure_utc_datetime, format_tegucigalpa_iso
+from app.notifications_events import notify_service_cancelled, notify_third_fault_admin_alert
 from app.request_states import state_key, transition_request
 from app.service_reception import _find_locked_request
 
@@ -131,8 +133,18 @@ def cancel_request(
     db.flush()
     for observer in observers:
         observer.on_cancelled(db, record, cancellation)
+    notify_service_cancelled(db, record, modalidad=modalidad, actor_role=actor_role, now=moment)
     db.commit()
     data = serialize_cancellation(cancellation)
     data["reembolso"] = get_refund_for_request(db, modalidad, record_id)
-    data["alerta_administrativa"] = check_third_unjustified_fault_alert(db, cancellation.responsable_uid)
+    alert = check_third_unjustified_fault_alert(db, cancellation.responsable_uid)
+    fault_summary = FaultComputationService().compute_summary(db, cancellation.responsable_uid)
+    alert["evento_reincidencia"] = fault_summary["evento_reincidencia_activo"]
+    data["alerta_administrativa"] = alert
+    if alert.get("alerta_administrativa_activa") and alert["evento_reincidencia"] is None:
+      # Respaldo si se invocó cancel_request sin el observador de reincidencia
+      event, _ = FaultComputationService().evaluate_after_cancellation(db, cancellation, now=moment)
+      if event is not None:
+          alert["evento_reincidencia"] = serialize_recidivism_event(event)
+      db.commit()
     return data

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, FormEvent } from "react";
 import type { User } from "firebase/auth";
-import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw, ArrowLeft } from "lucide-react";
+import { SearchX, Search, SlidersHorizontal, Wrench, MapPin, RotateCcw, ArrowLeft, Star } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, errorMessage } from "./lib/api";
 import { TechnicianCard, type CatalogTechnician } from "./components/TechnicianCard";
@@ -19,11 +19,12 @@ export default function CatalogPage({ user }: { user: User }) {
   const [especialidad, setEspecialidad] = useState("");
   const [municipio, setMunicipio] = useState("");
   const [departamento, setDepartamento] = useState("");
+  const [calificacionMinima, setCalificacionMinima] = useState("");
   const [sector, setSector] = useState("");
 
   // Función para llamar al backend con los filtros aplicados
   const fetchCatalog = useCallback(
-    (queryEspec = "", queryMuni = "", queryDepto = "", querySector = "") => {
+    (queryEspec = "", queryMuni = "", queryDepto = "", querySector = "", queryMinCal = "") => {
       setLoading(true);
       setError("");
 
@@ -33,6 +34,7 @@ export default function CatalogPage({ user }: { user: User }) {
       if (queryMuni.trim()) params.append("municipio", queryMuni.trim());
       if (queryDepto) params.append("departamento", queryDepto);
       if (querySector.trim()) params.append("sector", querySector.trim());
+      if (queryMinCal) params.append("calificacion_minima", queryMinCal);
 
       const query = params.toString();
       setHasAppliedFilters(Boolean(query));
@@ -56,7 +58,7 @@ export default function CatalogPage({ user }: { user: User }) {
   // Manejar el clic en "Aplicar filtros"
   const handleFilterSubmit = (e: FormEvent) => {
     e.preventDefault();
-    fetchCatalog(especialidad, municipio, departamento, sector);
+    fetchCatalog(especialidad, municipio, departamento, sector, calificacionMinima);
   };
 
   // Manejar el clic en "Limpiar filtros"
@@ -65,10 +67,11 @@ export default function CatalogPage({ user }: { user: User }) {
     setMunicipio("");
     setDepartamento("");
     setSector("");
+    setCalificacionMinima("");
     fetchCatalog();
   };
 
-  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento || sector.trim());
+  const canClearFilters = hasAppliedFilters || Boolean(especialidad.trim() || municipio.trim() || departamento || sector.trim() || calificacionMinima);
   const municipiosDepto = getMunicipiosByDepartamento(departamento);
   const sectoresMuni = getSectorsForMunicipio(municipio);
 
@@ -158,6 +161,18 @@ export default function CatalogPage({ user }: { user: User }) {
               </select>
             </div>
           </div>
+          <div className="catalog-filter-field">
+            <label htmlFor="catalog-min-rating">Calificación mínima</label>
+            <div className="catalog-input-wrap">
+              <Star size={18} aria-hidden="true" />
+              <select id="catalog-min-rating" value={calificacionMinima} onChange={(e) => setCalificacionMinima(e.target.value)}>
+                <option value="">Todas</option>
+                <option value="4.5">★ 4.5 o más</option>
+                <option value="4.0">★ 4.0 o más</option>
+                <option value="3.0">★ 3.0 o más</option>
+              </select>
+            </div>
+          </div>
           <button type="submit" className="button catalog-search-button" disabled={loading}>
             <Search size={18} aria-hidden="true" /> {loading ? "Buscando..." : "Buscar técnicos"}
           </button>
@@ -178,7 +193,7 @@ export default function CatalogPage({ user }: { user: User }) {
             <SearchX size={32} aria-hidden="true" />
             <h3>No pudimos cargar los resultados</h3>
             <p>Intenta realizar la búsqueda nuevamente.</p>
-            <button type="button" className="button button-outline" onClick={() => fetchCatalog(especialidad, municipio, departamento, sector)}>Reintentar búsqueda</button>
+            <button type="button" className="button button-outline" onClick={() => fetchCatalog(especialidad, municipio, departamento, sector, calificacionMinima)}>Reintentar búsqueda</button>
           </div>
         ) : technicians.length === 0 ? (
           <div className="catalog-empty">

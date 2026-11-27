@@ -21,6 +21,7 @@ from app.models import (
     ensure_utc_datetime,
     format_tegucigalpa_iso,
 )
+from app.notifications_events import notify_service_completion_reported
 from app.security import get_current_user
 
 router = APIRouter(tags=["Finalización de Servicios (HU-34)"])
@@ -594,6 +595,7 @@ def report_service_completion(
             now=reference_now,
             window_hours=CONFIRMATION_WINDOW_HOURS,
         )
+        notify_service_completion_reported(db, record, modalidad=modalidad, now=reference_now)
         db.commit()
         db.refresh(record)
 

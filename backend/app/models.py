@@ -1,3 +1,5 @@
+import os
+import threading
 import uuid
 from decimal import Decimal
 from datetime import datetime, date, timedelta, timezone
@@ -7,6 +9,42 @@ from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Int
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.notification_read_state import NotificationReadStatus, resolve_notification_read_state
+
+_UUID7_LOCK = threading.Lock()
+_UUID7_LAST_MS = 0
+_UUID7_SEQ = 0
+
+
+def monotonic_uuid7(moment: datetime | None = None) -> uuid.UUID:
+    """Genera un UUIDv7 ordenable por tiempo manteniendo unicidad y orden estricto ante empates."""
+    global _UUID7_LAST_MS, _UUID7_SEQ
+    if moment is not None:
+        normalized = ensure_utc_datetime(moment)
+        assert normalized is not None
+        ts_ms = max(0, int(normalized.timestamp() * 1000))
+    else:
+        ts_ms = max(0, int(datetime.now(timezone.utc).timestamp() * 1000))
+
+    with _UUID7_LOCK:
+        if ts_ms < _UUID7_LAST_MS:
+            ts_ms = _UUID7_LAST_MS
+        if ts_ms == _UUID7_LAST_MS:
+            _UUID7_SEQ += 1
+            if _UUID7_SEQ > 0xFFF:
+                ts_ms += 1
+                _UUID7_LAST_MS = ts_ms
+                _UUID7_SEQ = 0
+        else:
+            _UUID7_LAST_MS = ts_ms
+            _UUID7_SEQ = 0
+        seq = _UUID7_SEQ
+
+    ts_bytes = ts_ms.to_bytes(6, "big")
+    rand_bytes = bytearray(os.urandom(8))
+    rand_bytes[0] = (rand_bytes[0] & 0x3F) | 0x80
+    ver_seq = bytes([(0x70 | ((seq >> 8) & 0x0F)), seq & 0xFF])
+    return uuid.UUID(bytes=ts_bytes + ver_seq + bytes(rand_bytes))
 
 CONFIRMATION_WINDOW_HOURS = 48
 CONFIRMATION_WINDOW = timedelta(hours=CONFIRMATION_WINDOW_HOURS)
@@ -600,6 +638,41 @@ class TradeCertificateDecision(Base):
     observaciones: Mapped[str | None] = mapped_column(Text)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class ServiceReview(Base):
+    """EP-08 (HU-44, HU-45, HU-46): Evaluaciones bidireccionales y reputación con doble ciego."""
+
+    __tablename__ = "resenas_servicio"
+    __table_args__ = (
+        CheckConstraint("tipo_solicitud IN ('DIRECTA', 'ABIERTA')", name="ck_resena_tipo_solicitud"),
+        CheckConstraint("rol_evaluador IN ('CLIENTE', 'TECNICO')", name="ck_resena_rol_evaluador"),
+        CheckConstraint("puntuacion >= 1 AND puntuacion <= 5", name="ck_resena_puntuacion"),
+        CheckConstraint("estado_publicacion IN ('PENDIENTE', 'PUBLICADA')", name="ck_resena_estado_publicacion"),
+        CheckConstraint("length(trim(solicitud_id)) > 0", name="ck_resena_solicitud_id"),
+        CheckConstraint("length(trim(comentario)) > 0", name="ck_resena_comentario"),
+        UniqueConstraint("tipo_solicitud", "solicitud_id", "rol_evaluador", name="uq_resena_por_solicitud_y_rol"),
+        Index("ix_resenas_evaluado_publicacion", "evaluado_id", "estado_publicacion"),
+        Index("ix_resenas_solicitud", "tipo_solicitud", "solicitud_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tipo_solicitud: Mapped[str] = mapped_column(String(20), nullable=False)
+    solicitud_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluador_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    evaluado_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    rol_evaluador: Mapped[str] = mapped_column(String(20), nullable=False)  # 'CLIENTE' o 'TECNICO'
+    puntuacion: Mapped[int] = mapped_column(Integer, nullable=False)
+    comentario: Mapped[str] = mapped_column(Text, nullable=False)
+    aspectos_destacados: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    estado_publicacion: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    fecha_completado_servicio: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    publicada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    evaluador = relationship("User", foreign_keys=[evaluador_id])
+    evaluado = relationship("User", foreign_keys=[evaluado_id])
+
+
 class IncidentTicketRecord(Base):
     __tablename__ = "tickets_incidencias"
     __table_args__ = (
@@ -1098,3 +1171,158 @@ class FinancialLedgerEntry(Base):
     referencia_pasarela = Column(String(220), nullable=True)
     detalle = Column(JSON, nullable=False, default=dict)
     creado_en = Column(DateTime(timezone=True), nullable=False)
+
+
+class NotificationEvent(Base):
+    """HU-47 ST-02: cola outbox persistente de eventos de notificación con soporte de reintentos idempotentes."""
+
+    __tablename__ = "eventos_notificacion"
+    __table_args__ = (
+        UniqueConstraint("clave_evento", name="uq_eventos_notificacion_clave_evento"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE', 'PROCESADO', 'FALLIDO')",
+            name="ck_evento_notificacion_estado",
+        ),
+        CheckConstraint("intentos >= 0", name="ck_evento_notificacion_intentos"),
+        CheckConstraint(
+            "length(trim(clave_evento)) > 0 AND length(trim(tipo_evento)) > 0",
+            name="ck_evento_notificacion_claves",
+        ),
+        Index("ix_eventos_notificacion_estado_creado", "estado", "creado_en"),
+        Index("ix_eventos_notificacion_tipo", "tipo_evento"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=monotonic_uuid7)
+    clave_evento: Mapped[str] = mapped_column(String(180), nullable=False)
+    tipo_evento: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_seguro: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    estado: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="PENDIENTE", server_default="PENDIENTE"
+    )
+    intentos: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    ultimo_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+    procesado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class UserNotification(Base):
+    """HU-47 ST-01 / ST-03 / ST-05: bandeja persistente por destinatario con idempotencia estricta y enlaces internos."""
+
+    __tablename__ = "notificaciones_bandeja"
+    __table_args__ = (
+        UniqueConstraint(
+            "destinatario_id",
+            "clave_idempotencia",
+            name="uq_notificacion_destinatario_idempotencia",
+        ),
+        UniqueConstraint(
+            "evento_id",
+            "destinatario_id",
+            name="uq_notificacion_evento_destinatario",
+        ),
+        CheckConstraint(
+            "length(trim(titulo)) > 0 AND length(trim(resumen)) > 0 AND length(trim(enlace_ruta)) > 0",
+            name="ck_notificacion_campos_no_vacios",
+        ),
+        CheckConstraint("enlace_ruta LIKE '/%'", name="ck_notificacion_enlace_interno"),
+        CheckConstraint(
+            "estado_lectura IN ('PENDIENTE', 'LEIDA')",
+            name="ck_notificacion_estado_lectura",
+        ),
+        CheckConstraint(
+            "((estado_lectura = 'PENDIENTE' AND leida = false AND leida_en IS NULL) "
+            "OR (estado_lectura = 'LEIDA' AND leida = true AND leida_en IS NOT NULL))",
+            name="ck_notificacion_lectura_coherente",
+        ),
+        Index("ix_notificaciones_destinatario_creada", "destinatario_id", "creada_en", "id"),
+        Index("ix_notificaciones_destinatario_leida", "destinatario_id", "leida", "creada_en"),
+        Index(
+            "ix_notificaciones_destinatario_estado_creada",
+            "destinatario_id",
+            "estado_lectura",
+            "creada_en",
+            "id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=monotonic_uuid7)
+    evento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eventos_notificacion.id"), nullable=False)
+    destinatario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    clave_idempotencia: Mapped[str] = mapped_column(String(200), nullable=False)
+    tipo_evento: Mapped[str] = mapped_column(String(64), nullable=False)
+    titulo: Mapped[str] = mapped_column(String(160), nullable=False)
+    resumen: Mapped[str] = mapped_column(Text, nullable=False)
+    enlace_ruta: Mapped[str] = mapped_column(String(240), nullable=False)
+    recurso_tipo: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recurso_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadatos_seguros: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    estado_lectura: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=NotificationReadStatus.PENDIENTE.value,
+        server_default="PENDIENTE",
+    )
+    leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    leida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+    evento = relationship("NotificationEvent", foreign_keys=[evento_id])
+    destinatario = relationship("User", foreign_keys=[destinatario_id])
+
+    def marcar_como_leida(self, moment: datetime | None = None) -> bool:
+        """Transiciona de PENDIENTE a LEIDA de forma idempotente preservando leida_en original."""
+        state = resolve_notification_read_state(
+            estado_lectura=self.estado_lectura,
+            leida=bool(self.leida),
+            leida_en=self.leida_en,
+        )
+        result = state.mark_as_read(moment)
+        self.estado_lectura = result.estado_lectura.value
+        self.leida = result.leida
+        self.leida_en = result.leida_en
+        return result.changed
+
+class RecidivismAlertEvent(Base):
+    """HU-36 ST-06 (CA-10): evento persistente e idempotente de tercera falta no justificada para HU-52."""
+    __tablename__ = "eventos_reincidencia_faltas"
+    __table_args__ = (
+        UniqueConstraint("clave_idempotencia", name="uq_reincidencia_clave_idempotencia"),
+        CheckConstraint("umbral_faltas >= 1", name="ck_reincidencia_umbral_positivo"),
+        CheckConstraint("total_faltas_computadas >= 0", name="ck_reincidencia_total_no_negativo"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE_DECISION_HU52', 'EVALUADO_HU52', 'INVALIDADO_POR_JUSTIFICACION')",
+            name="ck_reincidencia_estado",
+        ),
+        Index("ix_reincidencia_usuario_estado", "usuario_uid", "estado"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    clave_idempotencia = Column(String(160), nullable=False)
+    usuario_uid = Column(String(128), nullable=False)
+    rol_infractor = Column(String(20), nullable=True)
+    umbral_faltas = Column(Integer, nullable=False, default=3, server_default="3")
+    total_faltas_computadas = Column(Integer, nullable=False)
+    faltas_ids = Column(JSON, nullable=False, default=list)
+    cancelacion_disparadora_id = Column(Integer, ForeignKey("cancelaciones_solicitud.id"), nullable=True)
+    solicitud_disparadora_id = Column(String(36), nullable=True)
+    estado = Column(
+        String(32),
+        nullable=False,
+        default="PENDIENTE_DECISION_HU52",
+        server_default="PENDIENTE_DECISION_HU52",
+    )
+    requiere_decision_hu52 = Column(Boolean, nullable=False, default=True, server_default="true")
+    suspension_automatica_aplicada = Column(Boolean, nullable=False, default=False, server_default="false")
+    generado_en = Column(DateTime(timezone=True), nullable=False)
+    actualizado_en = Column(DateTime(timezone=True), nullable=False)

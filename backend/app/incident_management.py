@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.database import get_db
 from app.models import DirectRequest, IncidentTicketRecord,User
+from app.notifications_events import notify_incident_opened, notify_incident_resolved
 from app.security import get_current_user
 import json 
 from pathlib import Path
@@ -284,6 +285,15 @@ def create_incident_ticket(
         "reportante_uid": user.firebase_uid,
     }
     _save_tracking(record, reception)
+    notify_incident_opened(
+        db,
+        solicitud_id=solicitud_id,
+        modalidad=modalidad,
+        ticket_id=ticket_id,
+        counterpart_uid=contraparte_id,
+        counterpart_role="TECNICO" if es_cliente else "CLIENTE",
+        now=eval_now,
+    )
     db.commit()
 
     _INCIDENT_TICKETS[ticket_id] = ticket_data
@@ -813,6 +823,19 @@ def resolve_incident_ticket(
             other["resolucion_final"] = resolucion_data
             other["bloquea_cierre_automatico"] = False
             other["bloquea_liberacion_fondos"] = False
+    is_client_reporter = ticket.get("rol_reportante") == "CLIENTE"
+    cliente_uid = ticket.get("reportante_uid") if is_client_reporter else ticket.get("contraparte_uid")
+    tecnico_uid = ticket.get("contraparte_uid") if is_client_reporter else ticket.get("reportante_uid")
+    notify_incident_resolved(
+        db,
+        solicitud_id=str(solicitud_id),
+        modalidad=ticket.get("modalidad", "DIRECTA"),
+        cliente_uid=cliente_uid,
+        tecnico_uid=tecnico_uid,
+        decision=payload.decision.value,
+        resolution_key=ticket_id,
+        now=eval_now,
+    )
     _persist_ticket_to_db(db, ticket)
     for sid in _TICKETS_BY_SERVICE.get(solicitud_id, []):
         if sid != ticket_id and sid in _INCIDENT_TICKETS:

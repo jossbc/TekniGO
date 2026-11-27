@@ -342,3 +342,114 @@ test('HU-34 ST-05: validates controlled clock 48h window status and role/adjustm
   // Formato explícito en America/Tegucigalpa
   assert.ok(formatTegucigalpaDateTime(expUtc).includes('(America/Tegucigalpa)'))
 })
+
+test('EP-08 technician review button renders active, disabled sent, and hidden closed states across reloads', async () => {
+  harness = { index: 0, state: [], effects: [] }
+  const user = { getIdToken: async () => 'token-123' }
+  const originalFetch = globalThis.fetch
+  const cleanups = []
+
+  const completedRequests = [
+    {
+      id: 'tech-rev-open',
+      cliente_nombre: 'Ana Cliente',
+      servicio_nombre: 'Fontanería',
+      fecha_hora: '2026-11-12T15:00:00Z',
+      descripcion: 'Reparación',
+      estado: 'COMPLETADA',
+      total_estimado: 450,
+      mi_resena_enviada: false,
+      evaluacion_cerrada: false,
+    },
+    {
+      id: 'tech-rev-sent',
+      cliente_nombre: 'Luis Cliente',
+      servicio_nombre: 'Electricidad',
+      fecha_hora: '2026-11-12T16:00:00Z',
+      descripcion: 'Instalación',
+      estado: 'COMPLETADA',
+      total_estimado: 600,
+      mi_resena_enviada: true,
+      evaluacion_cerrada: false,
+    },
+    {
+      id: 'tech-rev-closed',
+      cliente_nombre: 'Sofia Cliente',
+      servicio_nombre: 'Pintura',
+      fecha_hora: '2026-11-12T17:00:00Z',
+      descripcion: 'Retoque',
+      estado: 'COMPLETADA',
+      total_estimado: 750,
+      mi_resena_enviada: true,
+      evaluacion_cerrada: true,
+    },
+  ]
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/technicians/me/direct-requests') && (options.method || 'GET') === 'GET') {
+      return new Response(JSON.stringify(completedRequests), { status: 200 })
+    }
+    return new Response(JSON.stringify({ detail: 'Unexpected call' }), { status: 500 })
+  }
+
+  const render = () => {
+    harness.index = 0
+    const tree = module.exports.TechnicianRequestsManager({ user })
+    for (const effect of harness.effects.splice(0)) {
+      const cleanup = effect()
+      if (cleanup) cleanups.push(cleanup)
+    }
+    return nodes(tree)
+  }
+
+  try {
+    render()
+    await flush()
+    const loadedNodes = render()
+
+    const rateButtons = loadedNodes.filter(n => n.type !== 'div' && textOf(n) === 'Calificar cliente')
+    const sentButtons = loadedNodes.filter(n => n.type !== 'div' && textOf(n) === 'Evaluación enviada')
+
+    assert.equal(rateButtons.length, 1)
+    assert.equal(typeof rateButtons[0].props.onClick, 'function')
+    assert.equal(sentButtons.length, 1)
+    assert.equal(sentButtons[0].props.disabled, true)
+    assert.equal(sentButtons[0].props.onClick, undefined)
+
+    // Simular clic en Calificar cliente y respuesta inmediata con publicada=false -> botón gris disabled
+    rateButtons[0].props.onClick()
+    const withModalPending = render()
+    const modalPending = withModalPending.find(n => typeof n.props?.onSuccess === 'function' && n.props?.rolEvaluador === 'TECNICO')
+    assert.ok(modalPending)
+    modalPending.props.onSuccess({
+      resena: {},
+      estado_publicacion: 'PENDIENTE',
+      publicada_inmediata: false,
+      publicada: false,
+      mensaje: 'Enviada en doble ciego',
+    })
+    await flush()
+    const afterPending = render()
+    assert.equal(afterPending.filter(n => n.type !== 'div' && textOf(n) === 'Calificar cliente').length, 0)
+    const sentAfterPending = afterPending.filter(n => n.type !== 'div' && textOf(n) === 'Evaluación enviada')
+    assert.equal(sentAfterPending.length, 2)
+    assert.equal(sentAfterPending[0].props.disabled, true)
+    assert.equal(sentAfterPending[0].props.onClick, undefined)
+
+    // Simular respuesta con publicada=true -> botón oculto de inmediato
+    modalPending.props.onSuccess({
+      resena: {},
+      estado_publicacion: 'PUBLICADA',
+      publicada_inmediata: true,
+      publicada: true,
+      mensaje: 'Publicada al completarse la evaluación mutua.',
+    })
+    await flush()
+    const afterPublished = render()
+    assert.equal(afterPublished.filter(n => n.type !== 'div' && textOf(n) === 'Calificar cliente').length, 0)
+    assert.equal(afterPublished.filter(n => n.type !== 'div' && textOf(n) === 'Evaluación enviada').length, 1)
+  } finally {
+    cleanups.forEach(cleanup => cleanup())
+    globalThis.fetch = originalFetch
+  }
+})

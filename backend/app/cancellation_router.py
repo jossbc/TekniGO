@@ -13,6 +13,7 @@ from app.cancellation_repository import CancellationRepository, SqlAlchemyCancel
 from app.cancellation_service import CancellationObserver, cancel_request, RejectedAdjustmentLookup, _resolve_actor_role
 from app.client_requests import _find_request_by_id
 from app.database import get_db
+from app.fault_recidivism import RecidivismOnCancellationObserver
 from app.financial_settlement import (
     RefundOnCancellationObserver,
     confirm_gateway_refund,
@@ -44,7 +45,7 @@ def get_cancellation_repository() -> CancellationRepository:
 
 
 def get_cancellation_observers() -> list[CancellationObserver]:
-    return [RefundOnCancellationObserver()] #ST-05 OBSERVADOR DE REEMBOLSO
+    return [RefundOnCancellationObserver(), RecidivismOnCancellationObserver()] #ST-05 OBSERVADOR DE REEMBOLSO
 
 def get_rejected_adjustment_lookup() -> RejectedAdjustmentLookup:
     return SqlAlchemyAdjustmentRepository()

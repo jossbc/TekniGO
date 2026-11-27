@@ -10,6 +10,7 @@ export type CatalogTechnician = {
   tecnico_verificado: boolean;
   estado_certificacion: string;
   calificacion_promedio: number | null;
+  total_resenas?: number;
 };
 
 export function TechnicianCard({ technician }: { technician: CatalogTechnician }) {
@@ -28,7 +29,11 @@ export function TechnicianCard({ technician }: { technician: CatalogTechnician }
             <span className="status-pill"><Award size={15} aria-hidden="true" /> Técnico Certificado</span>}
           <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: "#eab308", fontWeight: 600 }}>
             <Star size={16} fill="currentColor" />
-            <span>{technician.calificacion_promedio == null ? "Sin calificaciones" : technician.calificacion_promedio.toFixed(1)}</span>
+            <span>
+              {technician.calificacion_promedio != null
+                ? `${technician.calificacion_promedio.toFixed(1)}${technician.total_resenas ? ` (${technician.total_resenas})` : ""}`
+                : "Sin calificaciones · Nuevo"}
+            </span>
           </div>
         </div>
       </div>

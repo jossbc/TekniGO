@@ -16,6 +16,7 @@ from app import settlements as settlement_rules
 from app.database import get_db
 from app.identity_documents import _get_user, _require_admin
 from app.models import PayoutLedgerEntry, PayoutOrder, PayoutOrderAudit, TechnicianBankAccount, User
+from app.notifications_events import notify_payout_decision, notify_payout_requested
 from app.security import get_current_user
 
 router = APIRouter()
@@ -253,6 +254,7 @@ def request_payout(
         saldo_libre=new_available,
         responsable_id=user.id,
     )
+    notify_payout_requested(db, order)
     db.commit()
     db.refresh(order)
     db.refresh(ledger_entry)
@@ -513,6 +515,7 @@ def decide_payout(
     )
     try:
         db.add(audit)
+        notify_payout_decision(db, order, now=eval_now)
         db.commit()
     except IntegrityError:
         db.rollback()

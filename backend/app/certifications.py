@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from app.database import get_db
 from app.identity_documents import UploadedPart, _get_user, _parse_multipart_parts, _require_admin
 from app.models import TechnicianProfile, TradeCertificate, TradeCertificateDecision, User
+from app.notifications_events import notify_certificate_decision
 from app.security import get_current_user
 from app.storage import ALLOWED_CONTENT_TYPES, MAX_DOCUMENT_BYTES, PrivateDocumentStorage
 
@@ -125,6 +126,7 @@ def review_certificate(certificate_id: uuid.UUID, payload: CertificateDecision, 
     doc.observaciones = observations or None
     db.add(TradeCertificateDecision(certificacion_id=doc.id, administrador_id=admin.id,
                                     estado=doc.estado, observaciones=doc.observaciones))
+    notify_certificate_decision(db, doc)
     db.commit()
     return _metadata(doc)
 

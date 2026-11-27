@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import DirectRequest, Service
+from app.notifications_events import notify_direct_request_created
 from app.request_states import record_creation
 
 
@@ -23,6 +24,9 @@ class DirectRequestRepository:
         db.add(db_request)
         try:
             record_creation(db, db_request)
+            if getattr(db_request, "id", None) is None:
+                db.flush()
+            notify_direct_request_created(db, db_request)
             db.commit()
         except IntegrityError:
             db.rollback()

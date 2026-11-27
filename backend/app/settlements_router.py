@@ -25,6 +25,7 @@ from app.models import (
     TechnicianProfile,
     User,
 )
+from app.notifications_events import notify_settlement_decision, notify_settlement_submitted
 from app.security import get_current_user
 from app.storage import MAX_DOCUMENT_BYTES, PrivateDocumentStorage, validate_document_bytes
 from app.technician_activation import is_operationally_enabled
@@ -183,6 +184,8 @@ def submit_settlement(
     )
     try:
         db.add(row)
+        db.flush()
+        notify_settlement_submitted(db, row)
         db.commit()  # carrera: los índices únicos parciales son la última defensa
     except BaseException as exc:
         db.rollback()
@@ -435,6 +438,13 @@ def decide_settlement(
         creado_en=eval_now,
     )
     db.add(audit)
+    notify_settlement_decision(
+        db,
+        row,
+        unblocked=bool(restriccion_anterior and not restriccion_posterior),
+        still_restricted=bool(restriccion_posterior),
+        now=eval_now,
+    )
     db.commit()
     db.refresh(row)
     db.refresh(audit)

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight, CircleHelp } from "lucide-react";
 import { Brand } from "./ui";
 import AccountMenu from "./AccountMenu";
+import NotificationTray from "./NotificationTray";
 
 type Mode = "login" | "register";
 
@@ -21,6 +22,7 @@ export default function Header({ mode, authenticated, name, email, showBrand = t
             <ArrowUpRight size={17} />
           </Link>
         )}
+        {authenticated && <NotificationTray />}
         {authenticated && <AccountMenu name={name} email={email} accountHref={accountHref} accountLabel={accountLabel} />}
 
       </nav>
