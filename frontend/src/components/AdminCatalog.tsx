@@ -11,6 +11,7 @@ const fields = [
 ] as const
 
 type Category = { id: string; nombre: string; activa: boolean }
+type PendingSuggestion = { id: string; nombre: string }
 type Settings = Record<typeof fields[number]['key'], string | null> & {
   limite_sin_liquidar: number
   valores_demo: boolean
@@ -21,6 +22,7 @@ type Catalog = {
   tarifas: { especialidad_id: string; unidad: string; promedio: string }[]
   configuracion: Settings
   demo_habilitada: boolean
+  sugerencias: PendingSuggestion[]
 }
 type Change = {
   id: number
@@ -32,7 +34,7 @@ type Change = {
 }
 
 const auditLabels: Record<string, string> = {
-  nombre: 'Nombre', activa: 'Disponible', promedio: 'Promedio sugerido (L)',
+  nombre: 'Nombre', activa: 'Disponible', estado: 'Estado', promedio: 'Promedio sugerido (L)',
   limite_sin_liquidar: 'Límite sin liquidar', valores_demo: 'Valores de prueba',
   ...Object.fromEntries(fields.map(({ key, label }) => [key, label])),
 }
@@ -47,6 +49,7 @@ function AuditValues({ values }: { values: Record<string, unknown> | null }) {
 function changeLabel(change: Change, categories: Category[]) {
   const [kind, id, unit] = change.recurso.split(':')
   if (kind === 'categoria') return `Categoría · ${change.nuevo.nombre}`
+  if (kind === 'sugerencia') return `Sugerencia · ${change.nuevo.nombre}`
   if (kind === 'tarifa') return `Tarifa · ${categories.find(item => item.id === id)?.nombre ?? id} · ${unit.toLowerCase().replaceAll('_', ' ')}`
   return 'Configuración operativa'
 }
@@ -120,6 +123,26 @@ export default function AdminCatalog({ user }: { user: User }) {
             <label><input type="checkbox" name="activa" defaultChecked={category?.activa ?? true} /> Disponible para nuevas contrataciones</label>
             <Button type="submit" disabled={busy}>{category ? 'Guardar categoría' : 'Crear categoría'}</Button>
           </form>
+        </section>
+        <section className="client-request-box">
+          <h2>Sugerencias de oficios</h2>
+          {catalog.sugerencias.length === 0 ? <p>Sin sugerencias pendientes de revisión.</p> : (
+            <ul className="catalog-suggestions">
+              {catalog.sugerencias.map(suggestion => <li key={suggestion.id}>
+                <strong>{suggestion.nombre}</strong>
+                <div className="responsive-actions">
+                  <Button type="button" disabled={busy} aria-label={`Aprobar ${suggestion.nombre}`}
+                    onClick={() => void save(`/suggestions/${suggestion.id}`, 'PUT', { estado: 'APROBADA' })}>
+                    Aprobar
+                  </Button>
+                  <Button type="button" className="button-outline" disabled={busy} aria-label={`Rechazar ${suggestion.nombre}`}
+                    onClick={() => void save(`/suggestions/${suggestion.id}`, 'PUT', { estado: 'RECHAZADA' })}>
+                    Rechazar
+                  </Button>
+                </div>
+              </li>)}
+            </ul>
+          )}
         </section>
         <section className="client-request-box">
           <h2>Tarifas promedio sugeridas</h2>

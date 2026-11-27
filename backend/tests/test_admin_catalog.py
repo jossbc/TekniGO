@@ -6,17 +6,17 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.admin_catalog import (
-    CategoryInput, SettingsInput, TariffInput, create_category, get_catalog, get_history,
-    save_settings, save_tariff, seed_demo_settings, update_category,
+    CategoryInput, SettingsInput, SuggestionDecision, TariffInput, create_category, get_catalog, get_history,
+    review_suggestion, save_settings, save_tariff, seed_demo_settings, update_category,
 )
 from app.database import Base
-from app.models import OperationalSettings, User, UserRole
+from app.models import OperationalSettings, TechnicianProfile, User, UserRole
 from app.open_requests import calculate_suggested_range
-from app.specialties import list_specialties, require_active_specialty
+from app.specialties import SuggestionIn, list_specialties, my_suggestions, require_active_specialty, suggest_specialty
 
 
 class AdminCatalogTests(unittest.TestCase):
@@ -35,6 +35,32 @@ class AdminCatalogTests(unittest.TestCase):
         self.db.add(OperationalSettings(id=1))
         self.db.commit()
         self.admin = {"uid": "ADMIN"}
+
+    def test_technician_suggestions_reach_the_admin_and_return_the_decision(self):
+        technician = self.db.scalar(select(User).where(User.firebase_uid == "CLIENTE"))
+        self.db.add(TechnicianProfile(usuario_id=technician.id))
+        self.db.add(UserRole(usuario_id=technician.id, rol="TECNICO"))
+        self.db.commit()
+        claims = {"uid": "CLIENTE"}
+        for name in ("Instalación solar", "Oficio de prueba"):
+            suggest_specialty(SuggestionIn(nombre=name), claims, self.db)
+        pending = {row["nombre"]: UUID(row["id"]) for row in get_catalog(self.admin, self.db)["sugerencias"]}
+        approval = SuggestionDecision(estado="APROBADA")
+        rejection = SuggestionDecision(estado="RECHAZADA")
+        with self.assertRaises(HTTPException) as denied:
+            review_suggestion(pending["Instalación solar"], approval, claims, self.db)
+        self.assertEqual(denied.exception.status_code, 403)
+
+        approve_id = pending["Instalación solar"]
+        review_suggestion(approve_id, approval, self.admin, self.db)
+        review_suggestion(approve_id, approval, self.admin, self.db)
+        review_suggestion(pending["Oficio de prueba"], rejection, self.admin, self.db)
+        self.assertEqual(get_catalog(self.admin, self.db)["sugerencias"], [])
+        self.assertEqual([row["nombre"] for row in list_specialties(claims, self.db)], ["Instalación solar"])
+        self.assertEqual({row["nombre"]: row["estado"] for row in my_suggestions(claims, self.db)}, {
+            "Instalación solar": "APROBADA", "Oficio de prueba": "RECHAZADA",
+        })
+        self.assertEqual(sum(change["recurso"].startswith("sugerencia:") for change in get_history(self.admin, self.db)), 2)
 
     def test_category_permissions_normalized_duplicates_and_deactivation(self):
         with self.assertRaises(HTTPException) as denied:

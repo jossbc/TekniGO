@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import type { User } from 'firebase/auth'
-import { FolderOpen, Landmark, ShieldAlert, Wallet } from 'lucide-react'
+import { FolderOpen, Landmark, Settings, ShieldAlert, Wallet } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
 import { useAccount } from '../lib/useAccount'
 import { api, errorMessage } from '../lib/api'
+import AdminCatalog from '../components/AdminCatalog'
 import AdminCertificates from '../components/AdminCertificates'
 import AdminIncidentsManager from '../lib/AdminIncidentsManager'
 import AdminSettlementsManager from '../components/AdminSettlementsManager'
@@ -24,11 +25,11 @@ const labels: Record<string, string> = {
 export default function AdminPage({ user }: { user: User }) {
   const { search } = useLocation()
   const { state, retry } = useAccount(user)
-  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts'>('dossiers')
+  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts' | 'catalog'>('dossiers')
 
   useEffect(() => {
     const requested = new URLSearchParams(search).get('tab')
-    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts') {
+    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts' || requested === 'catalog') {
       setTab(requested)
     }
   }, [search])
@@ -85,6 +86,15 @@ export default function AdminPage({ user }: { user: User }) {
                 >
                   <Wallet size={16} /> Desembolsos
                 </Button>
+                <Button
+                  role="tab"
+                  type="button"
+                  className={tab === 'catalog' ? '' : 'button-outline'}
+                  aria-selected={tab === 'catalog'}
+                  onClick={() => setTab('catalog')}
+                >
+                  <Settings size={16} /> Categorías y parámetros
+                </Button>
               </div>
             </div>
 
@@ -99,7 +109,9 @@ export default function AdminPage({ user }: { user: User }) {
                 )
                 : tab === 'settlements'
                   ? <AdminSettlementsManager user={user} />
-                  : <AdminPayoutsManager user={user} />}
+                  : tab === 'payouts'
+                    ? <AdminPayoutsManager user={user} />
+                    : <AdminCatalog user={user} />}
           </>
         )}
       </main>
