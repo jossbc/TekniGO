@@ -88,18 +88,18 @@ export default function AdminPage({ user }: { user: User }) {
               </div>
             </div>
 
-          {tab === 'dossiers'
-            ? <DossierManager user={user} />
-            : tab === 'incidents'
-              ? (
-                <>
-                  <AdminIncidentsManager user={user} />
-                  <AdminCancellationJustifications user={user} />
-                </>
-              )
-              : tab === 'settlements'
-                ? <AdminSettlementsManager user={user} />
-                : <AdminPayoutsManager user={user} />}
+            {tab === 'dossiers'
+              ? <DossierManager user={user} />
+              : tab === 'incidents'
+                ? (
+                  <>
+                    <AdminIncidentsManager user={user} />
+                    <AdminCancellationJustifications user={user} />
+                  </>
+                )
+                : tab === 'settlements'
+                  ? <AdminSettlementsManager user={user} />
+                  : <AdminPayoutsManager user={user} />}
           </>
         )}
       </main>
