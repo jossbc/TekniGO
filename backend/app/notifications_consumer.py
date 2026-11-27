@@ -6,7 +6,7 @@ import logging
 from typing import Any, Callable
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from app.models import (
     format_tegucigalpa_iso,
     monotonic_uuid7,
 )
+from app.notification_read_state import NotificationReadStatus
 from app.notifications_realtime import NotificationBroadcaster, notification_manager
 from app.notifications_templates import (
     NotificationPrivacySanitizer,
@@ -44,6 +45,8 @@ def serialize_notification(row: UserNotification) -> dict[str, Any]:
         "recurso_tipo": row.recurso_tipo,
         "recurso_id": row.recurso_id,
         "metadatos_seguros": NotificationPrivacySanitizer.sanitize_metadata(row.metadatos_seguros),
+        "estado_lectura": row.estado_lectura
+        or (NotificationReadStatus.LEIDA.value if row.leida else NotificationReadStatus.PENDIENTE.value),
         "leida": bool(row.leida),
         "leida_en": read_utc.isoformat() if read_utc is not None else None,
         "leida_en_local": format_tegucigalpa_iso(read_utc),
@@ -106,6 +109,7 @@ def _create_user_notification_once(
         recurso_tipo=draft.recurso_tipo,
         recurso_id=draft.recurso_id,
         metadatos_seguros=draft.metadatos_seguros,
+        estado_lectura=NotificationReadStatus.PENDIENTE.value,
         leida=False,
         leida_en=None,
         creada_en=moment,
@@ -118,6 +122,26 @@ def _create_user_notification_once(
     except IntegrityError:
         return None
 
+def _count_pending_by_recipients(
+    db: Session,
+    recipient_ids: set[uuid.UUID],
+) -> dict[str, int]:
+    """Calcula en una sola consulta el contador real de pendientes por destinatario."""
+    if not recipient_ids:
+        return {}
+    counts: dict[str, int] = {str(uid): 0 for uid in recipient_ids}
+    rows = db.execute(
+        select(UserNotification.destinatario_id, func.count())
+        .where(
+            UserNotification.destinatario_id.in_(recipient_ids),
+            UserNotification.estado_lectura == NotificationReadStatus.PENDIENTE.value,
+            UserNotification.leida.is_(False),
+        )
+        .group_by(UserNotification.destinatario_id)
+    ).all()
+    for destinatario_id, total in rows:
+        counts[str(destinatario_id)] = max(0, int(total or 0))
+    return counts
 
 def process_notification_event(
     db: Session,
@@ -186,7 +210,9 @@ def process_notification_event(
 
         if broadcaster is not None and serialized_list:
             try:
-                broadcaster.publish_notifications_sync(serialized_list)
+                recipient_uuids = {row.destinatario_id for row in created_rows}
+                unread_counts = _count_pending_by_recipients(db, recipient_uuids)
+                broadcaster.publish_notifications_sync(serialized_list, unread_counts=unread_counts)
             except Exception as exc:
                 logger.warning("No se pudo difundir notificación en vivo: %s", type(exc).__name__)
 

@@ -29,11 +29,72 @@ class NotificationForbiddenError(NotificationRealtimeError):
     """Cuenta sin registro completo en TekniGO."""
 
 
+def _clamp_unread_count(count: int | None) -> int:
+    if count is None:
+        return 0
+    return max(0, int(count))
+
+
+def build_notification_event_frame(
+    item: dict[str, Any],
+    unread_count: int | None = None,
+) -> dict[str, Any]:
+    """Construye la trama WS de nuevo aviso incluyendo contador autoritativo si está disponible."""
+    frame: dict[str, Any] = {
+        "type": "notification",
+        "notificacion": item,
+    }
+    if unread_count is not None:
+        safe_count = _clamp_unread_count(unread_count)
+        frame["no_leidas"] = safe_count
+        frame["pendientes"] = safe_count
+    return frame
+
+
+def build_read_sync_event_frame(
+    notification: dict[str, Any],
+    unread_count: int,
+) -> dict[str, Any]:
+    """Construye la trama WS de sincronización individual de lectura entre sesiones."""
+    safe_count = _clamp_unread_count(unread_count)
+    return {
+        "type": "read_sync",
+        "notification_id": str(notification["id"]),
+        "estado_lectura": notification.get("estado_lectura") or "LEIDA",
+        "leida": True,
+        "leida_en": notification.get("leida_en"),
+        "leida_en_local": notification.get("leida_en_local"),
+        "no_leidas": safe_count,
+        "pendientes": safe_count,
+    }
+
+
+def build_read_all_sync_event_frame(
+    unread_count: int,
+    *,
+    read_at: str | None = None,
+    read_at_local: str | None = None,
+) -> dict[str, Any]:
+    """Construye la trama WS de sincronización masiva de lectura entre sesiones."""
+    safe_count = _clamp_unread_count(unread_count)
+    return {
+        "type": "read_all_sync",
+        "estado_lectura": "LEIDA",
+        "leida_en": read_at,
+        "leida_en_local": read_at_local,
+        "no_leidas": safe_count,
+        "pendientes": safe_count,
+    }
+
+
 class NotificationBroadcaster(Protocol):
     """Puerto DIP para emitir avisos en tiempo real a destinatarios conectados."""
 
-    def publish_notifications_sync(self, notifications: list[dict[str, Any]]) -> None: ...
-
+    def publish_notifications_sync(
+        self,
+        notifications: list[dict[str, Any]],
+        unread_counts: dict[str, int] | None = None,
+    ) -> None: ...
 
 class NotificationConnectionManager:
     """Administra conexiones WebSocket por destinatario (`usuario_id` UUID)."""
@@ -82,18 +143,22 @@ class NotificationConnectionManager:
             self.disconnect(user_key, ws)
         return delivered
 
-    async def broadcast_notifications(self, notifications: list[dict[str, Any]]) -> int:
+    async def broadcast_notifications(
+        self,
+        notifications: list[dict[str, Any]],
+        unread_counts: dict[str, int] | None = None,
+    ) -> int:
         delivered = 0
+        counts_map = unread_counts or {}
         for item in notifications:
             recipient_id = item.get("destinatario_id")
             if not recipient_id:
                 continue
+            recipient_key = str(recipient_id)
+            unread = counts_map.get(recipient_key)
             delivered += await self.send_event(
-                str(recipient_id),
-                {
-                    "type": "notification",
-                    "notificacion": item,
-                },
+                recipient_key,
+                build_notification_event_frame(item, unread_count=unread),
             )
         return delivered
 
@@ -113,7 +178,11 @@ class NotificationConnectionManager:
 
         coro.close()
 
-    def publish_notifications_sync(self, notifications: list[dict[str, Any]]) -> None:
+    def publish_notifications_sync(
+        self,
+        notifications: list[dict[str, Any]],
+        unread_counts: dict[str, int] | None = None,
+    ) -> None:
         if not notifications:
             return
         targets = [
@@ -123,7 +192,7 @@ class NotificationConnectionManager:
         ]
         if not targets:
             return
-        self._schedule_coro(self.broadcast_notifications(targets))
+        self._schedule_coro(self.broadcast_notifications(targets, unread_counts=unread_counts))
 
     def publish_read_sync(self, usuario_id: str, event: dict[str, Any]) -> None:
         if self.active_count(usuario_id) == 0:

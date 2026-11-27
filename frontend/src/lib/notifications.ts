@@ -4,6 +4,7 @@ import { api, resolveApiUrl } from "./api";
 export const TEGUCIGALPA_TIME_ZONE = "America/Tegucigalpa";
 export const PROPOSAL_LIVE_EVENT_NAME = "teknigo:proposals-live-update";
 export const NOTIFICATIONS_LIVE_EVENT_NAME = "teknigo:notifications-live-update";
+export const NOTIFICATIONS_UNREAD_COUNT_EVENT_NAME = "teknigo:notifications-unread-count";
 export const NOTIFICATION_HEARTBEAT_INTERVAL_MS = 25_000;
 export const NOTIFICATION_WS_CLOSE_UNAUTHORIZED = 4001;
 export const NOTIFICATION_WS_CLOSE_FORBIDDEN = 4003;
@@ -17,6 +18,9 @@ export type NotificationConnectionState =
 
 export type NotificationCategory = "proposal" | "service" | "verification" | "finance" | "alert";
 
+export type NotificationReadStatus = "PENDIENTE" | "LEIDA";
+export type NotificationFilter = "TODAS" | "PENDIENTE" | "LEIDA";
+
 export type UserNotification = {
   id: string;
   evento_id: string;
@@ -27,6 +31,7 @@ export type UserNotification = {
   recurso_tipo: string | null;
   recurso_id: string | null;
   metadatos_seguros: Record<string, unknown>;
+  estado_lectura?: NotificationReadStatus;
   leida: boolean;
   leida_en: string | null;
   leida_en_local: string | null;
@@ -38,20 +43,31 @@ export type UserNotification = {
 export type NotificationsListResponse = {
   total: number;
   no_leidas: number;
+  pendientes?: number;
+  filtro_estado?: NotificationFilter;
   offset: number;
   limit: number;
   zona_horaria: string;
   notificaciones: UserNotification[];
 };
 
+export type UnreadNotificationsCountResponse = {
+  no_leidas: number;
+  pendientes: number;
+};
+
 export type NotificationReadResponse = {
   notificacion: UserNotification;
   no_leidas: number;
+  pendientes?: number;
+  actualizada?: boolean;
+  ya_leida?: boolean;
 };
 
 export type NotificationReadAllResponse = {
   actualizadas: number;
   no_leidas: number;
+  pendientes?: number;
 };
 
 export type ProposalLiveUpdateDetail = {
@@ -197,6 +213,246 @@ export function getLatestNotificationCursor(items: UserNotification[]): {
   };
 }
 
+export function getNotificationReadStatus(
+  item: Pick<UserNotification, "estado_lectura" | "leida"> | null | undefined,
+): NotificationReadStatus {
+  if (!item) return "PENDIENTE";
+  if (item.estado_lectura === "LEIDA" || item.leida) return "LEIDA";
+  return "PENDIENTE";
+}
+
+export function isNotificationPending(
+  item: Pick<UserNotification, "estado_lectura" | "leida"> | null | undefined,
+): boolean {
+  return getNotificationReadStatus(item) === "PENDIENTE";
+}
+
+export function clampUnreadCount(count: number | null | undefined): number {
+  if (typeof count !== "number" || !Number.isFinite(count)) return 0;
+  return Math.max(0, Math.floor(count));
+}
+
+export type NotificationFilterStrategy = {
+  value: NotificationFilter;
+  label: string;
+  emptyMessage: string;
+  predicate: (item: UserNotification) => boolean;
+};
+
+export const NOTIFICATION_FILTER_STRATEGIES: Record<NotificationFilter, NotificationFilterStrategy> = {
+  TODAS: {
+    value: "TODAS",
+    label: "Todas",
+    emptyMessage: "No tienes notificaciones por el momento.",
+    predicate: () => true,
+  },
+  PENDIENTE: {
+    value: "PENDIENTE",
+    label: "Pendientes",
+    emptyMessage: "No tienes notificaciones pendientes por leer.",
+    predicate: (item) => isNotificationPending(item),
+  },
+  LEIDA: {
+    value: "LEIDA",
+    label: "Leídas",
+    emptyMessage: "Aún no tienes notificaciones leídas.",
+    predicate: (item) => !isNotificationPending(item),
+  },
+};
+
+export const NOTIFICATION_FILTER_ORDER: NotificationFilter[] = ["TODAS", "PENDIENTE", "LEIDA"];
+
+export function filterNotificationsByReadStatus(
+  items: UserNotification[],
+  filter: NotificationFilter,
+): UserNotification[] {
+  const strategy = NOTIFICATION_FILTER_STRATEGIES[filter] ?? NOTIFICATION_FILTER_STRATEGIES.TODAS;
+  return items.filter(strategy.predicate);
+}
+
+export function getEmptyNotificationsMessage(filter: NotificationFilter): string {
+  return (NOTIFICATION_FILTER_STRATEGIES[filter] ?? NOTIFICATION_FILTER_STRATEGIES.TODAS).emptyMessage;
+}
+
+export function applyNotificationReadLocally(
+  items: UserNotification[],
+  notificationId: string,
+  updated?: Partial<UserNotification>,
+): UserNotification[] {
+  return items.map((entry) => {
+    if (entry.id !== notificationId) return entry;
+    return {
+      ...entry,
+      ...updated,
+      estado_lectura: "LEIDA",
+      leida: true,
+      leida_en: updated?.leida_en ?? entry.leida_en,
+      leida_en_local: updated?.leida_en_local ?? entry.leida_en_local,
+    };
+  });
+}
+
+export type NotificationWsFrame = {
+  type?: string;
+  no_leidas?: number;
+  pendientes?: number;
+  notificacion?: UserNotification;
+  notificaciones?: UserNotification[];
+  notification_id?: string;
+  estado_lectura?: NotificationReadStatus;
+  leida_en?: string | null;
+  leida_en_local?: string | null;
+};
+
+export type NotificationLiveState = {
+  items: UserNotification[];
+  unreadCount: number;
+};
+
+export type NotificationLiveReducerResult = NotificationLiveState & {
+  newlyArrived: UserNotification[];
+};
+
+function resolveFrameUnreadCount(payload: NotificationWsFrame): number | null {
+  if (typeof payload.no_leidas === "number") return clampUnreadCount(payload.no_leidas);
+  if (typeof payload.pendientes === "number") return clampUnreadCount(payload.pendientes);
+  return null;
+}
+
+export function applyNotificationSocketFrame(
+  state: NotificationLiveState,
+  payload: NotificationWsFrame | null | undefined,
+): NotificationLiveReducerResult {
+  if (!payload || typeof payload !== "object") {
+    return { ...state, newlyArrived: [] };
+  }
+
+  const frameUnread = resolveFrameUnreadCount(payload);
+
+  if (
+    payload.type === "connected" ||
+    payload.type === "pong" ||
+    payload.type === "unread_count"
+  ) {
+    return {
+      items: state.items,
+      unreadCount: frameUnread !== null ? frameUnread : clampUnreadCount(state.unreadCount),
+      newlyArrived: [],
+    };
+  }
+
+  if (payload.type === "notification" && payload.notificacion) {
+    const incoming = payload.notificacion;
+    const alreadyExists = state.items.some((entry) => entry.id === incoming.id);
+    const newlyArrived = !alreadyExists && incoming.id ? [incoming] : [];
+    const merged = mergeNotifications(state.items, [incoming]);
+    const fallbackIncrement = newlyArrived.some((entry) => isNotificationPending(entry)) ? 1 : 0;
+    const nextUnread =
+      frameUnread !== null
+        ? frameUnread
+        : clampUnreadCount(
+            Math.max(
+              state.unreadCount + fallbackIncrement,
+              merged.filter((entry) => isNotificationPending(entry)).length,
+            ),
+          );
+    return {
+      items: merged,
+      unreadCount: nextUnread,
+      newlyArrived,
+    };
+  }
+
+  if (payload.type === "sync" && Array.isArray(payload.notificaciones)) {
+    const existingIds = new Set(state.items.map((entry) => entry.id));
+    const newlyArrived = payload.notificaciones.filter(
+      (entry) => Boolean(entry?.id) && !existingIds.has(entry.id),
+    );
+    const merged = mergeNotifications(state.items, payload.notificaciones);
+    const newlyArrivedUnread = newlyArrived.filter((entry) => isNotificationPending(entry)).length;
+    const nextUnread =
+      frameUnread !== null
+        ? frameUnread
+        : clampUnreadCount(
+            Math.max(
+              state.unreadCount + newlyArrivedUnread,
+              merged.filter((entry) => isNotificationPending(entry)).length,
+            ),
+          );
+    return {
+      items: merged,
+      unreadCount: nextUnread,
+      newlyArrived,
+    };
+  }
+
+  if (payload.type === "read_sync" && payload.notification_id) {
+    const updatedItems = applyNotificationReadLocally(state.items, payload.notification_id, {
+      estado_lectura: payload.estado_lectura ?? "LEIDA",
+      leida: true,
+      leida_en: payload.leida_en ?? null,
+      leida_en_local: payload.leida_en_local ?? null,
+    });
+    return {
+      items: updatedItems,
+      unreadCount: frameUnread !== null ? frameUnread : clampUnreadCount(state.unreadCount),
+      newlyArrived: [],
+    };
+  }
+
+  if (payload.type === "read_all_sync") {
+    const updatedItems = state.items.map((entry) =>
+      isNotificationPending(entry)
+        ? {
+            ...entry,
+            estado_lectura: "LEIDA" as const,
+            leida: true,
+            leida_en: payload.leida_en ?? entry.leida_en,
+            leida_en_local: payload.leida_en_local ?? entry.leida_en_local,
+          }
+        : entry,
+    );
+    return {
+      items: updatedItems,
+      unreadCount: frameUnread !== null ? frameUnread : 0,
+      newlyArrived: [],
+    };
+  }
+
+  return { ...state, newlyArrived: [] };
+}
+
+export function emitUnreadNotificationsCount(count: number): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  try {
+    const safeCount = clampUnreadCount(count);
+    window.dispatchEvent(
+      new CustomEvent<{ no_leidas: number; pendientes: number }>(
+        NOTIFICATIONS_UNREAD_COUNT_EVENT_NAME,
+        { detail: { no_leidas: safeCount, pendientes: safeCount } },
+      ),
+    );
+  } catch {
+    // No bloquea cuando el entorno no implementa CustomEvent.
+  }
+}
+
+export function subscribeUnreadNotificationsCount(
+  listener: (detail: { no_leidas: number; pendientes: number }) => void,
+): () => void {
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+    return () => {};
+  }
+  const handler = (event: Event) => {
+    const custom = event as CustomEvent<{ no_leidas: number; pendientes: number }>;
+    if (custom.detail) listener(custom.detail);
+  };
+  window.addEventListener(NOTIFICATIONS_UNREAD_COUNT_EVENT_NAME, handler);
+  return () => {
+    window.removeEventListener(NOTIFICATIONS_UNREAD_COUNT_EVENT_NAME, handler);
+  };
+}
+
 export function isProposalLiveNotification(
   item: Pick<UserNotification, "tipo_evento" | "metadatos_seguros"> | null | undefined,
 ): boolean {
@@ -287,6 +543,7 @@ export function fetchNotifications(
     offset?: number;
     afterId?: string | null;
     since?: string | null;
+    estado?: NotificationFilter;
     soloNoLeidas?: boolean;
   },
 ): Promise<NotificationsListResponse> {
@@ -297,9 +554,29 @@ export function fetchNotifications(
   }
   if (options?.afterId) params.set("after_id", options.afterId);
   if (options?.since) params.set("since", options.since);
+  if (options?.estado && options.estado !== "TODAS") {
+    params.set("estado", options.estado);
+  }
   if (options?.soloNoLeidas) params.set("solo_no_leidas", "true");
   const qs = params.toString();
   return api<NotificationsListResponse>(`/notifications${qs ? `?${qs}` : ""}`, user, undefined, "GET");
+}
+
+export function fetchPendingNotifications(
+  user: User,
+  options?: { limit?: number; offset?: number },
+): Promise<NotificationsListResponse> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (typeof options?.offset === "number" && options.offset > 0) {
+    params.set("offset", String(options.offset));
+  }
+  const qs = params.toString();
+  return api<NotificationsListResponse>(`/notifications/pending${qs ? `?${qs}` : ""}`, user, undefined, "GET");
+}
+
+export function fetchUnreadNotificationsCount(user: User): Promise<UnreadNotificationsCountResponse> {
+  return api<UnreadNotificationsCountResponse>("/notifications/unread-count", user, undefined, "GET");
 }
 
 export function fetchNotificationDetail(user: User, notificationId: string): Promise<UserNotification> {

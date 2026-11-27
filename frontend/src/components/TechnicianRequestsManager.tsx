@@ -108,9 +108,15 @@ export function TechnicianRequestsManager({ user, initialRequestId = "" }: { use
     }
   }, [openChatId, requests]);
 
-  useEffect(() => {
-    if (!trackingId) return;
+    useEffect(() => {
+    if (!trackingId) {
+      setTracking(null);
+      setTrackingError("");
+      return;
+    }
     let active = true;
+    setTracking(null);
+    setTrackingError("");
     const loadDetail = trackingModality === "ABIERTA" ? getOpportunityDetailApi : getTechnicianDirectRequest;
     loadDetail(user, trackingId)
       .then((detail) => {
@@ -136,8 +142,13 @@ export function TechnicianRequestsManager({ user, initialRequestId = "" }: { use
         if (initialRequestId) {
           const matched = rows.find((item) => item.id === initialRequestId);
           if (matched) {
+            setFilter("TODOS");
+            setModalityFilter("TODAS");
             setTrackingId(matched.id);
             setTrackingModality(getRequestModality(matched));
+          } else {
+            setTrackingId("");
+            setTrackingError("");
           }
         }
       })
