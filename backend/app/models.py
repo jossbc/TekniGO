@@ -9,6 +9,7 @@ from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Int
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.notification_read_state import NotificationReadStatus, resolve_notification_read_state
 
 _UUID7_LOCK = threading.Lock()
 _UUID7_LAST_MS = 0
@@ -1233,8 +1234,24 @@ class UserNotification(Base):
             name="ck_notificacion_campos_no_vacios",
         ),
         CheckConstraint("enlace_ruta LIKE '/%'", name="ck_notificacion_enlace_interno"),
+        CheckConstraint(
+            "estado_lectura IN ('PENDIENTE', 'LEIDA')",
+            name="ck_notificacion_estado_lectura",
+        ),
+        CheckConstraint(
+            "((estado_lectura = 'PENDIENTE' AND leida = false AND leida_en IS NULL) "
+            "OR (estado_lectura = 'LEIDA' AND leida = true AND leida_en IS NOT NULL))",
+            name="ck_notificacion_lectura_coherente",
+        ),
         Index("ix_notificaciones_destinatario_creada", "destinatario_id", "creada_en", "id"),
         Index("ix_notificaciones_destinatario_leida", "destinatario_id", "leida", "creada_en"),
+        Index(
+            "ix_notificaciones_destinatario_estado_creada",
+            "destinatario_id",
+            "estado_lectura",
+            "creada_en",
+            "id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=monotonic_uuid7)
@@ -1248,6 +1265,12 @@ class UserNotification(Base):
     recurso_tipo: Mapped[str | None] = mapped_column(String(50), nullable=True)
     recurso_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     metadatos_seguros: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    estado_lectura: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=NotificationReadStatus.PENDIENTE.value,
+        server_default="PENDIENTE",
+    )
     leida: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     leida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     creada_en: Mapped[datetime] = mapped_column(
@@ -1256,6 +1279,19 @@ class UserNotification(Base):
 
     evento = relationship("NotificationEvent", foreign_keys=[evento_id])
     destinatario = relationship("User", foreign_keys=[destinatario_id])
+
+    def marcar_como_leida(self, moment: datetime | None = None) -> bool:
+        """Transiciona de PENDIENTE a LEIDA de forma idempotente preservando leida_en original."""
+        state = resolve_notification_read_state(
+            estado_lectura=self.estado_lectura,
+            leida=bool(self.leida),
+            leida_en=self.leida_en,
+        )
+        result = state.mark_as_read(moment)
+        self.estado_lectura = result.estado_lectura.value
+        self.leida = result.leida
+        self.leida_en = result.leida_en
+        return result.changed
 
 class RecidivismAlertEvent(Base):
     """HU-36 ST-06 (CA-10): evento persistente e idempotente de tercera falta no justificada para HU-52."""

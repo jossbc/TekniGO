@@ -90,8 +90,11 @@ SENSITIVE_FIELD_NAMES = frozenset({
     "secret",
 })
 
-_DNI_SPACED_RE = re.compile(r"\b\d{4}[-\s]\d{4}[-\s]\d{5}\b")
-_GROUPED_DIGITS_RE = re.compile(r"\b\d{4}(?:[-\s]\d{4}){1,5}\b")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_DNI_SPACED_RE = re.compile(r"(?<![a-fA-F0-9-])\d{4}[-\s]\d{4}[-\s]\d{5}(?![a-fA-F0-9-])")
+_GROUPED_DIGITS_RE = re.compile(r"(?<![a-fA-F0-9-])\d{4}(?:[-\s]\d{4}){1,5}(?![a-fA-F0-9-])")
 _LONG_DIGITS_RE = re.compile(r"(?<![a-fA-F0-9-])\d{8,24}(?![a-fA-F0-9-])")
 _EXTERNAL_OR_STORAGE_URI_RE = re.compile(r"(?:https?|gs|s3|private|file)://\S+", re.IGNORECASE)
 _PRIVATE_ROUTE_RE = re.compile(
@@ -111,6 +114,9 @@ class NotificationPrivacySanitizer:
     @staticmethod
     def sanitize_text(value: Any, *, max_length: int = 500) -> str:
         text = str(value or "")
+        stripped = text.strip()
+        if _UUID_RE.fullmatch(stripped):
+            return stripped
         text = _CONTROL_CHARS_RE.sub(" ", text)
         text = _EXTERNAL_OR_STORAGE_URI_RE.sub(REDACTED_MARKER, text)
         text = _PRIVATE_ROUTE_RE.sub(REDACTED_MARKER, text)

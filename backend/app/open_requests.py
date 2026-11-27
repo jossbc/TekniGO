@@ -1107,7 +1107,7 @@ def get_open_request_for_viewer(
 
     estado_norm = state_key(record.estado)
 
-    if record.tecnico_id == user.firebase_uid and estado_norm in CONTACT_STATES | {"CANCELADA"}:
+    if record.tecnico_id in (user.firebase_uid, str(user.id)) and estado_norm in CONTACT_STATES | {"CANCELADA"}:
         detail = serialize_open_request_for_technician(record, user, db)
         if estado_norm == "CANCELADA":
             detail["linea_tiempo"] = request_timeline(db, record)
