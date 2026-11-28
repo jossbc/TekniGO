@@ -6,7 +6,6 @@ import { auth } from "../lib/firebase";
 import { createDigitalPaymentIntent } from "../lib/digitalPayments";
 import { createDirectRequest, estimateBudget } from "../lib/directRequests";
 import { PaymentMethodSelector, type MetodoPago } from "./PaymentMethodSelector";
-import { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import { Button } from "./ui";
 interface DirectRequestFormProps {
   tecnicoId: string;

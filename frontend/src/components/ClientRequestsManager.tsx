@@ -32,7 +32,6 @@ import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
 import { subscribeProposalLiveUpdate } from "../lib/notifications";
-import SecurePaymentGatewayModal, { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import {
   ESTADO_OPTIONS,
   MODALIDAD_OPTIONS,
@@ -383,7 +382,6 @@ export default function ClientRequestsManager({
   const [rejectingProposalId, setRejectingProposalId] = useState<string>("");
   const [confirmAwardProp, setConfirmAwardProp] = useState<ReceivedOpenRequestProposal | null>(null);
   const [awardPaymentMethod, setAwardPaymentMethod] = useState<"efectivo" | "tarjeta">("efectivo");
-  const [showAwardGateway, setShowAwardGateway] = useState(false);
   const [awardingProposalId, setAwardingProposalId] = useState<string>("");
 
   async function executeRejectProposal(proposalId: string) {
@@ -443,13 +441,13 @@ export default function ClientRequestsManager({
           `Técnico adjudicado por ${formatLempiras(res.monto_pactado)} (${res.metodo_pago}).`,
       );
       setConfirmAwardProp(null);
-      setShowAwardGateway(false);
+      
       const updatedDetail = await getMyRequestDetail(user, detail.id);
       setDetail(updatedDetail);
       setRefreshTick((v) => v + 1);
     } catch (err) {
       setDetailError(errorMessage(err));
-      setShowAwardGateway(false);
+      
     } finally {
       setAwardingProposalId("");
     }
@@ -471,7 +469,11 @@ export default function ClientRequestsManager({
           window.location.assign(res.intento.checkout_url);
           return;
         }
-        setShowAwardGateway(true);
+        setActionNotice(
+          `Intento ${res.intento.referencia_interna} creado (${res.entorno_pasarela.etiqueta}). Consulta el panel de pago digital.`,
+        );
+        setConfirmAwardProp(null);
+        setRefreshTick((v) => v + 1);
       } catch (err) {
         setDetailError(errorMessage(err));
       } finally {
@@ -480,12 +482,6 @@ export default function ClientRequestsManager({
       return;
     }
     void executeAwardProposal(confirmAwardProp, "efectivo", null);
-  }
-
-  function handleAwardCardSuccess(result: CardPaymentResult) {
-    if (!confirmAwardProp) return;
-    setShowAwardGateway(false);
-    void executeAwardProposal(confirmAwardProp, "tarjeta", result.referenciaPasarela);
   }
 
   const [receptionComment, setReceptionComment] = useState("");
@@ -1726,14 +1722,6 @@ export default function ClientRequestsManager({
                 );
               })()}
             </section>
-          )}
-          {showAwardGateway && confirmAwardProp && (
-            <SecurePaymentGatewayModal
-              monto={confirmAwardProp.monto}
-              titulo="Confirmar cobro para adjudicar licitación"
-              onSuccess={handleAwardCardSuccess}
-              onCancel={() => setShowAwardGateway(false)}
-            />
           )}
         </RequestDetailModal>
       )}
