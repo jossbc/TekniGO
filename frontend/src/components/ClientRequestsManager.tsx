@@ -26,6 +26,8 @@ import { errorMessage } from "../lib/api";
 import CancellationNotice from "./CancellationNotice";
 import AdjustmentPanel from "./AdjustmentPanel";
 import { CancelRequestModal } from "./CancellationForms";
+import { createDigitalPaymentIntent } from "../lib/digitalPayments";
+import DigitalPaymentStatusPanel from "./DigitalPaymentStatusPanel";
 import ReportIncidentModal from "./ReportIncidentModal";
 import ContractChatPanel from "./ContractChatPanel";
 import { isChatEnabledForState } from "../lib/contractChat";
@@ -453,10 +455,28 @@ export default function ClientRequestsManager({
     }
   }
 
-  function handleConfirmAwardClick() {
-    if (!confirmAwardProp) return;
+  async function handleConfirmAwardClick() {
+    if (!confirmAwardProp || !detail) return;
     if (awardPaymentMethod === "tarjeta") {
-      setShowAwardGateway(true);
+      setAwardingProposalId(confirmAwardProp.id);
+      setDetailError("");
+      try {
+        const res = await createDigitalPaymentIntent(user, {
+          solicitud_id: detail.id,
+          modalidad: "ABIERTA",
+          concepto: "BASE",
+          propuesta_id: confirmAwardProp.id,
+        });
+        if (res.intento.checkout_url) {
+          window.location.assign(res.intento.checkout_url);
+          return;
+        }
+        setShowAwardGateway(true);
+      } catch (err) {
+        setDetailError(errorMessage(err));
+      } finally {
+        setAwardingProposalId("");
+      }
       return;
     }
     void executeAwardProposal(confirmAwardProp, "efectivo", null);
@@ -1216,6 +1236,11 @@ export default function ClientRequestsManager({
                                     Las demás propuestas pendientes se descartarán y solo este técnico recibirá tu dirección exacta y teléfono.
                                   </p>
                                   <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                                    {detailError && (
+                                      <p className="alert" role="alert" style={{ margin: "6px 0", fontSize: "0.78rem" }}>
+                                        {detailError}
+                                      </p>
+                                    )}
                                     <button
                                       type="button"
                                       disabled={Boolean(awardingProposalId)}
@@ -1571,6 +1596,14 @@ export default function ClientRequestsManager({
                 </section>
                 
               )}
+              <DigitalPaymentStatusPanel
+              user={user}
+              modalidad={detail.modalidad === "ABIERTA" ? "ABIERTA" : "DIRECTA"}
+              solicitudId={detail.id}
+              metodoPagoBase={detail.metodo_pago || "efectivo"}
+              estadoSolicitud={detail.estado}
+              onUpdated={() => setRefreshTick((v) => v + 1)}
+              />
               
               {!detail.incidencia_abierta && (
                 <AdjustmentPanel

@@ -18,6 +18,7 @@ const devProxy = {
   '/notifications': { target: backendTarget, changeOrigin: true, ws: true },
   '/chat': { target: backendTarget, changeOrigin: true, ws: true },
   '/health': { target: backendTarget, changeOrigin: true },
+    '/payments': { target: backendTarget, changeOrigin: true },
 }
 
 export default defineConfig({

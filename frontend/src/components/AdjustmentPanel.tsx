@@ -3,12 +3,13 @@ import type { User } from "firebase/auth";
 import { Button } from "./ui";
 import ModalShell from "./ModalShell";
 import { CancelRequestModal } from "./CancellationForms";
+import { createDigitalPaymentIntent } from "../lib/digitalPayments";
 import { ApiError, errorMessage } from "../lib/api";
 import {
   getAdjustmentApi, normalizeState, requestAdjustmentApi, respondAdjustmentApi,
   type AdjustmentRecord, type Rol,
 } from "../lib/cancellations";
-import SecurePaymentGatewayModal from "./SecurePaymentGatewayModal";
+
 
 const MONEY = /^\d{1,6}(\.\d{1,2})?$/;
 const toCents = (v: string) => { const [i, f = ""] = v.split("."); return Number(i) * 100 + Number(f.padEnd(2, "0")); };
@@ -87,7 +88,7 @@ export default function AdjustmentPanel({ user, solicitudId, rol, estado, montoB
   const [busy, setBusy] = useState(false);
   const [comment, setComment] = useState("");
   const [metodoDiferencia, setMetodoDiferencia] = useState<"tarjeta" | "efectivo">("tarjeta");
-  const [showGateway, setShowGateway] = useState(false);
+ 
   const [tick, setTick] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [showCancel, setShowCancel] = useState(false);
@@ -137,9 +138,26 @@ export default function AdjustmentPanel({ user, solicitudId, rol, estado, montoB
     }
   }
 
-  function handleApproveClick() {
-    if (isIncrease && initialCard && metodoDiferencia === "tarjeta") {
-      setShowGateway(true);
+  async function handleApproveClick() {
+    if (isIncrease && initialCard && metodoDiferencia === "tarjeta" && adjustment) {
+      setBusy(true);
+      setError("");
+      try {
+        // CA-02 / CA-05: NO aprobar el ajuste antes de que la pasarela confirme el cobro de la diferencia
+        const paymentRes = await createDigitalPaymentIntent(user, {
+          solicitud_id: solicitudId,
+          concepto: "AJUSTE",
+        });
+        if (paymentRes.intento.checkout_url) {
+          window.location.assign(paymentRes.intento.checkout_url);
+          return;
+        }
+        refresh();
+      } catch (err) {
+        setError(errorMessage(err));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     void submitDecision("APROBAR");
@@ -212,19 +230,6 @@ export default function AdjustmentPanel({ user, solicitudId, rol, estado, montoB
           )}
         </>
       )}
-
-      {showGateway && adjustment && (
-        <SecurePaymentGatewayModal
-          monto={Number(adjustment.diferencia)}
-          titulo="Autorizar cobro complementario por diferencia de ajuste"
-          onCancel={() => setShowGateway(false)}
-          onSuccess={(res) => {
-            setShowGateway(false);
-            void submitDecision("APROBAR", res.referenciaPasarela);
-          }}
-        />
-      )}
-
       <AdjustmentRequestModal isOpen={showForm} onClose={() => setShowForm(false)} onDone={refresh}
         user={user} solicitudId={solicitudId} montoBase={montoBase} />
       <CancelRequestModal isOpen={showCancel} onClose={() => setShowCancel(false)}

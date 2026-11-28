@@ -2,9 +2,11 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { Calculator, CheckCircle2, ClipboardList, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { CoverageZone } from "../CoverageZoneSelector";
+import { auth } from "../lib/firebase";
+import { createDigitalPaymentIntent } from "../lib/digitalPayments";
 import { createDirectRequest, estimateBudget } from "../lib/directRequests";
 import { PaymentMethodSelector, type MetodoPago } from "./PaymentMethodSelector";
-import { SecurePaymentGatewayModal, type CardPaymentResult } from "./SecurePaymentGatewayModal";
+import { type CardPaymentResult } from "./SecurePaymentGatewayModal";
 import { Button } from "./ui";
 interface DirectRequestFormProps {
   tecnicoId: string;
@@ -60,8 +62,8 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
   const [loadingEstimate, setLoadingEstimate] = useState(false);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showGatewayModal, setShowGatewayModal] = useState(false);
-  const [cardResult, setCardResult] = useState<CardPaymentResult | null>(null);
+  
+  
 
   const handleCalculate = async () => {
     if (!Number.isInteger(cantidad) || cantidad < 1 || loadingEstimate) return;
@@ -84,7 +86,7 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
     }
   };
 
-    const executeSubmission = async (referencia?: string) => {
+  const executeSubmission = async () => {
     setLoadingSubmit(true);
     setError(null);
 
@@ -99,10 +101,23 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
         descripcion,
         cantidad,
         metodo_pago: metodoPago,
-        referencia_pasarela: referencia || cardResult?.referenciaPasarela || undefined,
       };
 
-      await createDirectRequest(requestData);
+      const created = await createDirectRequest(requestData);
+
+      // Si eligió tarjeta, crea el intento real en la pasarela (Stripe Sandbox) y redirige al Checkout
+      if (metodoPago === "tarjeta" && created?.id && auth?.currentUser) {
+        const paymentRes = await createDigitalPaymentIntent(auth.currentUser, {
+          solicitud_id: String(created.id),
+          modalidad: "DIRECTA",
+          concepto: "BASE",
+        });
+        if (paymentRes.intento.checkout_url) {
+          window.location.assign(paymentRes.intento.checkout_url);
+          return;
+        }
+      }
+
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al crear la solicitud");
@@ -114,13 +129,6 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loadingSubmit || loadingEstimate || totalEstimado === null || !municipalities.includes(municipio)) return;
-
-    // HU-37 CA-03: Si es tarjeta, requerir pasarela antes de enviar
-    if (metodoPago === "tarjeta" && !cardResult) {
-      setShowGatewayModal(true);
-      return;
-    }
-
     await executeSubmission();
   };
 
@@ -268,17 +276,6 @@ export const DirectRequestForm: React.FC<DirectRequestFormProps> = ({ tecnicoId,
             {loadingSubmit ? "Enviando…" : "Confirmar solicitud"}
           </button>
         </footer>
-          {showGatewayModal && totalEstimado !== null && (
-          <SecurePaymentGatewayModal
-            monto={totalEstimado}
-            onSuccess={(result) => {
-              setCardResult(result);
-              setShowGatewayModal(false);
-              executeSubmission(result.referenciaPasarela);
-            }}
-            onCancel={() => setShowGatewayModal(false)}
-          />
-        )}
       </form>}
     </dialog>
   );

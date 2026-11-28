@@ -909,7 +909,7 @@ export function TechnicianRequestsManager({ user, initialRequestId = "" }: { use
                     </Button>
                   </div>
                 )}
-                {normalizedState === "EN_PROCESO" && !req.incidencia_abierta && (
+{normalizedState === "EN_PROCESO" && !req.incidencia_abierta && !req.pendiente_recepcion && !req.finalizacion_reportada_en && (
                   <div style={{ flexBasis: "100%", marginTop: "12px" }}>
                     <AdjustmentPanel
                       user={user} solicitudId={req.id} rol="TECNICO" estado={req.estado}

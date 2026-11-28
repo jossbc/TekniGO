@@ -2666,6 +2666,38 @@ def award_open_request_proposal_by_owner(
         if payload.referencia_pasarela is not None
         else (record.referencia_pasarela if metodo_pago == "tarjeta" else None)
     )
+    if metodo_pago == "tarjeta":
+        from app.payment_lifecycle_bridge import verify_confirmed_base_payment_for_acceptance
+
+        # Si hay intentos HU-38 registrados, solo permite adjudicar cuando el pago BASE esté CONFIRMADO (CA-01/CA-02)
+        if effective_gateway_ref is None:
+            confirmed_attempt = verify_confirmed_base_payment_for_acceptance(
+                db,
+                modalidad="ABIERTA",
+                solicitud_id=str(record.id),
+                record=record,
+            )
+            if confirmed_attempt is not None:
+                effective_gateway_ref = confirmed_attempt.payment_intent_id or confirmed_attempt.referencia_pasarela
+        else:
+            # Aunque envíen una referencia en payload, si existen intentos HU-38 debe haber uno CONFIRMADO
+            from app.models import DigitalPaymentIntent
+            has_hu38_attempts = db.scalar(
+                select(DigitalPaymentIntent.id).where(
+                    DigitalPaymentIntent.modalidad == "ABIERTA",
+                    DigitalPaymentIntent.solicitud_id == str(record.id),
+                    DigitalPaymentIntent.concepto == "BASE",
+                ).limit(1)
+            )
+            if has_hu38_attempts is not None:
+                confirmed_attempt = verify_confirmed_base_payment_for_acceptance(
+                    db,
+                    modalidad="ABIERTA",
+                    solicitud_id=str(record.id),
+                    record=record,
+                )
+                if confirmed_attempt is not None:
+                    effective_gateway_ref = confirmed_attempt.payment_intent_id or confirmed_attempt.referencia_pasarela
     payment_result = process_idempotent_award_payment(
         solicitud_id=str(record.id),
         propuesta_id=str(proposal.id),
