@@ -140,9 +140,9 @@ def require_verified_unsuspended_client(claims: dict, db: Session) -> User:
     if not any(role.rol == "CLIENTE" for role in user.roles):
         raise HTTPException(403, "La cuenta no tiene rol de cliente")
 
-    tech_profile = db.get(TechnicianProfile, user.id)
-    if getattr(user, "suspendido", False) or (tech_profile is not None and tech_profile.suspendido):
-        raise HTTPException(403, "Tu cuenta presenta una suspensión activa y no puede publicar solicitudes")
+    from app.account_suspension_service import assert_client_can_operate
+
+    assert_client_can_operate(db, user, action_label="publicar solicitudes")
 
     return require_enabled_client(user)
 

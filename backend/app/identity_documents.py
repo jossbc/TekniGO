@@ -48,6 +48,8 @@ def _serialize_doc(doc: IdentityDocument) -> dict:
         "tipo": doc.tipo,
         "estado": doc.estado,
         "observaciones": doc.observaciones,
+        "baja_logica": bool(getattr(doc, "baja_logica", False)),
+        "acceso_operativo_revocado": bool(getattr(doc, "acceso_operativo_revocado", False)),
         "creado_en": doc.creado_en.isoformat() if doc.creado_en else None,
     }
 
@@ -209,6 +211,11 @@ def get_document_content_for_admin(
     doc = db.get(IdentityDocument, document_id)
     if doc is None:
         raise HTTPException(404, "No se encontró el documento")
+    if doc.baja_logica or doc.acceso_operativo_revocado:
+        raise HTTPException(
+            410,
+            "Este documento se encuentra en baja lógica con acceso operativo revocado conforme a la política de conservación.",
+        )
     store = storage or PrivateDocumentStorage()
     try:
         raw_bytes = store.read_private(doc.ruta_privada)

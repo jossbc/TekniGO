@@ -24,9 +24,11 @@ def approved_certificate_owners(db: Session, user_ids) -> set[uuid.UUID]:
     if not user_ids:
         return set()
     return set(db.scalars(select(TradeCertificate.usuario_id).where(
-        TradeCertificate.usuario_id.in_(user_ids), TradeCertificate.estado == "APROBADO",
+        TradeCertificate.usuario_id.in_(user_ids),
+        TradeCertificate.estado == "APROBADO",
+        TradeCertificate.baja_logica.is_(False),
+        TradeCertificate.acceso_operativo_revocado.is_(False),
     ).distinct()))
-
 
 def _technician(claims: dict, db: Session) -> User:
     user = _get_user(claims, db)
@@ -137,6 +139,11 @@ def download_certificate(certificate_id: uuid.UUID, claims=Depends(get_current_u
     doc = db.get(TradeCertificate, certificate_id)
     if doc is None:
         raise HTTPException(404, "Certificación no encontrada.")
+    if doc.baja_logica or doc.acceso_operativo_revocado:
+        raise HTTPException(
+            410,
+            "Esta certificación se encuentra en baja lógica con acceso operativo revocado conforme a la política de conservación.",
+        )
     try:
         data = PrivateDocumentStorage().read_private(doc.ruta_privada)
     except FileNotFoundError:

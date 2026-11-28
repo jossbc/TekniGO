@@ -621,14 +621,79 @@ class PayoutTemplate:
 class OperationalRestrictionTemplate:
     def build(self, *, recipient_role: str, data: dict[str, Any]) -> NotificationDraft:
         motivo_codigo = str(data.get("motivo_codigo") or "").strip().upper()
-        if recipient_role == "ADMIN" or motivo_codigo == "ALERTA_TERCERA_FALTA":
+        user_route = "/tecnico" if recipient_role == "TECNICO" else "/mi-cuenta"
+
+        if motivo_codigo == "ALERTA_TERCERA_FALTA":
+            if recipient_role == "ADMIN":
+                return NotificationDraft(
+                    titulo="Alerta administrativa de incumplimientos",
+                    resumen="Una cuenta alcanzó el umbral de 3 faltas no justificadas y requiere evaluación administrativa.",
+                    enlace_ruta="/admin?tab=accounts",
+                    recurso_tipo="RESTRICCION_OPERATIVA",
+                    metadatos_seguros={"motivo_codigo": "ALERTA_TERCERA_FALTA"},
+                )
             return NotificationDraft(
-                titulo="Alerta administrativa de incumplimientos",
-                resumen="Una cuenta alcanzó el umbral de faltas no justificadas y requiere evaluación administrativa.",
-                enlace_ruta="/admin?tab=incidents",
+                titulo="Aviso: acumulaste 3 faltas en revisión administrativa",
+                resumen=(
+                    "Acumulaste 3 cancelaciones tardías o inasistencias no justificadas. "
+                    "Tu cuenta pasó a revisión por administración; no se ha aplicado ninguna suspensión automática."
+                ),
+                enlace_ruta=user_route,
                 recurso_tipo="RESTRICCION_OPERATIVA",
-                metadatos_seguros={"motivo_codigo": "ALERTA_TERCERA_FALTA"},
+                metadatos_seguros={"motivo_codigo": "ALERTA_TERCERA_FALTA", "suspension_automatica": False},
             )
+
+        if motivo_codigo == "CUENTA_SUSPENDIDA_TEMPORAL":
+            fecha_fin = NotificationPrivacySanitizer.sanitize_text(data.get("fecha_fin_local") or "", max_length=60)
+            vigencia_txt = f" hasta el {fecha_fin} (hora local)" if fecha_fin else ""
+            return NotificationDraft(
+                titulo="Cuenta suspendida temporalmente",
+                resumen=(
+                    f"Administración aplicó una suspensión temporal en tu cuenta{vigencia_txt}. "
+                    "Mientras esté vigente no podrás crear contrataciones, aceptar trabajos ni postular."
+                ),
+                enlace_ruta=user_route,
+                recurso_tipo="SUSPENSION_CUENTA",
+                recurso_id=str(data.get("suspension_id") or "") or None,
+                metadatos_seguros={"motivo_codigo": motivo_codigo, "tipo_suspension": "TEMPORAL"},
+            )
+
+        if motivo_codigo == "CUENTA_SUSPENDIDA_DEFINITIVA":
+            return NotificationDraft(
+                titulo="Cuenta suspendida definitivamente",
+                resumen=(
+                    "Administración aplicó una suspensión definitiva por incumplimiento de reglas en tu cuenta. "
+                    "Tu acceso operativo para contratar, aceptar trabajos o postular fue restringido."
+                ),
+                enlace_ruta=user_route,
+                recurso_tipo="SUSPENSION_CUENTA",
+                recurso_id=str(data.get("suspension_id") or "") or None,
+                metadatos_seguros={"motivo_codigo": motivo_codigo, "tipo_suspension": "DEFINITIVA"},
+            )
+
+        if motivo_codigo == "SUSPENSION_TEMPORAL_FINALIZADA":
+            restored = bool(data.get("operaciones_restituidas"))
+            if restored:
+                return NotificationDraft(
+                    titulo="Tu suspensión temporal finalizó",
+                    resumen="Tu suspensión temporal terminó y tus operaciones en TekniGO ya fueron restituidas.",
+                    enlace_ruta=user_route,
+                    recurso_tipo="SUSPENSION_CUENTA",
+                    recurso_id=str(data.get("suspension_id") or "") or None,
+                    metadatos_seguros={"motivo_codigo": motivo_codigo, "operaciones_restituidas": True},
+                )
+            return NotificationDraft(
+                titulo="Suspensión temporal finalizada con requisitos pendientes",
+                resumen=(
+                    "Tu suspensión temporal terminó, pero aún debes completar otros requisitos independientes "
+                    "(verificación, disponibilidad o saldo) para volver a operar."
+                ),
+                enlace_ruta=user_route,
+                recurso_tipo="SUSPENSION_CUENTA",
+                recurso_id=str(data.get("suspension_id") or "") or None,
+                metadatos_seguros={"motivo_codigo": motivo_codigo, "operaciones_restituidas": False},
+            )
+
         if motivo_codigo == "DEUDA_COMISIONES":
             return NotificationDraft(
                 titulo="Acción requerida: bloqueo por deuda de comisiones",
@@ -661,7 +726,6 @@ class OperationalRestrictionTemplate:
             recurso_tipo="RESTRICCION_OPERATIVA",
             metadatos_seguros={"motivo_codigo": motivo_codigo or "DOCUMENTOS_PENDIENTES", "requiere_accion": True},
         )
-
 
 TEMPLATE_STRATEGIES: dict[str, NotificationTemplateStrategy] = {
     EVENT_NUEVA_SOLICITUD_DIRECTA: DirectRequestCreatedTemplate(),

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.account_suspension_service import assert_client_can_operate
 from app.adjustment_repository import SqlAlchemyAdjustmentRepository
 from app.adjustment_service import to_money
 from app.direct_requests_repository import DirectRequestRepository
@@ -75,6 +76,7 @@ class DirectRequestService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Solo las cuentas con rol de cliente pueden enviar solicitudes directas.",
             )
+        assert_client_can_operate(db, cliente, action_label="crear contrataciones directas")
 
         # 1. Validar que la fecha sea futura (CA-02)
         fecha_hora = (

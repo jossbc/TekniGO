@@ -6,20 +6,26 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.email_verification import email_verification_status
 from app.phone_verification import phone_verification_status
-from app.models import TechnicianProfile, User
+from app.models import TechnicianProfile, User, ACCOUNT_DELETED
 from app.security import get_current_user
 
 router = APIRouter()
 
 
 def client_hiring_eligibility(user: User) -> dict:
-    """Recheck identity, email and current phone ownership before every hiring write."""
+    """Recheck identity, email, phone and account suspension before every hiring write."""
     if not any(role.rol == 'CLIENTE' for role in user.roles):
         raise HTTPException(403, 'La cuenta no tiene rol de cliente')
+    account_closed = user.estado_identidad == ACCOUNT_DELETED
+    account_suspended = bool(getattr(user, 'suspendido', False))
     identity_verified = user.estado_identidad == 'VERIFICADO'
     email_verified = email_verification_status(user)['email_verified']
     phone_verified = bool(user.telefono_verificado) and phone_verification_status(user)['telefono_verificado']
     reasons = []
+    if account_closed:
+        reasons.append('La cuenta fue cerrada y no puede crear contrataciones')
+    if account_suspended:
+        reasons.append('Tu cuenta presenta una suspensión por conducta activa y no puede contratar')
     if not identity_verified:
         reasons.append('Completa la verificación de identidad para contratar')
     if not email_verified:
@@ -27,7 +33,8 @@ def client_hiring_eligibility(user: User) -> dict:
     if not phone_verified:
         reasons.append('Verifica tu teléfono para contratar')
     return {
-        'puede_contratar': identity_verified and email_verified and phone_verified,
+        'puede_contratar': (not account_closed and not account_suspended and identity_verified and email_verified and phone_verified),
+        'suspendido': account_suspended,
         'identidad_verificada': identity_verified,
         'correo_verificado': email_verified,
         'telefono_verificado': phone_verified,

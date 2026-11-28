@@ -9,6 +9,8 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.account_suspension_service import assert_identity_not_blocked
+from app.account_closure_service import AccountClosureService
 from app.database import get_db
 from app.models import ACCOUNT_DELETED, Service, TechnicianProfile, User, UserRole
 from app.security import TOKEN_CLOCK_SKEW_SECONDS, get_current_user
@@ -116,6 +118,8 @@ def ensure_role(db: Session, user: User, role: Literal["CLIENTE", "TECNICO"]) ->
 @router.post("/users/me/roles")
 def add_role(data: RoleAddition, claims=Depends(get_current_user), db: Session = Depends(get_db)):
     user = _require_live_account(db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update()))
+    if getattr(user, "suspendido", False):
+        raise HTTPException(403, "Tu cuenta presenta una suspensión activa y no puede modificar roles.")    
     try:
         ensure_role(db, user, data.rol)
         db.commit()
@@ -137,6 +141,7 @@ def register(data: Registration, claims=Depends(get_current_user), db: Session =
         email = claims.get("email")
         if not email:
             raise HTTPException(400, "La identidad de Firebase requiere correo electrónico")
+        assert_identity_not_blocked(db, dni=data.dni, telefono=data.telefono)
         user = User(firebase_uid=claims["uid"], correo=email, nombre_completo=data.nombre_completo,
                     dni=data.dni, telefono=data.telefono)
         db.add(user)
@@ -180,6 +185,7 @@ def update_me(data: ProfileUpdate, claims=Depends(get_current_user), db: Session
 
     if phone_changed:
         ensure_free(db, user, User.telefono, data.telefono, "Este teléfono ya está registrado")
+        assert_identity_not_blocked(db, telefono=data.telefono, exclude_user_id=user.id)
     if email_changed:
         ensure_free(db, user, func.lower(User.correo), data.correo, "Ese correo ya está en uso")
 
@@ -233,19 +239,12 @@ def delete_my_account(claims=Depends(get_current_user), db: Session = Depends(ge
     if user is None:
         raise HTTPException(404, "Completa tu registro en TekniGO")
     if user.estado_identidad != ACCOUNT_DELETED:
-        # Keep the internal references used by requests and audit records.
-        user.nombre_completo = "Cuenta eliminada"
-        user.correo = f"{user.id.hex}@cuenta-eliminada.invalid"
-        user.dni = f"X{user.id.hex[:12]}"
-        user.telefono = f"X{user.id.hex[:15]}"
-        user.telefono_verificado = False
-        user.estado_identidad = ACCOUNT_DELETED
-        technician = db.get(TechnicianProfile, user.id)
-        if technician is not None:
-            technician.disponible = False
-            technician.suspendido = True
-            db.execute(update(Service).where(Service.usuario_id == user.id).values(activo=False))
-        db.execute(delete(UserRole).where(UserRole.usuario_id == user.id))
+        AccountClosureService(db).apply_closure_to_user(
+            user,
+            motivo="Cierre de cuenta tramitado por el titular.",
+            actor_admin=None,
+            proceso_responsable="CIERRE_CUENTA_TITULAR",
+        )
         db.commit()
 
     try:

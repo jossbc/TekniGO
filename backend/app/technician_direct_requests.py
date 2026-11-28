@@ -26,6 +26,7 @@ from app.request_states import request_timeline, start_request_service, state_ke
 from app.security import get_current_user
 from app.service_reception import get_service_reception_tracking
 from app.service_completion import has_pending_adjustment
+from app.account_suspension_service import assert_technician_can_operate
 
 router = APIRouter(prefix="/technicians", tags=["Solicitudes Directas del Técnico"])
 
@@ -347,10 +348,10 @@ def respond_to_direct_request(
         )
     # HU-37 CA-03: Con efectivo no se invoca cobro digital; con tarjeta se solicita pago antes de Aceptada
     if target_estado == "ACEPTADA":
-        technician_id = db.scalar(select(User.id).where(User.firebase_uid == claims["uid"]).with_for_update())
-        profile = db.get(TechnicianProfile, technician_id, populate_existing=True) if technician_id else None
-        if profile is not None and profile.restriccion_financiera:
-            raise HTTPException(403, "Tu perfil técnico presenta una restricción financiera activa por saldo")
+        tech_user = db.scalar(select(User).where(User.firebase_uid == claims["uid"]).with_for_update())
+        profile = db.get(TechnicianProfile, tech_user.id, populate_existing=True) if tech_user else None
+        if tech_user is not None:
+            assert_technician_can_operate(db, tech_user, profile, action_label="aceptar trabajos")
         metodo = (record.metodo_pago or "").strip().lower()
         if metodo == "tarjeta":
             from app.payment_lifecycle_bridge import verify_confirmed_base_payment_for_acceptance

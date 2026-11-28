@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.account_suspension_router import router as account_suspension_router
+from app.account_suspension_service import run_scheduled_suspension_expiration
 from app.adjustment_router import router as adjustment_router
 from app.database import get_engine
 from app.fault_recidivism_router import router as fault_recidivism_router
@@ -52,6 +54,13 @@ AUTO_COMPLETION_INTERVAL_SECONDS = 60
 
 def _run_auto_completion_once() -> None:
     with Session(get_engine()) as session:
+        try:
+            exp_res = run_scheduled_suspension_expiration(session)
+            if exp_res.get("total_expiradas"):
+                logger.info("Vencimiento automático expiró %s suspensión(es) temporal(es).", exp_res["total_expiradas"])
+        except Exception as exc:
+            session.rollback()
+            logger.warning("Error al expirar suspensiones temporales vencidas: %s", exc)
         result = run_scheduled_auto_completion(session)
         total = result.get("total_completadas_automaticamente", 0)
         if total:
@@ -117,6 +126,7 @@ app.include_router(cancellation_router)
 app.include_router(adjustment_router)
 app.include_router(cancellation_justification_router)
 app.include_router(fault_recidivism_router)
+app.include_router(account_suspension_router)
 
 @app.get("/health")
 def health():

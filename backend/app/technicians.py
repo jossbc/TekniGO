@@ -253,6 +253,9 @@ def get_technicians_catalog(
 ):
     from app.reviews import get_technician_reputation_stats_map, sync_expired_reviews
     sync_expired_reviews(db)
+    from app.account_suspension_service import run_scheduled_suspension_expiration
+    run_scheduled_suspension_expiration(db)
+    from app.models import ACCOUNT_DELETED
 
     # CA-01, CA-02, CA-05 (HU-12 / HU-18): Solo candidatos disponibles, verificados, con teléfono validado
     # y sin suspensiones ni restricciones financieras.
@@ -260,12 +263,14 @@ def get_technicians_catalog(
         select(User, TechnicianProfile)
         .join(TechnicianProfile, User.id == TechnicianProfile.usuario_id)
         .where(
-            TechnicianProfile.disponible == True,
-            TechnicianProfile.estado_verificacion == "VERIFICADO",
-            User.telefono_verificado == True,
-            TechnicianProfile.suspendido == False,
-            TechnicianProfile.restriccion_financiera == False,
-        )
+         User.estado_identidad != ACCOUNT_DELETED,
+         User.suspendido == False,
+         TechnicianProfile.disponible == True,
+         TechnicianProfile.estado_verificacion == "VERIFICADO",
+         User.telefono_verificado == True,
+         TechnicianProfile.suspendido == False,
+         TechnicianProfile.restriccion_financiera == False,
+     )
     )
 
     # Filtros de la HU-13 + Búsqueda por nombre

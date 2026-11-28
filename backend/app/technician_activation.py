@@ -195,14 +195,15 @@ def _evaluate_single_document(
 
 def is_operationally_enabled(user: User, profile: TechnicianProfile) -> bool:
     """CA-01, CA-02, CA-05: Habilitación operativa combinando todas las dimensiones."""
+    is_suspended = bool(getattr(user, "suspendido", False) or profile.suspendido)
     return bool(
-        user.telefono_verificado
+        user.estado_identidad != ACCOUNT_DELETED
+        and user.telefono_verificado
         and profile.estado_verificacion == "VERIFICADO"
         and profile.disponible
-        and not profile.suspendido
+        and not is_suspended
         and not profile.restriccion_financiera
     )
-
 
 def evaluate_technician_requirements(
     user: User,
@@ -296,16 +297,18 @@ def evaluate_technician_requirements(
             operational_blockers.append("El técnico debe completar su verificación documental y de teléfono.")
     if not profile.disponible:
         operational_blockers.append("El técnico se encuentra configurado como No disponible.")
-    if profile.suspendido:
-        operational_blockers.append("La cuenta técnica presenta una suspensión activa.")
+    is_suspended = bool(getattr(user, "suspendido", False) or profile.suspendido)
+    if is_suspended:
+        operational_blockers.append("La cuenta presenta una suspensión por conducta activa.")
     if profile.restriccion_financiera:
         operational_blockers.append("La cuenta técnica presenta una restricción financiera activa.")
 
     enabled = bool(
-        target_state == "VERIFICADO"
+        user.estado_identidad != ACCOUNT_DELETED
+        and target_state == "VERIFICADO"
         and phone_ok
         and profile.disponible
-        and not profile.suspendido
+        and not is_suspended
         and not profile.restriccion_financiera
     )
 
@@ -319,7 +322,7 @@ def evaluate_technician_requirements(
         "tecnico_verificado": target_state == "VERIFICADO",
         "telefono_verificado": phone_ok,
         "disponible": bool(profile.disponible),
-        "suspendido": bool(profile.suspendido),
+        "suspendido": is_suspended,
         "restriccion_financiera": bool(profile.restriccion_financiera),
         "estado_certificacion": profile.estado_certificacion or "NO_CERTIFICADO",
         "calificacion_promedio": tech_avg_rating,

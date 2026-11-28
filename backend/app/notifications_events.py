@@ -711,6 +711,11 @@ def notify_operational_restriction(
     )
 
 
+def _primary_user_role(user: Any) -> str:
+    roles = {getattr(r, "rol", "") for r in getattr(user, "roles", [])}
+    return "TECNICO" if "TECNICO" in roles else "CLIENTE"
+
+
 def notify_third_fault_admin_alert(
     db: Session,
     *,
@@ -720,14 +725,72 @@ def notify_third_fault_admin_alert(
 ) -> None:
     if not responsible_uid:
         return
-    admins = [(admin_id, "ADMIN") for admin_id in list_admin_user_ids(db)]
-    if not admins:
+    recipients: list[tuple[uuid.UUID | str | None, str]] = [
+        (admin_id, "ADMIN") for admin_id in list_admin_user_ids(db)
+    ]
+    affected = db.scalar(select(User).where(User.firebase_uid == responsible_uid))
+    if affected is not None:
+        recipients.append((affected.id, _primary_user_role(affected)))
+    if not recipients:
         return
     enqueue_notification_event(
         db,
         clave_evento=f"alerta_tercera_falta:{responsible_uid}:{solicitud_id}",
         tipo_evento=EVENT_RESTRICCION_OPERATIVA,
-        destinatarios=admins,
+        destinatarios=recipients,
         payload_seguro={"motivo_codigo": "ALERTA_TERCERA_FALTA", "solicitud_id": solicitud_id},
+        now=now,
+    )
+
+
+def notify_account_suspended(
+    db: Session,
+    user: User,
+    *,
+    suspension_id: uuid.UUID | str,
+    tipo: str,
+    vence_en: datetime | None = None,
+    now: datetime | None = None,
+) -> None:
+    from app.models import to_tegucigalpa_datetime
+
+    is_temporal = (tipo or "").strip().upper() == "TEMPORAL"
+    motivo_codigo = "CUENTA_SUSPENDIDA_TEMPORAL" if is_temporal else "CUENTA_SUSPENDIDA_DEFINITIVA"
+    local_end = to_tegucigalpa_datetime(vence_en) if is_temporal and vence_en is not None else None
+    fecha_fin_local = local_end.strftime("%d/%m/%Y a las %H:%M") if local_end is not None else None
+
+    enqueue_notification_event(
+        db,
+        clave_evento=f"cuenta_suspendida:{suspension_id}",
+        tipo_evento=EVENT_RESTRICCION_OPERATIVA,
+        destinatarios=[(user.id, _primary_user_role(user))],
+        payload_seguro={
+            "motivo_codigo": motivo_codigo,
+            "suspension_id": str(suspension_id),
+            "fecha_fin_local": fecha_fin_local,
+        },
+        now=now,
+    )
+
+
+def notify_temporal_suspension_ended(
+    db: Session,
+    user: User,
+    *,
+    suspension_id: uuid.UUID | str,
+    ended_by: str,
+    operaciones_restituidas: bool,
+    now: datetime | None = None,
+) -> None:
+    enqueue_notification_event(
+        db,
+        clave_evento=f"suspension_finalizada:{suspension_id}:{ended_by}",
+        tipo_evento=EVENT_RESTRICCION_OPERATIVA,
+        destinatarios=[(user.id, _primary_user_role(user))],
+        payload_seguro={
+            "motivo_codigo": "SUSPENSION_TEMPORAL_FINALIZADA",
+            "suspension_id": str(suspension_id),
+            "operaciones_restituidas": bool(operaciones_restituidas),
+        },
         now=now,
     )

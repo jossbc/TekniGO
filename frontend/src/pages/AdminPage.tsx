@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import type { User } from 'firebase/auth'
-import { ChartNoAxesColumn, FolderOpen, Landmark, Settings, ShieldAlert, Wallet } from 'lucide-react'
+import { ChartNoAxesColumn, FolderOpen, Landmark, Settings, ShieldAlert, UserX, Wallet } from 'lucide-react'
 import Header from '../components/Header'
 import { AccountStatus } from '../components/AccountStatus'
 import { Button } from '../components/ui'
@@ -15,6 +15,7 @@ import AdminIncidentsManager from '../lib/AdminIncidentsManager'
 import AdminSettlementsManager from '../components/AdminSettlementsManager'
 import AdminPayoutsManager from '../components/AdminPayoutsManager'
 import AdminCancellationJustifications from '../components/AdminCancellationJustifications'
+import AdminSuspensionsManager from '../components/AdminSuspensionsManager'
 import DocumentReviewCard from '../components/DocumentReviewCard'
 import DossierModal from '../components/DossierModal'
 import type { AdminDossier, DossierList, ReviewOutcome } from '../lib/adminVerification'
@@ -27,11 +28,11 @@ const labels: Record<string, string> = {
 export default function AdminPage({ user }: { user: User }) {
   const { search } = useLocation()
   const { state, retry } = useAccount(user)
-  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'settlements' | 'payouts' | 'catalog' | 'reports'>('dossiers')
+  const [tab, setTab] = useState<'dossiers' | 'incidents' | 'accounts' | 'settlements' | 'payouts' | 'catalog' | 'reports'>('dossiers')
 
   useEffect(() => {
     const requested = new URLSearchParams(search).get('tab')
-    if (requested === 'dossiers' || requested === 'incidents' || requested === 'settlements' || requested === 'payouts' || requested === 'catalog' || requested === 'reports') {
+    if (requested === 'dossiers' || requested === 'incidents' || requested === 'accounts' || requested === 'settlements' || requested === 'payouts' || requested === 'catalog' || requested === 'reports') {
       setTab(requested)
     }
   }, [search])
@@ -82,6 +83,15 @@ export default function AdminPage({ user }: { user: User }) {
                 <Button
                   role="tab"
                   type="button"
+                  className={tab === 'accounts' ? '' : 'button-outline'}
+                  aria-selected={tab === 'accounts'}
+                  onClick={() => setTab('accounts')}
+                >
+                  <UserX size={16} /> Cuentas y suspensiones
+                </Button>
+                <Button
+                  role="tab"
+                  type="button"
                   className={tab === 'settlements' ? '' : 'button-outline'}
                   aria-selected={tab === 'settlements'}
                   onClick={() => setTab('settlements')}
@@ -118,16 +128,18 @@ export default function AdminPage({ user }: { user: User }) {
                     <AdminCancellationJustifications user={user} />
                   </>
                 )
-                : tab === 'settlements'
-                  ? <>
-                      <AdminSettlementsManager user={user} />
-                      <CashCollectionsCard user={user} admin />
-                    </>
-                  : tab === 'payouts'
-                    ? <AdminPayoutsManager user={user} />
-                    : tab === 'catalog'
-                      ? <AdminCatalog user={user} />
-                      : <AdminReports user={user} />}
+                : tab === 'accounts'
+                  ? <AdminSuspensionsManager user={user} />
+                  : tab === 'settlements'
+                    ? <>
+                        <AdminSettlementsManager user={user} />
+                        <CashCollectionsCard user={user} admin />
+                      </>
+                    : tab === 'payouts'
+                      ? <AdminPayoutsManager user={user} />
+                      : tab === 'catalog'
+                        ? <AdminCatalog user={user} />
+                        : <AdminReports user={user} />}
           </>
         )}
       </main>

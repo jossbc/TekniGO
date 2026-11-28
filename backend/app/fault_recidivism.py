@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    CancellationJustification,
     RecidivismAlertEvent,
     RequestCancellation,
     User,
@@ -34,6 +35,11 @@ class FaultRecord:
     estado_incumplimiento: str
     computable: bool
     ocurrida_en: datetime
+    justificacion_id: str | None = None
+    justificacion_estado: str | None = None
+    justificacion_admin_uid: str | None = None
+    justificacion_observaciones: str | None = None
+    justificacion_resuelta_en: datetime | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +52,17 @@ class FaultRecord:
             "estado_incumplimiento": self.estado_incumplimiento,
             "computable": self.computable,
             "ocurrida_en": format_tegucigalpa_iso(self.ocurrida_en),
+            "decision_justificacion": (
+                {
+                    "justificacion_id": self.justificacion_id,
+                    "estado": self.justificacion_estado,
+                    "admin_uid": self.justificacion_admin_uid,
+                    "observaciones_admin": self.justificacion_observaciones,
+                    "resuelta_en": format_tegucigalpa_iso(self.justificacion_resuelta_en),
+                }
+                if self.justificacion_id is not None
+                else None
+            ),
         }
 
 
@@ -57,7 +74,7 @@ class FaultSource(ABC):
 
 
 class CancellationFaultSource(FaultSource):
-    """Fuente de faltas derivadas de cancelaciones registradas en HU-36."""
+    """Fuente de faltas derivadas de cancelaciones registradas en HU-36 conservando auditoría de justificación (CA-04)."""
 
     def collect_for_user(self, db: Session, user_uid: str) -> list[FaultRecord]:
         rows = list(
@@ -70,11 +87,25 @@ class CancellationFaultSource(FaultSource):
                 .order_by(RequestCancellation.cancelada_en.asc(), RequestCancellation.id.asc())
             ).all()
         )
+        cancellation_ids = [row.id for row in rows]
+        justifications_by_cancel = (
+            {
+                j.cancelacion_id: j
+                for j in db.scalars(
+                    select(CancellationJustification).where(
+                        CancellationJustification.cancelacion_id.in_(cancellation_ids)
+                    )
+                ).all()
+            }
+            if cancellation_ids
+            else {}
+        )
         items: list[FaultRecord] = []
         for row in rows:
             estado = (row.estado_incumplimiento or "").strip().upper()
             if estado not in COMPUTABLE_FAULT_STATES and estado not in EXCLUDED_FAULT_STATES:
                 continue
+            just = justifications_by_cancel.get(row.id)
             items.append(
                 FaultRecord(
                     origen="CANCELACION",
@@ -86,6 +117,11 @@ class CancellationFaultSource(FaultSource):
                     estado_incumplimiento=estado,
                     computable=estado in COMPUTABLE_FAULT_STATES,
                     ocurrida_en=ensure_utc_datetime(row.cancelada_en),
+                    justificacion_id=str(just.id) if just is not None else None,
+                    justificacion_estado=just.estado if just is not None else None,
+                    justificacion_admin_uid=just.admin_uid if just is not None else None,
+                    justificacion_observaciones=just.observaciones_admin if just is not None else None,
+                    justificacion_resuelta_en=ensure_utc_datetime(just.resuelta_en) if just is not None else None,
                 )
             )
         return items

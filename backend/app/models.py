@@ -117,6 +117,12 @@ class FlexibleUuid(TypeDecorator):
 
 class User(Base):
     __tablename__ = "usuarios"
+    __table_args__ = (
+        CheckConstraint(
+            "suspension_tipo IS NULL OR suspension_tipo IN ('TEMPORAL', 'DEFINITIVA')",
+            name="ck_usuario_suspension_tipo",
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     firebase_uid: Mapped[str] = mapped_column(String(128), unique=True)
     nombre_completo: Mapped[str] = mapped_column(String(150))
@@ -125,9 +131,14 @@ class User(Base):
     telefono: Mapped[str] = mapped_column(String(16), unique=True)
     telefono_verificado: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     estado_identidad: Mapped[str] = mapped_column(String(30), default="PENDIENTE")
+    # HU-52 ST-01: Suspensión a nivel de cuenta y trazabilidad de cierre (independientes de restricción financiera)
+    suspendido: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    suspension_tipo: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    suspension_vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cierre_cuenta_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    motivo_cierre_cuenta: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     roles: Mapped[list["UserRole"]] = relationship(lazy="selectin")
-
 
 class UserRole(Base):
     __tablename__ = "usuarios_roles"
@@ -282,6 +293,11 @@ class IdentityDocument(Base):
     # HU-18 ST-02: Vigencia de requisitos obligatorios
     fecha_vencimiento: Mapped[date | None] = mapped_column(Date, nullable=True)
     observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HU-52 ST-01 / ST-05 (CA-08): Baja lógica y revocación de acceso operativo al cierre de cuenta
+    baja_logica: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    baja_logica_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    baja_logica_motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acceso_operativo_revocado: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -628,6 +644,11 @@ class TradeCertificate(Base):
     content_type: Mapped[str] = mapped_column(String(50))
     estado: Mapped[str] = mapped_column(String(20), default="PENDIENTE", server_default="PENDIENTE")
     observaciones: Mapped[str | None] = mapped_column(Text)
+    # HU-52 ST-01 / ST-05 (CA-08): Baja lógica y revocación de acceso operativo al cierre de cuenta
+    baja_logica: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    baja_logica_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    baja_logica_motivo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acceso_operativo_revocado: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -1408,3 +1429,106 @@ class DigitalPaymentWebhookEvent(Base):
     estado_procesamiento = Column(String(24), nullable=False, default="PROCESADO", server_default="PROCESADO")
     payload_resumen = Column(JSON, nullable=False, default=dict)
     recibido_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+class AccountSuspension(Base):
+    """HU-52 ST-01: Suspensiones temporales o definitivas con causa, motivo, responsable y vigencia."""
+
+    __tablename__ = "suspensiones_cuenta"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('TEMPORAL', 'DEFINITIVA')", name="ck_suspension_cuenta_tipo"),
+        CheckConstraint(
+            "causa IN ('CONDUCTA', 'REINCIDENCIA_FALTAS', 'INCUMPLIMIENTO_REGLAS', 'FRAUDE_IDENTIDAD', 'INCIDENCIA_GRAVE')",
+            name="ck_suspension_cuenta_causa",
+        ),
+        CheckConstraint("estado IN ('ACTIVA', 'LEVANTADA', 'EXPIRADA')", name="ck_suspension_cuenta_estado"),
+        CheckConstraint("length(trim(motivo)) >= 5", name="ck_suspension_cuenta_motivo"),
+        CheckConstraint(
+            "((tipo = 'TEMPORAL' AND vence_en IS NOT NULL AND vence_en > iniciada_en) "
+            "OR (tipo = 'DEFINITIVA' AND vence_en IS NULL))",
+            name="ck_suspension_cuenta_vigencia",
+        ),
+        Index("ix_suspensiones_cuenta_usuario_estado", "usuario_id", "estado"),
+        Index("ix_suspensiones_cuenta_estado_vencimiento", "estado", "tipo", "vence_en"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False, index=True)
+    usuario_uid: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    tipo: Mapped[str] = mapped_column(String(20), nullable=False)
+    causa: Mapped[str] = mapped_column(String(40), nullable=False)
+    motivo: Mapped[str] = mapped_column(Text, nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVA", server_default="ACTIVA")
+    responsable_admin_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False)
+    responsable_admin_uid: Mapped[str] = mapped_column(String(128), nullable=False)
+    iniciada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    levantada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    levantada_por_admin_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
+    motivo_levantamiento: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expirada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alerta_reincidencia_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("eventos_reincidencia_faltas.id"), nullable=True
+    )
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class AccountSuspensionAudit(Base):
+    """HU-52 ST-01: Auditoría inmutable de suspensiones, levantamientos, vencimientos y cierres de cuenta."""
+
+    __tablename__ = "auditoria_suspensiones_cuenta"
+    __table_args__ = (
+        CheckConstraint(
+            "evento IN ('SUSPENSION_APLICADA', 'SUSPENSION_LEVANTADA', 'SUSPENSION_EXPIRADA', "
+            "'ALERTA_REINCIDENCIA_ATENDIDA', 'CIERRE_CUENTA_APLICADO', 'BAJA_LOGICA_DOCUMENTAL')",
+            name="ck_auditoria_suspension_evento",
+        ),
+        Index("ix_auditoria_suspensiones_usuario_creado", "usuario_id", "creado_en"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False, index=True)
+    suspension_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("suspensiones_cuenta.id"), nullable=True, index=True
+    )
+    evento: Mapped[str] = mapped_column(String(40), nullable=False)
+    tipo_suspension: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    causa: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    estado_anterior: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    estado_nuevo: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    motivo: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_admin_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
+    proceso_responsable: Mapped[str] = mapped_column(String(80), nullable=False)
+    metadatos: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class BlockedIdentity(Base):
+    """HU-52 ST-01 (CA-06 / CA-08): Bloqueo de reutilización de DNI o teléfono mediante hash SHA-256."""
+
+    __tablename__ = "identidades_bloqueadas"
+    __table_args__ = (
+        UniqueConstraint("tipo_identificador", "valor_hash", name="uq_identidad_bloqueada_tipo_hash"),
+        CheckConstraint("tipo_identificador IN ('DNI', 'TELEFONO')", name="ck_identidad_bloqueada_tipo"),
+        CheckConstraint(
+            "motivo_bloqueo IN ('SUSPENSION_ACTIVA', 'CIERRE_CUENTA')",
+            name="ck_identidad_bloqueada_motivo",
+        ),
+        Index("ix_identidades_bloqueadas_usuario_activo", "usuario_id", "activo"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    usuario_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("usuarios.id"), nullable=False, index=True)
+    tipo_identificador: Mapped[str] = mapped_column(String(20), nullable=False)
+    valor_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    motivo_bloqueo: Mapped[str] = mapped_column(String(30), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
