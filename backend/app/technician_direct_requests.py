@@ -352,10 +352,14 @@ def respond_to_direct_request(
         if profile is not None and profile.restriccion_financiera:
             raise HTTPException(403, "Tu perfil técnico presenta una restricción financiera activa por saldo")
         metodo = (record.metodo_pago or "").strip().lower()
-        if metodo == "tarjeta" and not record.referencia_pasarela:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="Con tarjeta se requiere confirmación y referencia de pago de pasarela antes de aceptar la solicitud (CA-03).",
+        if metodo == "tarjeta":
+            from app.payment_lifecycle_bridge import verify_confirmed_base_payment_for_acceptance
+
+            verify_confirmed_base_payment_for_acceptance(
+                db,
+                modalidad="DIRECTA",
+                solicitud_id=str(record.id),
+                record=record,
             )
     transition_request(db, record, target_estado, role="TECNICO", uid=claims["uid"])
     notify_direct_request_decision(db, record, accepted=(target_estado == "ACEPTADA"))

@@ -405,6 +405,10 @@ def serialize_refund(refund: PaymentRefund) -> dict:
         "referencia_pasarela_origen": refund.referencia_pasarela_origen,
         "referencia_reembolso_pasarela": refund.referencia_reembolso_pasarela,
         "estado_pasarela": refund.estado_pasarela,
+        "reembolsado": refund.estado_pasarela == "CONFIRMADO_PASARELA",
+        "pendiente_conciliacion": refund.estado_pasarela == "PENDIENTE_CONCILIACION",
+        "intentos": int(getattr(refund, "intentos", 1) or 1),
+        "ultimo_error": getattr(refund, "ultimo_error", None),
         "iniciado_en": format_tegucigalpa_iso(refund.iniciado_en),
         "confirmado_en": format_tegucigalpa_iso(refund.confirmado_en),
     }

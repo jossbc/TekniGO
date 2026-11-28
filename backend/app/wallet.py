@@ -12,6 +12,7 @@ from app.models import (
     CommissionSettlementAudit, DirectRequest, FinancialLedgerEntry, OpenRequest, OperationalSettings,
     PayoutLedgerEntry, TechnicianProfile, User, format_tegucigalpa_iso,
 )
+from app.payment_lifecycle_bridge import retained_digital_balance_for_technician
 from app.payouts import available_balance, reserved_balance
 from app.security import get_current_user
 from app.service_reception import _canonical_state, _find_locked_request
@@ -176,6 +177,7 @@ def wallet_overview(db: Session, user: User) -> dict:
         "limite_deuda": str(settings.limite_deuda) if settings and settings.limite_deuda is not None else None,
         "limite_sin_liquidar": settings.limite_sin_liquidar if settings else 5,
         "movimientos": wallet_movements(db, user),
+        "saldo_retenido_servicios": str(retained_digital_balance_for_technician(db, user)),
     }
 
 
@@ -264,6 +266,8 @@ def service_receipt(request_id: str, response: Response, claims=Depends(get_curr
             "solicitud_id": request_id,
             "modalidad": modalidad,
             "fecha_cierre": (record.seguimiento_recepcion or {}).get("fecha_cierre"),
+            "referencia_pasarela_base": getattr(record, "referencia_pasarela", None),
+            "referencia_pasarela_ajuste": getattr(record, "referencia_pasarela_ajuste", None),
             **{field: split[field] for field in (
                 "moneda", "monto_base", "monto_ajuste", "monto_total", "metodo_pago_base",
                 "metodo_pago_ajuste", "cobrado_digital", "cobrado_efectivo", "tasa_comision",

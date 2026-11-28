@@ -1146,6 +1146,28 @@ def emit_and_process_idempotent_completion_event(
         "reparto_medios": split.to_dict(),
     }
 
+    from app.payment_lifecycle_bridge import release_retained_digital_payments_on_completion
+
+    released_digital = release_retained_digital_payments_on_completion(
+        db,
+        modalidad=modalidad,
+        solicitud_id=solicitud_id,
+        moment=eval_closed_at,
+    )
+    fallback_refs = [
+        ref.strip()
+        for ref in (
+            getattr(record, "referencia_pasarela", None) or "",
+            getattr(record, "referencia_pasarela_ajuste", None) or "",
+        )
+        if ref and ref.strip()
+    ]
+    closure_gateway_ref = released_digital["referencia_consolidada"] or (
+        ",".join(fallback_refs) if fallback_refs else None
+    )
+
+    financial_effect["pagos_digitales_liberados"] = released_digital["pagos"]
+    financial_effect["referencia_pasarela"] = closure_gateway_ref
     _save_tracking(record, {**tracking, "evento_cierre": event_payload, "efecto_financiero": financial_effect})
     record_ledger_entry_once(
         db,
@@ -1159,7 +1181,7 @@ def emit_and_process_idempotent_completion_event(
         tasa_comision=split.tasa_comision,
         monto_comision=split.monto_comision,
         metodo_pago=split.metodo_pago_base,
-        referencia_pasarela=None,
+        referencia_pasarela=closure_gateway_ref,
         detalle={
             **split.to_dict(),
             "evento_id": event_id,
@@ -1167,6 +1189,7 @@ def emit_and_process_idempotent_completion_event(
             "compensacion_saldo_disponible": str(compensated),
             "deuda_generada": str(pending_cash_debt),
             "saldo_disponible_resultante": str(opening_balance + credito_digital_tecnico - compensated),
+            "pagos_digitales_liberados": released_digital["pagos"],
         },
         now=eval_closed_at,
     )

@@ -1130,7 +1130,7 @@ class PaymentRefund(Base):
         CheckConstraint("monto_reembolso > 0", name="ck_reembolso_monto_positivo"),
         CheckConstraint("monto_comision = 0", name="ck_reembolso_sin_comision"),
         CheckConstraint(
-            "estado_pasarela IN ('EN_PROCESO_PASARELA', 'CONFIRMADO_PASARELA')",
+            "estado_pasarela IN ('EN_PROCESO_PASARELA', 'PENDIENTE_CONCILIACION', 'CONFIRMADO_PASARELA')",
             name="ck_reembolso_estado_pasarela",
         ),
     )
@@ -1146,8 +1146,11 @@ class PaymentRefund(Base):
     referencia_pasarela_origen = Column(String(220), nullable=False)
     referencia_reembolso_pasarela = Column(String(120), nullable=False)
     estado_pasarela = Column(String(30), nullable=False, default="EN_PROCESO_PASARELA", server_default="EN_PROCESO_PASARELA")
+    intentos = Column(Integer, nullable=False, default=1, server_default="1")
+    ultimo_error = Column(Text, nullable=True)
     iniciado_en = Column(DateTime(timezone=True), nullable=False)
     confirmado_en = Column(DateTime(timezone=True), nullable=True)
+    actualizado_en = Column(DateTime(timezone=True), nullable=True)
 
 
 class FinancialLedgerEntry(Base):
@@ -1328,3 +1331,80 @@ class RecidivismAlertEvent(Base):
     suspension_automatica_aplicada = Column(Boolean, nullable=False, default=False, server_default="false")
     generado_en = Column(DateTime(timezone=True), nullable=False)
     actualizado_en = Column(DateTime(timezone=True), nullable=False)
+
+
+
+class DigitalPaymentIntent(Base):
+    """HU-38 ST-02: intento y transacción de pago digital con concepto BASE/AJUSTE, referencia externa e idempotencia."""
+
+    __tablename__ = "intentos_pago_digital"
+    __table_args__ = (
+        UniqueConstraint("clave_idempotencia", name="uq_intento_pago_idempotencia"),
+        UniqueConstraint("referencia_interna", name="uq_intento_pago_ref_interna"),
+        CheckConstraint("modalidad IN ('DIRECTA', 'ABIERTA')", name="ck_intento_pago_modalidad"),
+        CheckConstraint("concepto IN ('BASE', 'AJUSTE')", name="ck_intento_pago_concepto"),
+        CheckConstraint("moneda = 'HNL'", name="ck_intento_pago_moneda"),
+        CheckConstraint("monto > 0", name="ck_intento_pago_monto_positivo"),
+        CheckConstraint("entorno IN ('SANDBOX', 'SIMULADOR_LOCAL')", name="ck_intento_pago_entorno"),
+        CheckConstraint(
+            "estado IN ('PENDIENTE', 'CONFIRMADO', 'RECHAZADO', 'ABANDONADO', 'EXPIRADO', 'REEMBOLSADO')",
+            name="ck_intento_pago_estado",
+        ),
+        CheckConstraint(
+            "estado_retencion IN ('NO_APLICA', 'RETENIDO', 'LIBERADO', 'REEMBOLSADO')",
+            name="ck_intento_pago_retencion",
+        ),
+        Index("ix_intentos_pago_solicitud_concepto", "modalidad", "solicitud_id", "concepto", "estado"),
+        Index("ix_intentos_pago_ref_pasarela", "referencia_pasarela"),
+        Index("ix_intentos_pago_pi_id", "payment_intent_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    clave_idempotencia = Column(String(160), nullable=False)
+    referencia_interna = Column(String(80), nullable=False)
+    modalidad = Column(String(10), nullable=False)
+    solicitud_id = Column(String(36), nullable=False)
+    concepto = Column(String(16), nullable=False, default="BASE", server_default="BASE")
+    cliente_uid = Column(String(128), nullable=False)
+    tecnico_uid = Column(String(128), nullable=True)
+    propuesta_id = Column(String(36), nullable=True)
+    moneda = Column(String(5), nullable=False, default="HNL", server_default="HNL")
+    monto = Column(Numeric(10, 2), nullable=False)
+    proveedor = Column(String(32), nullable=False)
+    entorno = Column(String(24), nullable=False, default="SANDBOX", server_default="SANDBOX")
+    referencia_pasarela = Column(String(160), nullable=True)
+    payment_intent_id = Column(String(160), nullable=True)
+    checkout_url = Column(Text, nullable=True)
+    estado = Column(String(24), nullable=False, default="PENDIENTE", server_default="PENDIENTE")
+    estado_retencion = Column(String(24), nullable=False, default="NO_APLICA", server_default="NO_APLICA")
+    motivo_resultado = Column(Text, nullable=True)
+    metadatos = Column(JSON, nullable=False, default=dict)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    confirmado_en = Column(DateTime(timezone=True), nullable=True)
+    liberado_en = Column(DateTime(timezone=True), nullable=True)
+    reembolsado_en = Column(DateTime(timezone=True), nullable=True)
+    actualizado_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class DigitalPaymentWebhookEvent(Base):
+    """HU-38 ST-03 (CA-04): registro idempotente de eventos autenticados recibidos desde la pasarela."""
+
+    __tablename__ = "eventos_webhook_pago"
+    __table_args__ = (
+        UniqueConstraint("proveedor", "evento_externo_id", name="uq_webhook_pago_proveedor_evento"),
+        CheckConstraint(
+            "estado_procesamiento IN ('PROCESADO', 'OMITIDO', 'ERROR')",
+            name="ck_webhook_pago_estado",
+        ),
+        Index("ix_webhook_pago_ref", "referencia_pasarela"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    proveedor = Column(String(32), nullable=False)
+    evento_externo_id = Column(String(160), nullable=False)
+    tipo_evento = Column(String(80), nullable=False)
+    referencia_pasarela = Column(String(160), nullable=True)
+    payment_intent_id = Column(String(160), nullable=True)
+    estado_procesamiento = Column(String(24), nullable=False, default="PROCESADO", server_default="PROCESADO")
+    payload_resumen = Column(JSON, nullable=False, default=dict)
+    recibido_en = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
