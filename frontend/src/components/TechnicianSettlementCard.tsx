@@ -32,6 +32,7 @@ export default function TechnicianSettlementCard({ user }: { user: User }) {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const form = event.currentTarget
     if (busy || !data) return
     setNotice('')
     const problem = validateSettlementInput({ importe, referencia, file }, data)
@@ -41,7 +42,7 @@ export default function TechnicianSettlementCard({ user }: { user: User }) {
     try {
       await submitSettlement(user, importe, referencia, file as File)
       setImporte(''); setReferencia(''); setFile(null)
-      event.currentTarget.reset()
+      form?.reset()
       setNotice('Enviamos tu comprobante. Tu deuda y tu restricción no cambian hasta que administración lo revise.')
       await load()
     } catch (err) { setError(errorMessage(err)) }
